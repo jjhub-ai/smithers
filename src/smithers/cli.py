@@ -347,6 +347,46 @@ def main() -> int:
         help="Output format",
     )
 
+    # compose command - composition utilities
+    compose_parser = subparsers.add_parser("compose", help="Workflow composition utilities")
+    compose_sub = compose_parser.add_subparsers(dest="compose_command")
+
+    # compose info
+    compose_info_parser = compose_sub.add_parser("info", help="Show composition information for a workflow")
+    compose_info_parser.add_argument("file", help="Path to the workflow file")
+    compose_info_parser.add_argument(
+        "--workflow",
+        help="Specific workflow to inspect (default: last defined)",
+        default=None,
+    )
+    compose_info_parser.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format",
+    )
+
+    # compose merge
+    compose_merge_parser = compose_sub.add_parser("merge", help="Merge multiple workflow files into a combined graph")
+    compose_merge_parser.add_argument("files", nargs="+", help="Paths to workflow files to merge")
+    compose_merge_parser.add_argument(
+        "--target",
+        help="Target workflow name for the merged graph",
+        default=None,
+    )
+    compose_merge_parser.add_argument(
+        "--output",
+        "-o",
+        help="Output file for the merged graph visualization",
+        default=None,
+    )
+    compose_merge_parser.add_argument(
+        "--format",
+        choices=["mermaid", "json", "ascii"],
+        default="mermaid",
+        help="Output format",
+    )
+
     args = parser.parse_args()
 
     if args.version:
@@ -387,6 +427,8 @@ def main() -> int:
         return _metrics_command(args)
     elif args.command == "websocket":
         return _websocket_command(args)
+    elif args.command == "compose":
+        return _compose_command(args)
 
     return 0
 
@@ -1457,6 +1499,112 @@ def _websocket_status(args: argparse.Namespace) -> int:
         print(f"  Messages Received:   {server.stats.messages_received}")
         print(f"  Events Broadcast:    {server.stats.events_broadcast}")
         print(f"  Errors:              {server.stats.errors}")
+
+    return 0
+
+
+def _compose_command(args: argparse.Namespace) -> int:
+    """Handle compose subcommands."""
+    if args.compose_command == "info":
+        return _compose_info(args)
+    elif args.compose_command == "merge":
+        return _compose_merge(args)
+    else:
+        print("Unknown compose command. Use: info or merge", file=sys.stderr)
+        return 1
+
+
+def _compose_info(args: argparse.Namespace) -> int:
+    """Show composition information for a workflow."""
+    from smithers.composition import get_composition_info
+
+    _load_module(args.file)
+    workflow = _select_workflow(args.workflow)
+
+    info = get_composition_info(workflow)
+
+    if args.format == "json":
+        print(json.dumps(info, indent=2))
+    else:
+        print("Workflow Composition Info")
+        print("=" * 40)
+        print(f"Name: {info['name']}")
+        print(f"Composed: {info['is_composed']}")
+        if info['composition_type']:
+            print(f"Type: {info['composition_type']}")
+        if info['components']:
+            print(f"Components: {', '.join(info['components'])}")
+
+        # Additional workflow details
+        print()
+        print("Workflow Details")
+        print("-" * 30)
+        print(f"Output Type: {workflow.output_type.__name__}")
+        if workflow.input_types:
+            print(f"Input Types: {', '.join(f'{k}: {v.__name__}' for k, v in workflow.input_types.items())}")
+        if workflow.bound_args:
+            print(f"Bound Arguments: {list(workflow.bound_args.keys())}")
+        if workflow.bound_deps:
+            print(f"Bound Dependencies: {list(workflow.bound_deps.keys())}")
+
+    return 0
+
+
+def _compose_merge(args: argparse.Namespace) -> int:
+    """Merge multiple workflow files into a combined graph."""
+    from smithers.composition import compose_graphs
+    from smithers.visualization import visualize_graph
+
+    graphs = []
+    all_workflows = []
+
+    for file_path in args.files:
+        _load_module(file_path)
+        workflows = list(get_all_workflows().values())
+        if workflows:
+            all_workflows.extend(workflows)
+            # Build graph from last workflow in each file
+            graph = build_graph(workflows[-1])
+            graphs.append(graph)
+        clear_registry()
+
+    if not graphs:
+        print("No workflows found in provided files", file=sys.stderr)
+        return 1
+
+    try:
+        merged = compose_graphs(*graphs, target=args.target)
+    except Exception as exc:
+        print(f"Error merging graphs: {exc}", file=sys.stderr)
+        return 1
+
+    output = ""
+    if args.format == "mermaid":
+        output = merged.mermaid()
+    elif args.format == "ascii":
+        output = visualize_graph(merged, format="ascii")
+    elif args.format == "json":
+        output = json.dumps(
+            {
+                "root": merged.root,
+                "nodes": {
+                    name: {
+                        "dependencies": node.dependencies,
+                        "requires_approval": node.requires_approval,
+                    }
+                    for name, node in merged.nodes.items()
+                },
+                "edges": merged.edges,
+                "levels": merged.levels,
+            },
+            indent=2,
+        )
+
+    if args.output:
+        Path(args.output).write_text(output, encoding="utf-8")
+        print(f"Merged graph written to {args.output}")
+    else:
+        print(output)
 
     return 0
 
