@@ -718,13 +718,18 @@ def reduce_workflow(
                 return initial
             raise ValueError("Cannot reduce empty list without initial value")
 
-        if len(items) == 1:
+        if len(items) == 1 and initial is None:
             return items[0]
 
         # Reduce by calling workflow on pairs
-        result = items[0] if initial is None else initial
+        if initial is not None:
+            result = initial
+            items_to_process = items
+        else:
+            result = items[0]
+            items_to_process = items[1:]
 
-        for item in items[1:] if initial is None else items:
+        for item in items_to_process:
             # Build kwargs with the two items
             wf_kwargs = {input_params[0]: result, input_params[1]: item}
             result = await workflow(**wf_kwargs)
