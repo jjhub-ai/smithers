@@ -1,0 +1,6 @@
+framework module SmithersKit {
+    umbrella header "smithers.h"
+
+    export *
+    module * { export * }
+}
