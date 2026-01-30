@@ -1,11 +1,20 @@
 """Workflow decorator and utilities."""
 
-from collections.abc import Callable, Coroutine
-from dataclasses import dataclass
+from __future__ import annotations
+
+import asyncio
+import inspect
+import types
+from collections.abc import Callable, Coroutine, Sequence
+from dataclasses import dataclass, field
+from datetime import timedelta
 from functools import wraps
-from typing import Any, ParamSpec, TypeVar
+from typing import Any, ParamSpec, TypeVar, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
+
+from smithers.errors import ApprovalRejected
+from smithers.types import NO_RETRY, RetryPolicy
 
 P = ParamSpec("P")
 T = TypeVar("T", bound=BaseModel)
@@ -31,12 +40,57 @@ class Workflow:
     fn: Callable[..., Coroutine[Any, Any, BaseModel]]
     output_type: type[BaseModel]
     input_types: dict[str, type[BaseModel]]
+    input_is_list: dict[str, bool] = field(default_factory=dict)
+    input_optional: dict[str, bool] = field(default_factory=dict)
     requires_approval: bool = False
     approval_message: str | None = None
+    approval_context: Callable[[Any], str] | None = None
+    approval_timeout: timedelta | None = None
+    output_optional: bool = False
+    bound_args: dict[str, Any] = field(default_factory=dict)
+    bound_deps: dict[str, list[Workflow]] = field(default_factory=dict)
+    retry_policy: RetryPolicy = field(default_factory=lambda: NO_RETRY)
 
     async def __call__(self, *args: Any, **kwargs: Any) -> BaseModel:
         """Execute the workflow function."""
-        return await self.fn(*args, **kwargs)
+        call_kwargs = {**self.bound_args, **kwargs}
+        return await self.fn(*args, **call_kwargs)
+
+    def bind(self, **kwargs: Any) -> Workflow:
+        """Bind concrete arguments or explicit dependencies to this workflow."""
+        bound_args = dict(self.bound_args)
+        bound_deps = {key: list(value) for key, value in self.bound_deps.items()}
+
+        for key, value in kwargs.items():
+            if isinstance(value, Workflow):
+                bound_deps[key] = [value]
+            elif (
+                isinstance(value, Sequence)
+                and value
+                and all(isinstance(item, Workflow) for item in value)
+            ):
+                bound_deps[key] = list(value)
+            else:
+                bound_args[key] = value
+
+        bound_name = _make_bound_name(self.name, bound_args, bound_deps)
+
+        return Workflow(
+            name=bound_name,
+            fn=self.fn,
+            output_type=self.output_type,
+            input_types=dict(self.input_types),
+            input_is_list=dict(self.input_is_list),
+            input_optional=dict(self.input_optional),
+            requires_approval=self.requires_approval,
+            approval_message=self.approval_message,
+            approval_context=self.approval_context,
+            approval_timeout=self.approval_timeout,
+            output_optional=self.output_optional,
+            bound_args=bound_args,
+            bound_deps=bound_deps,
+            retry_policy=self.retry_policy,
+        )
 
 
 # Global registry of workflows by output type
@@ -58,51 +112,136 @@ def clear_registry() -> None:
     _registry.clear()
 
 
-def workflow(fn: Callable[P, Coroutine[Any, Any, T]]) -> Workflow:
+def workflow(
+    fn: Callable[P, Coroutine[Any, Any, T]] | None = None,
+    *,
+    register: bool = True,
+    retry: RetryPolicy | None = None,
+    max_retries: int | None = None,
+    retry_on: tuple[type[BaseException], ...] | None = None,
+) -> Workflow | Callable[[Callable[P, Coroutine[Any, Any, T]]], Workflow]:
     """
     Decorator to register a function as a workflow.
+
+    Args:
+        fn: The async function to wrap
+        register: Whether to register in global registry (default: True).
+                  Set to False for workflows used only with explicit binding.
+        retry: A RetryPolicy for configuring retry behavior.
+        max_retries: Shorthand for RetryPolicy(max_attempts=max_retries+1).
+                     Cannot be used with `retry` parameter.
+        retry_on: Tuple of exception types to retry on. Only used with max_retries.
 
     Example:
         @workflow
         async def analyze() -> AnalysisOutput:
             return await claude("Analyze", output=AnalysisOutput)
+
+        # With retry policy
+        @workflow(retry=RetryPolicy(max_attempts=3, backoff_seconds=1.0))
+        async def flaky_workflow() -> Output:
+            ...
+
+        # Shorthand for simple retries
+        @workflow(max_retries=2)  # 3 total attempts
+        async def another_workflow() -> Output:
+            ...
+
+        # Only retry on specific exceptions
+        @workflow(max_retries=3, retry_on=(RateLimitError, ConnectionError))
+        async def api_workflow() -> Output:
+            ...
+
+        # For fan-in patterns with duplicate output types:
+        @workflow(register=False)
+        async def producer1() -> SharedOutput:
+            ...
+
+        @workflow(register=False)
+        async def producer2() -> SharedOutput:
+            ...
     """
-    # Get type hints
-    hints = fn.__annotations__
-    return_type = hints.get("return")
+    # Determine retry policy
+    if retry is not None and max_retries is not None:
+        raise ValueError("Cannot specify both 'retry' and 'max_retries'")
 
-    if return_type is None:
-        raise TypeError(f"Workflow {fn.__name__} must have a return type annotation")
-
-    # Extract input types (Pydantic models from parameters)
-    input_types: dict[str, type[BaseModel]] = {}
-    for param_name, param_type in hints.items():
-        if param_name == "return":
-            continue
-        if isinstance(param_type, type) and issubclass(param_type, BaseModel):
-            input_types[param_name] = param_type
-
-    # Create workflow object
-    wf = Workflow(
-        name=fn.__name__,
-        fn=fn,
-        output_type=return_type,
-        input_types=input_types,
-    )
-
-    # Register in global registry
-    if return_type in _registry:
-        existing = _registry[return_type]
-        raise ValueError(
-            f"Multiple workflows produce {return_type.__name__}: {existing.name} and {fn.__name__}"
+    if retry is not None:
+        retry_policy = retry
+    elif max_retries is not None:
+        retry_policy = RetryPolicy(
+            max_attempts=max_retries + 1,
+            retry_on=retry_on or (),
         )
-    _registry[return_type] = wf
+    else:
+        retry_policy = NO_RETRY
 
-    return wf
+    def decorator(func: Callable[P, Coroutine[Any, Any, T]]) -> Workflow:
+        if not inspect.iscoroutinefunction(func):
+            raise TypeError(f"Workflow {func.__name__} must be async")
+
+        hints = get_type_hints(func, include_extras=True)
+        return_annotation = hints.get("return")
+
+        if return_annotation is None:
+            raise TypeError(f"Workflow {func.__name__} must have a return type annotation")
+
+        output_type, output_optional = _parse_output_type(return_annotation)
+
+        input_types: dict[str, type[BaseModel]] = {}
+        input_is_list: dict[str, bool] = {}
+        input_optional: dict[str, bool] = {}
+
+        for param_name, param_type in hints.items():
+            if param_name == "return":
+                continue
+            dep_type, is_list, is_optional = _extract_dependency_type(param_type)
+            if dep_type is not None:
+                input_types[param_name] = dep_type
+                input_is_list[param_name] = is_list
+                input_optional[param_name] = is_optional
+
+        # Check if a @retry decorator was applied (stores policy on the function)
+        # This allows @workflow @retry(...) pattern to work
+        final_retry_policy = getattr(func, "_retry_policy", None) or retry_policy
+
+        wf = Workflow(
+            name=func.__name__,
+            fn=func,
+            output_type=output_type,
+            input_types=input_types,
+            input_is_list=input_is_list,
+            input_optional=input_optional,
+            requires_approval=getattr(func, "_requires_approval", False),
+            approval_message=getattr(func, "_approval_message", None),
+            approval_context=getattr(func, "_approval_context", None),
+            approval_timeout=getattr(func, "_approval_timeout", None),
+            output_optional=output_optional,
+            retry_policy=final_retry_policy,
+        )
+
+        if register:
+            if output_type in _registry:
+                existing = _registry[output_type]
+                raise ValueError(
+                    f"Multiple workflows produce {output_type.__name__}: {existing.name} and {func.__name__}"
+                )
+            _registry[wf.output_type] = wf
+
+        return wf
+
+    if fn is not None:
+        # Called as @workflow without parentheses
+        return decorator(fn)
+
+    # Called as @workflow() or @workflow(register=False)
+    return decorator
 
 
 def require_approval(
     message: str,
+    *,
+    context: Callable[[Any], str] | None = None,
+    timeout: timedelta | None = None,
 ) -> Callable[[Callable[P, Coroutine[Any, Any, T]]], Callable[P, Coroutine[Any, Any, T]]]:
     """
     Decorator to require human approval before executing a workflow.
@@ -123,6 +262,172 @@ def require_approval(
         # Mark the function as requiring approval
         wrapper._requires_approval = True  # type: ignore[attr-defined]
         wrapper._approval_message = message  # type: ignore[attr-defined]
+        wrapper._approval_context = context  # type: ignore[attr-defined]
+        wrapper._approval_timeout = timeout  # type: ignore[attr-defined]
         return wrapper
 
     return decorator
+
+
+async def require_approval_async(message: str) -> None:
+    """Request approval during workflow execution."""
+    prompt = f"{message}\n\nProceed? [y/N]: "
+    response = await asyncio.to_thread(input, prompt)
+    if response.strip().lower() not in {"y", "yes"}:
+        raise ApprovalRejected("manual", "Approval rejected")
+
+
+def retry(
+    policy: RetryPolicy | None = None,
+    *,
+    max_attempts: int | None = None,
+    backoff_seconds: float = 1.0,
+    backoff_multiplier: float = 2.0,
+    max_backoff_seconds: float = 60.0,
+    jitter: bool = True,
+    retry_on: tuple[type[BaseException], ...] = (),
+) -> Callable[[Callable[P, Coroutine[Any, Any, T]]], Callable[P, Coroutine[Any, Any, T]]]:
+    """
+    Decorator to configure retry behavior for a workflow.
+
+    This decorator is applied before @workflow to configure retry policies.
+    It can be used with a pre-configured RetryPolicy or with individual parameters.
+
+    Args:
+        policy: A pre-configured RetryPolicy. If provided, other parameters are ignored.
+        max_attempts: Maximum number of attempts (including initial try). Default is 3.
+        backoff_seconds: Initial delay between retries in seconds. Default is 1.0.
+        backoff_multiplier: Multiplier for exponential backoff. Default is 2.0.
+        max_backoff_seconds: Maximum delay between retries. Default is 60.0.
+        jitter: Whether to add random jitter to delays. Default is True.
+        retry_on: Tuple of exception types to retry on. Empty means all exceptions.
+
+    Example:
+        @workflow
+        @retry(max_attempts=3)
+        async def flaky_workflow() -> Output:
+            ...
+
+        @workflow
+        @retry(policy=RetryPolicy(max_attempts=5, backoff_seconds=2.0))
+        async def api_workflow() -> Output:
+            ...
+
+        @workflow
+        @retry(max_attempts=4, retry_on=(RateLimitError,))
+        async def rate_limited_workflow() -> Output:
+            ...
+    """
+    if policy is not None:
+        actual_policy = policy
+    else:
+        actual_policy = RetryPolicy(
+            max_attempts=max_attempts if max_attempts is not None else 3,
+            backoff_seconds=backoff_seconds,
+            backoff_multiplier=backoff_multiplier,
+            max_backoff_seconds=max_backoff_seconds,
+            jitter=jitter,
+            retry_on=retry_on,
+        )
+
+    def decorator(fn: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, Coroutine[Any, Any, T]]:
+        @wraps(fn)
+        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+            # The actual retry logic is handled by the executor
+            return await fn(*args, **kwargs)
+
+        # Store the retry policy on the function for the @workflow decorator to pick up
+        wrapper._retry_policy = actual_policy  # type: ignore[attr-defined]
+        return wrapper
+
+    return decorator
+
+
+def _parse_output_type(
+    annotation: Any,
+) -> tuple[type[BaseModel], bool]:
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation, False
+
+    origin = get_origin(annotation)
+    if origin is None:
+        raise TypeError("Workflow return type must be a Pydantic BaseModel")
+
+    if origin is list or origin is Sequence:
+        raise TypeError("Workflow return type cannot be a collection")
+
+    if origin is type(None):
+        raise TypeError("Workflow return type cannot be None")
+
+    if origin in (types.UnionType, getattr(__import__("typing"), "Union", None)):
+        args = [arg for arg in get_args(annotation) if arg is not type(None)]
+        if len(args) == 1 and isinstance(args[0], type) and issubclass(args[0], BaseModel):
+            return args[0], True
+
+    raise TypeError("Workflow return type must be a Pydantic BaseModel")
+
+
+def _extract_dependency_type(
+    annotation: Any,
+) -> tuple[type[BaseModel] | None, bool, bool]:
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation, False, False
+
+    origin = get_origin(annotation)
+    if origin is None:
+        return None, False, False
+
+    if origin in (types.UnionType, getattr(__import__("typing"), "Union", None)):
+        args = [arg for arg in get_args(annotation) if arg is not type(None)]
+        if len(args) == 1 and isinstance(args[0], type) and issubclass(args[0], BaseModel):
+            return args[0], False, True
+
+    if origin in (list, Sequence):
+        args = get_args(annotation)
+        if not args:
+            return None, False, False
+        inner = args[0]
+        if isinstance(inner, type) and issubclass(inner, BaseModel):
+            return inner, True, False
+        if get_origin(inner) in (types.UnionType, getattr(__import__("typing"), "Union", None)):
+            inner_args = [arg for arg in get_args(inner) if arg is not type(None)]
+            if (
+                len(inner_args) == 1
+                and isinstance(inner_args[0], type)
+                and issubclass(inner_args[0], BaseModel)
+            ):
+                return inner_args[0], True, True
+
+    return None, False, False
+
+
+def _make_bound_name(
+    base_name: str,
+    bound_args: dict[str, Any],
+    bound_deps: dict[str, list[Workflow]],
+) -> str:
+    if not bound_args and not bound_deps:
+        return base_name
+
+    def normalize(value: Any) -> Any:
+        if isinstance(value, Workflow):
+            return {"workflow": value.name}
+        if isinstance(value, BaseModel):
+            return value.model_dump(mode="json")
+        if isinstance(value, dict):
+            return {str(k): normalize(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [normalize(v) for v in value]
+        return value
+
+    payload = {
+        "args": normalize(bound_args),
+        "deps": {key: [dep.name for dep in deps] for key, deps in bound_deps.items()},
+    }
+    import hashlib
+    import json
+
+    digest = hashlib.sha1(
+        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:10]
+    return f"{base_name}__{digest}"
