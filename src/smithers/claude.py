@@ -18,6 +18,7 @@ from typing import Any, TypeVar
 from anthropic import AsyncAnthropic
 from pydantic import BaseModel, TypeAdapter
 
+from smithers.analytics import calculate_cost
 from smithers.config import get_config
 from smithers.errors import ClaudeError, RateLimitError, ToolError
 from smithers.runtime import (
@@ -143,14 +144,25 @@ async def claude(
             if not tool_uses:
                 text = _extract_text(content_blocks)
                 result = _parse_output(text, output)
-                if track_usage and usage_info is not None:
-                    object.__setattr__(result, "_usage", usage_info)
 
-                # Record LLM call completion
+                # Calculate cost using analytics module
+                cost = calculate_cost(model_name, total_input_tokens, total_output_tokens)
+
+                if track_usage and usage_info is not None:
+                    # Include cost in usage info
+                    usage_with_cost = Usage(
+                        input_tokens=total_input_tokens,
+                        output_tokens=total_output_tokens,
+                        cost_usd=cost,
+                    )
+                    object.__setattr__(result, "_usage", usage_with_cost)
+
+                # Record LLM call completion with cost
                 await record_llm_call_end(
                     llm_call_id,
                     input_tokens=total_input_tokens,
                     output_tokens=total_output_tokens,
+                    cost_usd=cost,
                     response={"output_type": output.__name__, "success": True},
                 )
                 return result
