@@ -33,15 +33,16 @@ Example usage:
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Awaitable, Callable, TypeAlias
+from typing import Any
 from uuid import uuid4
 
 # Type aliases for event handlers
-SyncEventHandler: TypeAlias = Callable[["Event"], None]
-AsyncEventHandler: TypeAlias = Callable[["Event"], Awaitable[None]]
-EventHandler: TypeAlias = SyncEventHandler | AsyncEventHandler
+type SyncEventHandler = Callable[["Event"], None]
+type AsyncEventHandler = Callable[["Event"], Awaitable[None]]
+type EventHandler = SyncEventHandler | AsyncEventHandler
 
 
 @dataclass
@@ -266,7 +267,10 @@ class EventBus:
 
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(self._deliver(event))
+            # Store reference to prevent garbage collection
+            task = loop.create_task(self._deliver(event))
+            # Allow the task to be garbage collected after completion
+            task.add_done_callback(lambda _: None)
         except RuntimeError:
             # No running loop - queue for later
             self._queue.append(event)

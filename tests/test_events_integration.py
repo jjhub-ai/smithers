@@ -251,7 +251,9 @@ class TestEventBusWithErrors:
         bus.subscribe("NodeFailed", lambda e: failed_events.append(e))
         bus.subscribe("RunFailed", lambda e: failed_events.append(e))
 
-        with pytest.raises(Exception):
+        from smithers.errors import WorkflowError
+
+        with pytest.raises(WorkflowError):
             await run_graph_with_store(graph, store=tmp_store)
 
         # Should have NodeFailed and RunFailed events
@@ -273,7 +275,9 @@ class TestEventBusWithErrors:
         bus = get_event_bus()
         bus.subscribe("NodeFailed", lambda e: failed_events.append(e))
 
-        with pytest.raises(Exception):
+        from smithers.errors import WorkflowError
+
+        with pytest.raises(WorkflowError):
             await run_graph_with_store(graph, store=tmp_store)
 
         assert len(failed_events) == 1

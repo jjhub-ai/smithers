@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from typing import Any
 
 import pytest
 
@@ -517,9 +516,7 @@ class TestEventFactories:
 
     def test_tool_call_finished(self) -> None:
         """Test tool_call_finished factory."""
-        event = tool_call_finished(
-            "run-123", "analyze", "Read", "SUCCESS", tool_call_id=10
-        )
+        event = tool_call_finished("run-123", "analyze", "Read", "SUCCESS", tool_call_id=10)
         assert event.type == EventTypes.TOOL_CALL_FINISHED
         assert event.payload["tool"] == "Read"
         assert event.payload["status"] == "SUCCESS"

@@ -28,7 +28,7 @@ from pydantic import TypeAdapter
 
 from smithers.cache import Cache, SqliteCache
 from smithers.errors import ApprovalRejected, WorkflowError
-from smithers.events import Event, EventTypes, get_event_bus
+from smithers.events import Event, get_event_bus
 from smithers.hashing import code_hash, hash_json
 from smithers.hashing import input_hash as compute_input_hash
 from smithers.runtime import RuntimeContext, runtime_context
@@ -43,7 +43,6 @@ from smithers.types import (
     WorkflowNode,
     WorkflowResult,
 )
-from smithers.types import RetryPolicy
 from smithers.workflow import SkipResult, Workflow, get_workflow_by_output
 
 if TYPE_CHECKING:
@@ -329,23 +328,21 @@ async def run_graph_with_store(
                     ctx.outputs[name] = cached_value
                     ctx.statuses[name] = "cached"
                     ctx.results.append(
-                        WorkflowResult(
-                            name=name, output=cached_value, cached=True, duration_ms=0.0
-                        )
+                        WorkflowResult(name=name, output=cached_value, cached=True, duration_ms=0.0)
                     )
                     await store.update_node_status(
                         run_id, name, NodeStatus.CACHED, cache_key=cache_key
                     )
                     # Store cached output for potential resume
-                    cached_to_store = cached_value.model_dump() if hasattr(cached_value, "model_dump") else cached_value
-                    await store.store_node_output(run_id, name, cached_to_store)
-                    await _emit_event(
-                        store, run_id, name, "NodeCached", {"cache_key": cache_key}
+                    cached_to_store = (
+                        cached_value.model_dump()
+                        if hasattr(cached_value, "model_dump")
+                        else cached_value
                     )
+                    await store.store_node_output(run_id, name, cached_to_store)
+                    await _emit_event(store, run_id, name, "NodeCached", {"cache_key": cache_key})
                     if on_progress:
-                        await on_progress(
-                            WorkflowEvent(type="cached", workflow_name=name)
-                        )
+                        await on_progress(WorkflowEvent(type="cached", workflow_name=name))
                     return
 
             # Handle approval
@@ -379,7 +376,8 @@ async def run_graph_with_store(
 
             # Execute the workflow with retry support
             await store.update_node_status(run_id, name, NodeStatus.RUNNING)
-            await _emit_event(store,
+            await _emit_event(
+                store,
                 run_id,
                 name,
                 "NodeStarted",
@@ -402,16 +400,12 @@ async def run_graph_with_store(
                 ctx.outputs[name] = None
                 ctx.statuses[name] = "skipped"
                 ctx.results.append(
-                    WorkflowResult(
-                        name=name, output=None, cached=False, duration_ms=duration_ms
-                    )
+                    WorkflowResult(name=name, output=None, cached=False, duration_ms=duration_ms)
                 )
                 await store.update_node_status(
                     run_id, name, NodeStatus.SKIPPED, skip_reason=output.reason
                 )
-                await _emit_event(store,
-                    run_id, name, "NodeSkipped", {"reason": output.reason}
-                )
+                await _emit_event(store, run_id, name, "NodeSkipped", {"reason": output.reason})
                 if on_progress:
                     await on_progress(
                         WorkflowEvent(
@@ -427,9 +421,7 @@ async def run_graph_with_store(
             ctx.outputs[name] = validated
             ctx.statuses[name] = "success"
             ctx.results.append(
-                WorkflowResult(
-                    name=name, output=validated, cached=False, duration_ms=duration_ms
-                )
+                WorkflowResult(name=name, output=validated, cached=False, duration_ms=duration_ms)
             )
 
             # Store in cache
@@ -454,9 +446,12 @@ async def run_graph_with_store(
                 ),
             )
             # Store node output for potential resume
-            output_to_store = validated.model_dump() if hasattr(validated, "model_dump") else validated
+            output_to_store = (
+                validated.model_dump() if hasattr(validated, "model_dump") else validated
+            )
             await store.store_node_output(run_id, name, output_to_store)
-            await _emit_event(store,
+            await _emit_event(
+                store,
                 run_id,
                 name,
                 "NodeFinished",
@@ -465,9 +460,7 @@ async def run_graph_with_store(
 
             if on_progress:
                 await on_progress(
-                    WorkflowEvent(
-                        type="completed", workflow_name=name, duration_ms=duration_ms
-                    )
+                    WorkflowEvent(type="completed", workflow_name=name, duration_ms=duration_ms)
                 )
 
         except PauseExecution:
@@ -481,9 +474,7 @@ async def run_graph_with_store(
             await store.update_node_status(
                 run_id, name, NodeStatus.SKIPPED, skip_reason="approval rejected"
             )
-            await _emit_event(store,
-                run_id, name, "NodeSkipped", {"reason": "approval rejected"}
-            )
+            await _emit_event(store, run_id, name, "NodeSkipped", {"reason": "approval rejected"})
             if on_rejection == "fail":
                 raise
 
@@ -491,7 +482,8 @@ async def run_graph_with_store(
             ctx.statuses[name] = "failed"
             ctx.errors[name] = exc
             await store.update_node_status(run_id, name, NodeStatus.FAILED, error=exc)
-            await _emit_event(store,
+            await _emit_event(
+                store,
                 run_id,
                 name,
                 "NodeFailed",
@@ -514,9 +506,7 @@ async def run_graph_with_store(
     # Execute level by level for run_graph_with_store
     try:
         for level in graph.levels:
-            tasks = [
-                asyncio.create_task(run_node_with_semaphore_main(name)) for name in level
-            ]
+            tasks = [asyncio.create_task(run_node_with_semaphore_main(name)) for name in level]
             if not tasks:
                 continue
 
@@ -539,35 +529,37 @@ async def run_graph_with_store(
         # Update run status to PAUSED and node status to PAUSED
         await store.update_node_status(run_id, exc.node_id, NodeStatus.PAUSED)
         await store.update_run_status(run_id, RunStatus.PAUSED)
-        await _emit_event(store,
-            run_id, exc.node_id, "RunPaused", {"node_id": exc.node_id, "message": exc.message}
+        await _emit_event(
+            store,
+            run_id,
+            exc.node_id,
+            "RunPaused",
+            {"node_id": exc.node_id, "message": exc.message},
         )
         raise
     except BaseException:
         # Update run status to FAILED
         await store.update_run_status(run_id, RunStatus.FAILED, finished=True)
-        await _emit_event(store,run_id, None, "RunFailed", {"errors": list(ctx.errors.keys())})
+        await _emit_event(store, run_id, None, "RunFailed", {"errors": list(ctx.errors.keys())})
         raise
 
     # Check for errors
     if ctx.errors:
         await store.update_run_status(run_id, RunStatus.FAILED, finished=True)
-        await _emit_event(store,run_id, None, "RunFailed", {"errors": list(ctx.errors.keys())})
+        await _emit_event(store, run_id, None, "RunFailed", {"errors": list(ctx.errors.keys())})
         first_name = next(iter(ctx.errors.keys()))
         raise WorkflowError(
             first_name,
             ctx.errors[first_name],
             completed=[
-                name
-                for name, status in ctx.statuses.items()
-                if status in {"success", "cached"}
+                name for name, status in ctx.statuses.items() if status in {"success", "cached"}
             ],
             errors=ctx.errors,
         )
 
     # Mark run as successful
     await store.update_run_status(run_id, RunStatus.SUCCESS, finished=True)
-    await _emit_event(store,run_id, None, "RunFinished", {})
+    await _emit_event(store, run_id, None, "RunFinished", {})
 
     total_duration = (time.perf_counter() - start_time) * 1000.0
     stats = ExecutionStats(
@@ -728,7 +720,7 @@ async def _maybe_require_approval(
     # Record approval request in store (if not already present)
     if existing_approval is None:
         await store.request_approval(run_id, wf.name, message)
-        await _emit_event(store,run_id, wf.name, "ApprovalRequested", {"prompt": message})
+        await _emit_event(store, run_id, wf.name, "ApprovalRequested", {"prompt": message})
 
     # In headless mode, pause execution instead of prompting
     if headless and approval_handler is None:
@@ -754,9 +746,7 @@ async def _maybe_require_approval(
 
     # Record decision in store
     await store.decide_approval(run_id, wf.name, approved)
-    await _emit_event(store,
-        run_id, wf.name, "ApprovalDecided", {"approved": approved}
-    )
+    await _emit_event(store, run_id, wf.name, "ApprovalDecided", {"approved": approved})
 
     approvals.append(
         ApprovalRecord(
@@ -883,7 +873,9 @@ async def resume_run(
                     ctx.outputs[node.node_id] = adapter.validate_python(raw_output)
                 else:
                     ctx.outputs[node.node_id] = raw_output
-                ctx.statuses[node.node_id] = "success" if node.status == NodeStatus.SUCCESS else "cached"
+                ctx.statuses[node.node_id] = (
+                    "success" if node.status == NodeStatus.SUCCESS else "cached"
+                )
         elif node.status == NodeStatus.SKIPPED:
             ctx.outputs[node.node_id] = None
             ctx.statuses[node.node_id] = "skipped"
@@ -892,7 +884,9 @@ async def resume_run(
 
     # Update run status to RUNNING
     await store.update_run_status(run_id, RunStatus.RUNNING)
-    await _emit_event(store,run_id, None, "RunResumed", {"restored_nodes": list(stored_outputs.keys())})
+    await _emit_event(
+        store, run_id, None, "RunResumed", {"restored_nodes": list(stored_outputs.keys())}
+    )
 
     semaphore = asyncio.Semaphore(max_concurrency) if max_concurrency else None
     start_time = time.perf_counter()
@@ -913,14 +907,14 @@ async def resume_run(
                 await store.update_node_status(
                     run_id, name, NodeStatus.SKIPPED, skip_reason="dependency failed"
                 )
-                await _emit_event(store,
-                    run_id, name, "NodeSkipped", {"reason": "dependency failed"}
+                await _emit_event(
+                    store, run_id, name, "NodeSkipped", {"reason": "dependency failed"}
                 )
                 return
 
         # Emit NodeReady event
         await store.update_node_status(run_id, name, NodeStatus.READY)
-        await _emit_event(store,run_id, name, "NodeReady", {})
+        await _emit_event(store, run_id, name, "NodeReady", {})
 
         if on_progress:
             await on_progress(WorkflowEvent(type="started", workflow_name=name))
@@ -937,22 +931,20 @@ async def resume_run(
                     ctx.outputs[name] = cached_value
                     ctx.statuses[name] = "cached"
                     ctx.results.append(
-                        WorkflowResult(
-                            name=name, output=cached_value, cached=True, duration_ms=0.0
-                        )
+                        WorkflowResult(name=name, output=cached_value, cached=True, duration_ms=0.0)
                     )
                     await store.update_node_status(
                         run_id, name, NodeStatus.CACHED, cache_key=cache_key
                     )
-                    cached_to_store = cached_value.model_dump() if hasattr(cached_value, "model_dump") else cached_value
-                    await store.store_node_output(run_id, name, cached_to_store)
-                    await _emit_event(store,
-                        run_id, name, "NodeCached", {"cache_key": cache_key}
+                    cached_to_store = (
+                        cached_value.model_dump()
+                        if hasattr(cached_value, "model_dump")
+                        else cached_value
                     )
+                    await store.store_node_output(run_id, name, cached_to_store)
+                    await _emit_event(store, run_id, name, "NodeCached", {"cache_key": cache_key})
                     if on_progress:
-                        await on_progress(
-                            WorkflowEvent(type="cached", workflow_name=name)
-                        )
+                        await on_progress(WorkflowEvent(type="cached", workflow_name=name))
                     return
 
             # Handle approval
@@ -985,7 +977,8 @@ async def resume_run(
 
             # Execute the workflow with retry support
             await store.update_node_status(run_id, name, NodeStatus.RUNNING)
-            await _emit_event(store,
+            await _emit_event(
+                store,
                 run_id,
                 name,
                 "NodeStarted",
@@ -1008,16 +1001,12 @@ async def resume_run(
                 ctx.outputs[name] = None
                 ctx.statuses[name] = "skipped"
                 ctx.results.append(
-                    WorkflowResult(
-                        name=name, output=None, cached=False, duration_ms=duration_ms
-                    )
+                    WorkflowResult(name=name, output=None, cached=False, duration_ms=duration_ms)
                 )
                 await store.update_node_status(
                     run_id, name, NodeStatus.SKIPPED, skip_reason=output.reason
                 )
-                await _emit_event(store,
-                    run_id, name, "NodeSkipped", {"reason": output.reason}
-                )
+                await _emit_event(store, run_id, name, "NodeSkipped", {"reason": output.reason})
                 if on_progress:
                     await on_progress(
                         WorkflowEvent(
@@ -1033,9 +1022,7 @@ async def resume_run(
             ctx.outputs[name] = validated
             ctx.statuses[name] = "success"
             ctx.results.append(
-                WorkflowResult(
-                    name=name, output=validated, cached=False, duration_ms=duration_ms
-                )
+                WorkflowResult(name=name, output=validated, cached=False, duration_ms=duration_ms)
             )
 
             # Store in cache
@@ -1060,9 +1047,12 @@ async def resume_run(
                 ),
             )
             # Store node output for potential resume
-            output_to_store = validated.model_dump() if hasattr(validated, "model_dump") else validated
+            output_to_store = (
+                validated.model_dump() if hasattr(validated, "model_dump") else validated
+            )
             await store.store_node_output(run_id, name, output_to_store)
-            await _emit_event(store,
+            await _emit_event(
+                store,
                 run_id,
                 name,
                 "NodeFinished",
@@ -1071,9 +1061,7 @@ async def resume_run(
 
             if on_progress:
                 await on_progress(
-                    WorkflowEvent(
-                        type="completed", workflow_name=name, duration_ms=duration_ms
-                    )
+                    WorkflowEvent(type="completed", workflow_name=name, duration_ms=duration_ms)
                 )
 
         except ApprovalRejected as exc:
@@ -1083,9 +1071,7 @@ async def resume_run(
             await store.update_node_status(
                 run_id, name, NodeStatus.SKIPPED, skip_reason="approval rejected"
             )
-            await _emit_event(store,
-                run_id, name, "NodeSkipped", {"reason": "approval rejected"}
-            )
+            await _emit_event(store, run_id, name, "NodeSkipped", {"reason": "approval rejected"})
             if on_rejection == "fail":
                 raise
 
@@ -1093,7 +1079,8 @@ async def resume_run(
             ctx.statuses[name] = "failed"
             ctx.errors[name] = exc
             await store.update_node_status(run_id, name, NodeStatus.FAILED, error=exc)
-            await _emit_event(store,
+            await _emit_event(
+                store,
                 run_id,
                 name,
                 "NodeFailed",
@@ -1116,9 +1103,7 @@ async def resume_run(
     # Execute level by level
     try:
         for level in graph.levels:
-            tasks = [
-                asyncio.create_task(run_node_with_semaphore(name)) for name in level
-            ]
+            tasks = [asyncio.create_task(run_node_with_semaphore(name)) for name in level]
             if not tasks:
                 continue
 
@@ -1138,28 +1123,26 @@ async def resume_run(
     except BaseException:
         # Update run status to FAILED
         await store.update_run_status(run_id, RunStatus.FAILED, finished=True)
-        await _emit_event(store,run_id, None, "RunFailed", {"errors": list(ctx.errors.keys())})
+        await _emit_event(store, run_id, None, "RunFailed", {"errors": list(ctx.errors.keys())})
         raise
 
     # Check for errors
     if ctx.errors:
         await store.update_run_status(run_id, RunStatus.FAILED, finished=True)
-        await _emit_event(store,run_id, None, "RunFailed", {"errors": list(ctx.errors.keys())})
+        await _emit_event(store, run_id, None, "RunFailed", {"errors": list(ctx.errors.keys())})
         first_name = next(iter(ctx.errors.keys()))
         raise WorkflowError(
             first_name,
             ctx.errors[first_name],
             completed=[
-                name
-                for name, status in ctx.statuses.items()
-                if status in {"success", "cached"}
+                name for name, status in ctx.statuses.items() if status in {"success", "cached"}
             ],
             errors=ctx.errors,
         )
 
     # Mark run as successful
     await store.update_run_status(run_id, RunStatus.SUCCESS, finished=True)
-    await _emit_event(store,run_id, None, "RunFinished", {})
+    await _emit_event(store, run_id, None, "RunFinished", {})
 
     total_duration = (time.perf_counter() - start_time) * 1000.0
     stats = ExecutionStats(
