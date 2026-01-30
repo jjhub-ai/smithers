@@ -157,6 +157,29 @@ from smithers.websocket import (
     status_message,
 )
 from smithers.workflow import require_approval, require_approval_async, retry, skip, workflow
+from smithers.conditions import (
+    Condition,
+    ConditionNotMetError,
+    ConditionPolicy,
+    all_of,
+    always,
+    any_of,
+    dep_succeeded,
+    evaluate_condition,
+    field_equals,
+    field_gt,
+    field_gte,
+    field_in,
+    field_lt,
+    get_condition_policy,
+    has_attr,
+    has_condition,
+    never,
+    not_,
+    run_if,
+    skip_if,
+    when,
+)
 
 # Re-export timeout from smithers.timeout for convenience
 # Already imported above, but including here for documentation
@@ -308,4 +331,26 @@ __all__ = [
     "verify_run_state",
     "verify_workflow_output",
     "workflow",
+    # Conditional execution
+    "Condition",
+    "ConditionNotMetError",
+    "ConditionPolicy",
+    "all_of",
+    "always",
+    "any_of",
+    "dep_succeeded",
+    "evaluate_condition",
+    "field_equals",
+    "field_gt",
+    "field_gte",
+    "field_in",
+    "field_lt",
+    "get_condition_policy",
+    "has_attr",
+    "has_condition",
+    "never",
+    "not_",
+    "run_if",
+    "skip_if",
+    "when",
 ]

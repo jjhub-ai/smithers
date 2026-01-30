@@ -51,6 +51,7 @@ class Workflow:
     bound_deps: dict[str, list[Workflow]] = field(default_factory=dict)
     retry_policy: RetryPolicy = field(default_factory=lambda: NO_RETRY)
     timeout_policy: Any = None  # TimeoutPolicy or None, avoiding circular import
+    condition_policy: Any = None  # ConditionPolicy or None, avoiding circular import
 
     async def __call__(self, *args: Any, **kwargs: Any) -> BaseModel:
         """Execute the workflow function."""
@@ -92,6 +93,7 @@ class Workflow:
             bound_deps=bound_deps,
             retry_policy=self.retry_policy,
             timeout_policy=self.timeout_policy,
+            condition_policy=self.condition_policy,
         )
 
 
@@ -209,6 +211,9 @@ def workflow(
         # Check if a @timeout decorator was applied
         timeout_policy = getattr(func, "_timeout_policy", None)
 
+        # Check if a @when/@skip_if/@run_if decorator was applied
+        condition_policy = getattr(func, "_condition_policy", None)
+
         wf = Workflow(
             name=func.__name__,
             fn=func,
@@ -223,6 +228,7 @@ def workflow(
             output_optional=output_optional,
             retry_policy=final_retry_policy,
             timeout_policy=timeout_policy,
+            condition_policy=condition_policy,
         )
 
         if register:
