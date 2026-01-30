@@ -697,3 +697,133 @@ def print_graph(
     """
     output = visualize_graph(graph, format, **kwargs)
     print(output)
+
+
+class ProgressVisualizer:
+    """
+    Real-time progress visualizer for graph execution.
+
+    Use with run_graph's on_progress callback to see live status updates.
+
+    Example:
+        from smithers import run_graph, build_graph
+        from smithers.visualization import ProgressVisualizer
+
+        graph = build_graph(my_workflow)
+        progress = ProgressVisualizer(graph)
+
+        result = await run_graph(
+            graph,
+            on_progress=progress.update,
+        )
+    """
+
+    def __init__(
+        self,
+        graph: WorkflowGraph,
+        *,
+        format: str = "table",
+        use_colors: bool = True,
+        use_unicode: bool = True,
+        clear_screen: bool = True,
+    ) -> None:
+        """
+        Initialize the progress visualizer.
+
+        Args:
+            graph: The workflow graph being executed
+            format: Visualization format ('table', 'summary', 'ascii')
+            use_colors: Whether to use ANSI colors
+            use_unicode: Whether to use Unicode characters
+            clear_screen: Whether to clear screen between updates
+        """
+        self.viz = GraphVisualization(
+            graph=graph,
+            use_colors=use_colors,
+            use_unicode=use_unicode,
+        )
+        self.format = format
+        self.clear_screen = clear_screen
+        self._started = False
+
+    async def update(self, event: Any) -> None:
+        """
+        Handle a workflow event and update the display.
+
+        This method is designed to be passed to run_graph's on_progress callback.
+        """
+        import sys
+
+        # Map event types to node statuses
+        event_type = getattr(event, "type", None)
+        workflow_name = getattr(event, "workflow_name", None)
+        duration_ms = getattr(event, "duration_ms", None)
+        message = getattr(event, "message", None)
+
+        if workflow_name is None:
+            return
+
+        if event_type == "started":
+            self.viz.update_status(workflow_name, NodeStatus.RUNNING)
+        elif event_type == "completed":
+            self.viz.update_status(workflow_name, NodeStatus.SUCCESS, duration_ms=duration_ms)
+        elif event_type == "cached":
+            self.viz.update_status(workflow_name, NodeStatus.CACHED)
+            self.viz.node_states[workflow_name].cached = True
+        elif event_type == "failed":
+            self.viz.update_status(workflow_name, NodeStatus.FAILED, error=message)
+        elif event_type == "skipped":
+            self.viz.update_status(workflow_name, NodeStatus.SKIPPED, skip_reason=message)
+
+        # Render and display
+        self._render()
+
+    def _render(self) -> None:
+        """Render the current state."""
+        import sys
+
+        if self.clear_screen:
+            # ANSI escape to clear screen and move cursor to top
+            print("\033[2J\033[H", end="", file=sys.stdout)
+
+        if self.format == "table":
+            print(self.viz.table(), file=sys.stdout)
+        elif self.format == "summary":
+            print(self.viz.summary(), file=sys.stdout)
+        elif self.format == "ascii":
+            print(self.viz.ascii(show_status=True, show_timing=True), file=sys.stdout)
+        else:
+            print(self.viz.summary(), file=sys.stdout)
+
+        sys.stdout.flush()
+
+    def final_report(self) -> str:
+        """Generate the final execution report."""
+        return self.viz.table() + "\n\n" + self.viz.summary()
+
+
+def create_progress_callback(
+    graph: WorkflowGraph,
+    format: str = "summary",
+    use_colors: bool = True,
+    use_unicode: bool = True,
+    clear_screen: bool = False,
+) -> tuple[ProgressVisualizer, Any]:
+    """
+    Create a progress callback function for run_graph.
+
+    Returns a tuple of (visualizer, callback_function).
+
+    Example:
+        viz, callback = create_progress_callback(graph)
+        result = await run_graph(graph, on_progress=callback)
+        print(viz.final_report())
+    """
+    visualizer = ProgressVisualizer(
+        graph,
+        format=format,
+        use_colors=use_colors,
+        use_unicode=use_unicode,
+        clear_screen=clear_screen,
+    )
+    return visualizer, visualizer.update

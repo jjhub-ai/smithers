@@ -12,10 +12,12 @@ from smithers.visualization import (
     GraphVisualization,
     NodeState,
     NodeStatus,
+    ProgressVisualizer,
     _colorize,
     _get_status_icon,
     _supports_color,
     _supports_unicode,
+    create_progress_callback,
     print_graph,
     visualize_graph,
 )
@@ -688,6 +690,167 @@ class TestComplexGraphs:
         table_out = visualize_graph(graph, format="table", use_colors=False, use_unicode=False)
         # Should have 6 nodes
         assert table_out.count("branch") == 4
+
+
+class TestProgressVisualizer:
+    """Tests for ProgressVisualizer class."""
+
+    def test_initialization(self, simple_graph):
+        """Test progress visualizer initialization."""
+        viz = ProgressVisualizer(
+            simple_graph,
+            format="table",
+            use_colors=False,
+            use_unicode=False,
+            clear_screen=False,
+        )
+        assert viz.format == "table"
+        assert viz.clear_screen is False
+        assert len(viz.viz.node_states) == 2
+
+    @pytest.mark.asyncio
+    async def test_update_started_event(self, simple_graph):
+        """Test handling started event."""
+        viz = ProgressVisualizer(
+            simple_graph,
+            format="summary",
+            use_colors=False,
+            use_unicode=False,
+            clear_screen=False,
+        )
+
+        # Simulate a started event
+        class MockEvent:
+            type = "started"
+            workflow_name = "step_a"
+            duration_ms = None
+            message = None
+
+        await viz.update(MockEvent())
+        assert viz.viz.node_states["step_a"].status == NodeStatus.RUNNING
+
+    @pytest.mark.asyncio
+    async def test_update_completed_event(self, simple_graph):
+        """Test handling completed event."""
+        viz = ProgressVisualizer(
+            simple_graph,
+            format="summary",
+            use_colors=False,
+            use_unicode=False,
+            clear_screen=False,
+        )
+
+        class MockEvent:
+            type = "completed"
+            workflow_name = "step_a"
+            duration_ms = 150.0
+            message = None
+
+        await viz.update(MockEvent())
+        assert viz.viz.node_states["step_a"].status == NodeStatus.SUCCESS
+        assert viz.viz.node_states["step_a"].duration_ms == 150.0
+
+    @pytest.mark.asyncio
+    async def test_update_cached_event(self, simple_graph):
+        """Test handling cached event."""
+        viz = ProgressVisualizer(
+            simple_graph,
+            format="summary",
+            use_colors=False,
+            use_unicode=False,
+            clear_screen=False,
+        )
+
+        class MockEvent:
+            type = "cached"
+            workflow_name = "step_b"
+            duration_ms = None
+            message = None
+
+        await viz.update(MockEvent())
+        assert viz.viz.node_states["step_b"].status == NodeStatus.CACHED
+        assert viz.viz.node_states["step_b"].cached is True
+
+    @pytest.mark.asyncio
+    async def test_update_failed_event(self, simple_graph):
+        """Test handling failed event."""
+        viz = ProgressVisualizer(
+            simple_graph,
+            format="summary",
+            use_colors=False,
+            use_unicode=False,
+            clear_screen=False,
+        )
+
+        class MockEvent:
+            type = "failed"
+            workflow_name = "step_a"
+            duration_ms = None
+            message = "Something went wrong"
+
+        await viz.update(MockEvent())
+        assert viz.viz.node_states["step_a"].status == NodeStatus.FAILED
+        assert viz.viz.node_states["step_a"].error == "Something went wrong"
+
+    @pytest.mark.asyncio
+    async def test_update_skipped_event(self, simple_graph):
+        """Test handling skipped event."""
+        viz = ProgressVisualizer(
+            simple_graph,
+            format="summary",
+            use_colors=False,
+            use_unicode=False,
+            clear_screen=False,
+        )
+
+        class MockEvent:
+            type = "skipped"
+            workflow_name = "step_b"
+            duration_ms = None
+            message = "Dependency failed"
+
+        await viz.update(MockEvent())
+        assert viz.viz.node_states["step_b"].status == NodeStatus.SKIPPED
+
+    def test_final_report(self, simple_graph):
+        """Test final report generation."""
+        viz = ProgressVisualizer(
+            simple_graph,
+            format="table",
+            use_colors=False,
+            use_unicode=False,
+            clear_screen=False,
+        )
+        viz.viz.update_status("step_a", NodeStatus.SUCCESS, duration_ms=100.0)
+        viz.viz.update_status("step_b", NodeStatus.SUCCESS, duration_ms=200.0)
+
+        report = viz.final_report()
+        assert "step_a" in report
+        assert "step_b" in report
+        assert "Total nodes" in report
+
+
+class TestCreateProgressCallback:
+    """Tests for create_progress_callback function."""
+
+    def test_create_callback(self, simple_graph):
+        """Test creating a progress callback."""
+        viz, callback = create_progress_callback(
+            simple_graph,
+            format="summary",
+            use_colors=False,
+            use_unicode=False,
+            clear_screen=False,
+        )
+        assert isinstance(viz, ProgressVisualizer)
+        assert callable(callback)
+        assert callback == viz.update
+
+    def test_callback_defaults(self, simple_graph):
+        """Test default parameters for progress callback."""
+        viz, callback = create_progress_callback(simple_graph)
+        assert viz.format == "summary"
+        assert viz.clear_screen is False
 
 
 class TestEdgeCases:

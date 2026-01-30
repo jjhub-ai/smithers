@@ -108,6 +108,8 @@ from smithers.visualization import (
     GraphVisualization,
     NodeState,
     NodeStatus,
+    ProgressVisualizer,
+    create_progress_callback,
     print_graph,
     visualize_graph,
 )
@@ -120,6 +122,8 @@ __all__ = [
     "GraphVisualization",
     "NodeState",
     "NodeStatus",
+    "ProgressVisualizer",
+    "create_progress_callback",
     "print_graph",
     "visualize_graph",
     # Other exports
