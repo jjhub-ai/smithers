@@ -9,6 +9,15 @@ from smithers.cache import Cache, SqliteCache
 from smithers.claude import claude
 from smithers.config import configure
 from smithers.errors import ApprovalRejected, ClaudeError, RateLimitError, WorkflowError
+from smithers.events import (
+    Event,
+    EventBus,
+    EventTypes,
+    Subscription,
+    get_event_bus,
+    reset_event_bus,
+    set_event_bus,
+)
 from smithers.executor import PauseExecution, resume_run, run_graph_with_store
 from smithers.graph import build_graph, run_graph
 from smithers.hashing import cache_key, canonical_json, hash_json, hash_string
@@ -63,6 +72,9 @@ __all__ = [
     "CacheStats",
     "CacheVerificationResult",
     "ClaudeError",
+    "Event",
+    "EventBus",
+    "EventTypes",
     "ExecutionResult",
     "FakeLLMProvider",
     "GraphVerificationResult",
@@ -81,6 +93,7 @@ __all__ = [
     "RuntimeContext",
     "SqliteCache",
     "SqliteStore",
+    "Subscription",
     "Tool",
     "VerificationIssue",
     "WorkflowError",
@@ -93,15 +106,18 @@ __all__ = [
     "configure",
     "full_verification",
     "get_current_context",
+    "get_event_bus",
     "hash_json",
     "hash_string",
     "require_approval",
     "require_approval_async",
+    "reset_event_bus",
     "resume_run",
     "retry",
     "run_graph",
     "run_graph_with_store",
     "runtime_context",
+    "set_event_bus",
     "skip",
     "use_fake_llm",
     "use_recording",
