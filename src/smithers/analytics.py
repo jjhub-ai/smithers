@@ -256,7 +256,7 @@ class TokenBudget:
     used_input_tokens: int = field(default=0, init=False)
     used_output_tokens: int = field(default=0, init=False)
     used_cost_usd: float = field(default=0.0, init=False)
-    _warnings: list[str] = field(default_factory=list, init=False)
+    _warnings: list[str] = field(default_factory=lambda: list[str](), init=False)
 
     def record_usage(
         self,
@@ -282,7 +282,7 @@ class TokenBudget:
         if cost_usd is not None:
             self.used_cost_usd += cost_usd
 
-        messages = []
+        messages: list[str] = []
 
         # Check input tokens
         if self.max_input_tokens is not None and self.used_input_tokens > self.max_input_tokens:
@@ -443,8 +443,8 @@ class UsageSummary:
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     total_cost_usd: float = 0.0
-    models: dict[str, int] = field(default_factory=dict)
-    by_node: dict[str, UsageSummary] = field(default_factory=dict)
+    models: dict[str, int] = field(default_factory=lambda: dict[str, int]())
+    by_node: dict[str, UsageSummary] = field(default_factory=lambda: dict[str, UsageSummary]())
     period_start: datetime | None = None
     period_end: datetime | None = None
 
@@ -629,6 +629,9 @@ class UsageAnalytics:
         Returns:
             Dict mapping model names to UsageSummary
         """
+        from smithers.store.sqlite import LLMCall
+
+        llm_calls: list[LLMCall]
         if run_id:
             llm_calls = await self.store.get_llm_calls(run_id)
         else:
@@ -781,7 +784,7 @@ async def get_daily_usage(
         List of daily usage summaries
     """
     analytics = UsageAnalytics(store)
-    results = []
+    results: list[dict[str, Any]] = []
 
     for i in range(days):
         day_end = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=i)
