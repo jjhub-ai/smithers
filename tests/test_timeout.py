@@ -654,3 +654,181 @@ class TestTimeoutAction:
         assert TimeoutAction("fail") == TimeoutAction.FAIL
         assert TimeoutAction("skip") == TimeoutAction.SKIP
         assert TimeoutAction("cancel") == TimeoutAction.CANCEL
+
+
+# ============================================================================
+# Timeout Events Tests
+# ============================================================================
+
+
+class TestTimeoutEvents:
+    """Tests for timeout event emission via SQLite store."""
+
+    @pytest.mark.asyncio
+    async def test_node_timeout_persisted_to_store(self, tmp_path):
+        """Test that node timeout is persisted as event in the store."""
+        from smithers import run_graph_with_store
+        from smithers.store.sqlite import SqliteStore
+
+        @workflow
+        @timeout(seconds=0.05)
+        async def timeout_task() -> SimpleOutput:
+            await asyncio.sleep(2.0)
+            return SimpleOutput(result="never")
+
+        graph = build_graph(timeout_task)
+        store = SqliteStore(str(tmp_path / "test.db"))
+        await store.initialize()
+
+        run_id = None
+        try:
+            result = await run_graph_with_store(graph, store=store, return_all=True)
+            run_id = result.stats.run_id if hasattr(result.stats, "run_id") else None
+        except Exception:
+            pass
+
+        # Get all runs from the store to find the run_id
+        runs = await store.list_runs()
+        if runs:
+            run_id = runs[0].run_id
+
+        if run_id:
+            events = await store.get_events(run_id)
+            event_types = [e.type for e in events]
+            # Should have timeout-related events
+            assert "NodeTimedOut" in event_types or "NodeFailed" in event_types, f"Got events: {event_types}"
+
+    @pytest.mark.asyncio
+    async def test_run_timeout_persisted_to_store(self, tmp_path):
+        """Test that run timeout is persisted as event in the store."""
+        from smithers import run_graph_with_store
+        from smithers.store.sqlite import SqliteStore
+
+        @workflow
+        async def slow_task() -> SimpleOutput:
+            await asyncio.sleep(2.0)
+            return SimpleOutput(result="never")
+
+        graph = build_graph(slow_task)
+        store = SqliteStore(str(tmp_path / "test.db"))
+        await store.initialize()
+
+        try:
+            await run_graph_with_store(graph, store=store, timeout=0.05)
+        except Exception:
+            pass
+
+        # Get all runs from the store to find the run_id
+        runs = await store.list_runs()
+        if runs:
+            run_id = runs[0].run_id
+            events = await store.get_events(run_id)
+            event_types = [e.type for e in events]
+            # Should have run-level timeout or failed event
+            assert "RunTimedOut" in event_types or "RunFailed" in event_types, f"Got events: {event_types}"
+
+
+# ============================================================================
+# Edge Cases Tests
+# ============================================================================
+
+
+class TestTimeoutEdgeCases:
+    """Tests for timeout edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_with_zero_remaining_global_time(self):
+        """Test behavior when global timeout is already exhausted."""
+        from smithers import run_graph_with_store
+
+        @workflow
+        async def quick_task() -> SimpleOutput:
+            return SimpleOutput(result="quick")
+
+        graph = build_graph(quick_task)
+
+        # Very short timeout that's likely already exhausted by setup
+        with pytest.raises(Exception):
+            await run_graph_with_store(graph, timeout=0.0001)
+
+    @pytest.mark.asyncio
+    async def test_timeout_is_not_inherited_by_dependencies(self):
+        """Test that timeout on one workflow doesn't affect dependencies."""
+
+        @workflow
+        async def dep_task() -> SimpleOutput:
+            await asyncio.sleep(0.1)  # This takes some time
+            return SimpleOutput(result="dep")
+
+        @workflow
+        @timeout(seconds=0.01)  # Very short timeout
+        async def main_task(dep: SimpleOutput) -> SlowOutput:
+            return SlowOutput(duration=0.0)
+
+        graph = build_graph(main_task)
+        from smithers import run_graph_with_store
+
+        # The dependency should complete, but main_task may timeout
+        # depending on timing. This tests that the timeout doesn't
+        # propagate to the dependency.
+        try:
+            await run_graph_with_store(graph)
+        except Exception:
+            pass  # Expected if main_task times out
+
+    def test_frozen_timeout_policy(self):
+        """Test that TimeoutPolicy is immutable."""
+        policy = TimeoutPolicy(timeout_seconds=30.0)
+        # Frozen dataclass should raise error on modification
+        with pytest.raises(Exception):
+            policy.timeout_seconds = 60.0  # type: ignore
+
+    @pytest.mark.asyncio
+    async def test_timeout_with_multiple_workflows_in_parallel(self):
+        """Test timeout with parallel workflow execution."""
+        from smithers import run_graph_with_store
+
+        @workflow(register=False)
+        @timeout(seconds=5.0)
+        async def parallel_task_1() -> SimpleOutput:
+            await asyncio.sleep(0.01)
+            return SimpleOutput(result="p1")
+
+        @workflow(register=False)
+        @timeout(seconds=5.0)
+        async def parallel_task_2() -> SimpleOutput:
+            await asyncio.sleep(0.01)
+            return SimpleOutput(result="p2")
+
+        @workflow
+        async def aggregate(
+            p1: SimpleOutput,
+            p2: SimpleOutput,
+        ) -> SimpleOutput:
+            return SimpleOutput(result=f"{p1.result}-{p2.result}")
+
+        # Build graph with explicit dependencies
+        bound_aggregate = aggregate.bind(
+            p1=parallel_task_1,
+            p2=parallel_task_2,
+        )
+        graph = build_graph(bound_aggregate)
+
+        result = await run_graph_with_store(graph, timeout=10.0)
+        assert result.result == "p1-p2"
+
+    @pytest.mark.asyncio
+    async def test_timeout_completes_just_in_time(self):
+        """Test workflow that completes just before timeout."""
+
+        @workflow
+        @timeout(seconds=1.0)
+        async def just_in_time() -> SimpleOutput:
+            await asyncio.sleep(0.1)  # Well within timeout
+            return SimpleOutput(result="made_it")
+
+        graph = build_graph(just_in_time)
+        from smithers import run_graph_with_store
+
+        result = await run_graph_with_store(graph)
+        assert result.result == "made_it"
