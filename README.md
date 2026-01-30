@@ -361,32 +361,36 @@ async def deploy(impl: ImplementOutput) -> DeployOutput:
 
 ---
 
-## State Management
+## Architecture
 
-Smithers uses SQLite as the source of truth. The core loop:
+Smithers is built on three core principles:
 
-```python
-from smithers import SqliteState, build_plan, run_plan
+1. **Plan before execute** — `build_graph()` produces a frozen plan. Execution only consumes it.
+2. **SQLite as system of record** — All state (runs, cache, events, approvals) lives in SQLite.
+3. **Verification + visibility** — Every step is validated, hashed, logged, and queryable.
 
-state = SqliteState("./smithers.db")
+```mermaid
+flowchart LR
+  subgraph Plan["Plan Phase"]
+    W["@workflow"] --> R["Registry"]
+    R --> B["GraphBuilder"]
+    B --> G["WorkflowGraph"]
+  end
 
-# The loop
-while True:
-    # 1. Read current state
-    current = await state.get()
-    
-    # 2. Render a plan from state
-    plan = build_plan(current)
-    
-    if plan.is_empty():
-        break
-    
-    # 3. Execute the plan
-    result = await run_plan(plan)
-    
-    # 4. Update state (triggers re-render)
-    await state.update(result)
+  subgraph Execute["Execution Phase"]
+    G --> E["ExecutionEngine"]
+    E --> S[("SQLite")]
+    E --> L["Claude"]
+    E --> T["Tools"]
+  end
+
+  subgraph Observe["Visibility"]
+    S --> CLI["smithers watch"]
+    S --> UI["Web UI"]
+  end
 ```
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design.
 
 ---
 
@@ -450,11 +454,13 @@ configure(
 
 See the [examples/](./examples) directory:
 
-- [simple.py](./examples/simple.py) — Basic workflow
-- [parallel.py](./examples/parallel.py) — Parallel execution
-- [caching.py](./examples/caching.py) — Cached workflows
-- [code-review.py](./examples/code-review.py) — Multi-agent code review
-- [research.py](./examples/research.py) — Deep research agent
+- [01_hello_world.py](./examples/01_hello_world.py) — Basic workflow
+- [02_dependencies.py](./examples/02_dependencies.py) — Workflow dependencies
+- [03_parallel.py](./examples/03_parallel.py) — Parallel execution
+- [04_caching.py](./examples/04_caching.py) — Cached workflows
+- [05_tools.py](./examples/05_tools.py) — Tool usage
+- [06_code_review_pipeline.py](./examples/06_code_review_pipeline.py) — Multi-agent code review
+- [07_research_agent.py](./examples/07_research_agent.py) — Deep research agent
 
 ---
 

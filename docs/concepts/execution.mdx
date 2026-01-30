@@ -3,20 +3,20 @@ title: Execution
 description: How Smithers executes workflow graphs
 ---
 
-The `run_graph` function executes a workflow graph, handling parallelism, caching, and error recovery.
+The `run_graph` function executes a workflow graph, handling parallelism, caching, and error recovery. All execution state is persisted to SQLite for constant visibility.
 
 ## Basic Execution
 
 ```python
-from smithers import build_graph, run_graph
+from smithers import build_graph, run_graph, SqliteCache
 
 graph = build_graph(final_workflow)
-result = await run_graph(graph)
+result = await run_graph(graph, cache=SqliteCache("./smithers.db"))
 ```
 
 ## Execution Model
 
-Smithers executes workflows **level by level**:
+Smithers executes workflows **level by level**, persisting state to SQLite at each step:
 
 1. Run all Level 0 workflows in parallel
 2. Wait for all to complete
@@ -118,9 +118,25 @@ Stop all execution on first failure:
 result = await run_graph(graph, fail_fast=True)
 ```
 
-## Progress Tracking
+## Progress Tracking (SQLite Events)
 
-Monitor execution progress with callbacks:
+All execution events are persisted to SQLite for constant visibility:
+
+```python
+# Events are automatically logged to SQLite:
+# - RunStarted, RunFinished, RunFailed
+# - NodeReady, NodeStarted, NodeFinished, NodeCached, NodeFailed
+# - LLMCallStarted, LLMCallFinished
+# - ToolCallStarted, ToolCallFinished
+
+# Monitor with CLI:
+# smithers watch ./smithers.db --run <run_id>
+
+# Or query directly:
+# SELECT * FROM events WHERE run_id = ? ORDER BY event_id
+```
+
+Optionally add in-process callbacks:
 
 ```python
 async def on_progress(event: WorkflowEvent):
@@ -128,8 +144,6 @@ async def on_progress(event: WorkflowEvent):
         print(f"Starting {event.workflow_name}")
     elif event.type == "completed":
         print(f"Completed {event.workflow_name} in {event.duration_ms}ms")
-    elif event.type == "cached":
-        print(f"Skipped {event.workflow_name} (cached)")
 
 result = await run_graph(graph, on_progress=on_progress)
 ```

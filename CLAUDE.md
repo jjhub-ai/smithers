@@ -6,12 +6,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
 
 Smithers is a Python framework for composing LLM agents into type-safe, cacheable, parallel workflows. It uses Pydantic for validation and uv for package management.
 
-## Key Architecture
+## Architecture Principles
+
+1. **Plan before execute** — `build_graph()` produces a frozen plan. Execution only consumes it.
+2. **SQLite as system of record** — All state (runs, cache, events, approvals) lives in SQLite.
+3. **Verification + visibility** — Every step is validated, hashed, logged, and queryable.
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design.
+
+## Key Components
 
 - **Workflows** — Async functions decorated with `@workflow` that return Pydantic models
-- **Dependencies** — Inferred from function type hints (no manual wiring)
-- **Graph** — Built automatically from dependency analysis, enables parallel execution
-- **Caching** — SQLite-based, skips unchanged work based on input hashing
+- **Registry** — Maps output types to workflows for dependency resolution
+- **GraphBuilder** — Constructs frozen `WorkflowGraph` plans from workflows
+- **ExecutionEngine** — Runs graphs level-by-level with parallel execution
+- **SqliteStore** — Persistent cache, runs, events, and approvals
+- **ClaudeProvider** — LLM integration with tool loop and structured output
 
 ## Commands
 
@@ -32,34 +42,50 @@ uv run ruff check .
 uv run ruff format .
 
 # Run a workflow
-uv run python -m smithers run examples/simple.py
+uv run python examples/01_hello_world.py
 ```
 
 ## Project Structure
 
 ```
 smithers/
-├── src/
-│   └── smithers/
-│       ├── __init__.py      # Public API exports
-│       ├── workflow.py      # @workflow decorator
-│       ├── graph.py         # Graph building and execution
-│       ├── claude.py        # Claude LLM integration
-│       ├── cache.py         # SQLite caching
-│       └── types.py         # Core types
+├── src/smithers/
+│   ├── __init__.py      # Public API exports
+│   ├── core/
+│   │   ├── types.py     # NodeStatus, RunStatus, RetryPolicy
+│   │   ├── workflow.py  # @workflow decorator, Workflow wrapper
+│   │   ├── registry.py  # WorkflowRegistry
+│   │   ├── graph.py     # WorkflowGraph, GraphNode, DepBinding
+│   │   ├── builder.py   # build_graph algorithm
+│   │   ├── executor.py  # run_graph execution engine
+│   │   ├── events.py    # Event models
+│   │   └── hashing.py   # Canonical JSON + hashing
+│   ├── llm/
+│   │   ├── provider.py  # LLMProvider protocol
+│   │   └── claude.py    # Claude implementation
+│   ├── tools/
+│   │   ├── base.py      # Tool protocol
+│   │   ├── registry.py  # ToolRegistry
+│   │   └── builtins/    # Read, Edit, Bash
+│   ├── store/
+│   │   └── sqlite.py    # SqliteStore
+│   └── approvals/
+│       └── cli.py       # CLI approval provider
 ├── tests/
 ├── examples/
+├── docs/                # Mintlify documentation
+├── ARCHITECTURE.md      # Full architecture design
 ├── pyproject.toml
 └── README.md
 ```
 
 ## Code Style
 
-- Python 3.11+
+- Python 3.12+
 - Type hints on all public functions
 - Pydantic models for all data structures
 - Async-first (use `async def` for workflows)
-- No classes for workflows — plain functions with decorators
+- Dataclasses with `frozen=True` for immutable data
 
 ## Key Patterns
 
@@ -80,30 +106,40 @@ async def my_workflow() -> Output:
 ```python
 @workflow
 async def step_two(step_one_output: StepOneOutput) -> StepTwoOutput:
-    # step_one_output is automatically resolved
+    # step_one_output is automatically resolved from registry
     ...
 ```
 
 ### Graph Execution
 ```python
-from smithers import build_graph, run_graph
+from smithers import build_graph, run_graph, SqliteCache
 
-graph = build_graph(final_workflow)  # Walks deps automatically
-result = await run_graph(graph)
+graph = build_graph(final_workflow)  # Frozen plan
+result = await run_graph(graph, cache=SqliteCache("./cache.db"))
 ```
+
+## System Invariants
+
+- **I1**: WorkflowGraph must be a DAG (cycle detection at plan time)
+- **I2**: Each node's output is validated at runtime (Pydantic TypeAdapter)
+- **I3**: Every node run is content-addressed: `cache_key = H(workflow_id + code_hash + input_hash + runtime_hash)`
+- **I4**: Every state transition is persisted to SQLite
+- **I5**: Cache entries must be schema-valid and hash-consistent
+- **I6**: Approvals are persisted gates; execution can pause and resume
 
 ## Testing
 
 - Use pytest with pytest-asyncio
-- Mock Claude calls in unit tests
-- Integration tests can use real Claude with `@pytest.mark.integration`
+- Mock Claude with `FakeLLMProvider` for deterministic tests
+- Test graphs without execution using `build_graph`
+- Workflows can be called directly for unit tests
 
 ## Dependencies
 
 Core:
-- `pydantic` — Data validation and schemas
-- `anthropic` — Claude API client
-- `aiosqlite` — Async SQLite for caching
+- `pydantic>=2.0` — Data validation and schemas
+- `anthropic>=0.40` — Claude API client
+- `aiosqlite>=0.20` — Async SQLite for storage
 
 Dev:
 - `pytest` / `pytest-asyncio` — Testing

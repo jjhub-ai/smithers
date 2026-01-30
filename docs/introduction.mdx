@@ -50,19 +50,19 @@ Most agent frameworks are either too simple (single agent, no composition) or to
 
 ## Core Philosophy
 
-Smithers is built on three principles:
+Smithers is built on three architectural principles:
 
-1. **Workflows are functions** — Not classes, not state machines. Just async functions with type hints.
+1. **Plan before execute** — `build_graph()` produces a frozen plan. Execution only consumes it.
 
-2. **Data flows through types** — Pydantic models define what each workflow produces and consumes.
+2. **SQLite as system of record** — All state (runs, cache, events, approvals) lives in SQLite for constant visibility.
 
-3. **The graph is derived** — You don't wire workflows together. The dependency graph is inferred from type hints.
+3. **Verification + visibility** — Every step is validated, hashed, logged, and queryable in near-real time.
 
 ## Inspired By
 
 - **Bazel** — Explicit dependencies, automatic parallelization, caching based on input hashing
 - **Pydantic** — Type-safe data validation and schemas  
-- **React** — Declarative, component-based thinking
+- **SQLite** — Simple, reliable persistence as the source of truth
 
 ## Next Steps
 
