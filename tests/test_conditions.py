@@ -645,3 +645,201 @@ class TestDecoratorOrder:
 
         assert maybe_run.condition_policy is not None
         assert maybe_run.condition_policy.skip_reason == "Skipping"
+
+
+# ========================
+# Integration with run_graph_with_store tests
+# ========================
+
+
+class TestConditionWithStore:
+    """Tests for conditions with run_graph_with_store."""
+
+    @pytest.mark.asyncio
+    async def test_condition_skips_with_store(self):
+        """Condition skips workflow when using run_graph_with_store."""
+        from smithers import run_graph_with_store
+        from smithers.store.sqlite import SqliteStore
+        import tempfile
+
+        @workflow
+        async def run_tests() -> CheckOutput:
+            return CheckOutput(passed=False, coverage=0.5)
+
+        @workflow
+        @when(lambda deps: deps.tests.passed, skip_reason="Tests failed")
+        async def deploy(tests: CheckOutput) -> DeployOutput:
+            return DeployOutput(deployed=True)
+
+        graph = build_graph(deploy)
+
+        with tempfile.NamedTemporaryFile(suffix=".db") as f:
+            store = SqliteStore(f.name)
+            result = await run_graph_with_store(graph, store=store, return_all=True)
+
+            assert result.outputs["deploy"] is None
+
+    @pytest.mark.asyncio
+    async def test_condition_emits_event_with_store(self):
+        """Condition skip emits proper event when using run_graph_with_store."""
+        from smithers import run_graph_with_store
+        from smithers.store.sqlite import SqliteStore
+        import tempfile
+
+        events: list = []
+
+        @workflow
+        async def run_tests() -> CheckOutput:
+            return CheckOutput(passed=False, coverage=0.5)
+
+        @workflow
+        @when(lambda deps: deps.tests.passed, skip_reason="Tests failed")
+        async def deploy(tests: CheckOutput) -> DeployOutput:
+            return DeployOutput(deployed=True)
+
+        graph = build_graph(deploy)
+
+        async def capture_events(event):
+            events.append(event)
+
+        with tempfile.NamedTemporaryFile(suffix=".db") as f:
+            store = SqliteStore(f.name)
+            await run_graph_with_store(
+                graph,
+                store=store,
+                return_all=True,
+                on_progress=capture_events,
+            )
+
+            # Should have a skipped event for deploy
+            skip_events = [e for e in events if e.type == "skipped" and e.workflow_name == "deploy"]
+            assert len(skip_events) == 1
+            assert "condition" in skip_events[0].message.lower() or "Tests failed" in skip_events[0].message
+
+
+# ========================
+# Bound workflow tests
+# ========================
+
+
+class TestConditionWithBoundWorkflows:
+    """Tests for conditions with bound workflows."""
+
+    @pytest.mark.asyncio
+    async def test_condition_with_bound_dependency(self):
+        """Condition works with workflows that have bound dependencies."""
+
+        @workflow(register=False)
+        async def get_tests() -> CheckOutput:
+            return CheckOutput(passed=True, coverage=0.9)
+
+        @workflow(register=False)
+        @when(
+            # When using bind(), bound_deps creates a list, so access via [0]
+            lambda deps: deps.tests[0].passed and deps.tests[0].coverage > 0.8,
+            skip_reason="Coverage below threshold",
+        )
+        async def deploy(tests: CheckOutput) -> DeployOutput:
+            return DeployOutput(deployed=True)
+
+        # Bind the dependency
+        bound_deploy = deploy.bind(tests=get_tests)
+        graph = build_graph(bound_deploy)
+        result = await run_graph(graph, return_all=True)
+
+        assert result.outputs[bound_deploy.name] is not None
+        assert result.outputs[bound_deploy.name].deployed is True
+
+    @pytest.mark.asyncio
+    async def test_condition_skips_bound_workflow(self):
+        """Condition can skip a bound workflow."""
+
+        @workflow(register=False)
+        async def get_tests() -> CheckOutput:
+            return CheckOutput(passed=True, coverage=0.6)  # Below threshold
+
+        @workflow(register=False)
+        @when(
+            # When using bind(), bound_deps creates a list, so access via [0]
+            lambda deps: deps.tests[0].passed and deps.tests[0].coverage > 0.8,
+            skip_reason="Coverage below threshold",
+        )
+        async def deploy(tests: CheckOutput) -> DeployOutput:
+            return DeployOutput(deployed=True)
+
+        # Bind the dependency
+        bound_deploy = deploy.bind(tests=get_tests)
+        graph = build_graph(bound_deploy)
+        result = await run_graph(graph, return_all=True)
+
+        # Should be skipped because coverage (0.6) < threshold (0.8)
+        assert result.outputs[bound_deploy.name] is None
+
+
+# ========================
+# Visualization tests
+# ========================
+
+
+class TestConditionVisualization:
+    """Tests for condition-related visualization."""
+
+    def test_graph_mermaid_shows_conditional_nodes(self):
+        """Graph mermaid diagram includes conditional nodes."""
+
+        @workflow
+        async def run_tests() -> CheckOutput:
+            return CheckOutput(passed=True)
+
+        @workflow
+        @when(lambda deps: deps.tests.passed)
+        async def deploy(tests: CheckOutput) -> DeployOutput:
+            return DeployOutput(deployed=True)
+
+        graph = build_graph(deploy)
+        mermaid = graph.mermaid()
+
+        assert "run_tests" in mermaid
+        assert "deploy" in mermaid
+        assert "-->" in mermaid  # Shows dependency relationship
+
+
+# ========================
+# Parallel execution tests
+# ========================
+
+
+class TestConditionParallelExecution:
+    """Tests for conditions in parallel execution."""
+
+    @pytest.mark.asyncio
+    async def test_parallel_conditions_evaluated_independently(self):
+        """Conditions in parallel nodes are evaluated independently."""
+
+        # Test branch_a - condition passes
+        @workflow(register=False)
+        @when(lambda deps: deps.source[0].passed)  # Bound deps are lists
+        async def test_branch_a(source: CheckOutput) -> ConfigOutput:
+            return ConfigOutput(env="a")
+
+        @workflow(register=False)
+        async def test_source_a() -> CheckOutput:
+            return CheckOutput(passed=True, coverage=0.7)
+
+        bound_a = test_branch_a.bind(source=test_source_a)
+        result_a = await run_graph(build_graph(bound_a), return_all=True)
+        assert result_a.outputs[bound_a.name] is not None
+
+        # Test branch_b - condition fails
+        @workflow(register=False)
+        @when(lambda deps: deps.source[0].coverage > 0.8)  # Bound deps are lists
+        async def test_branch_b(source: CheckOutput) -> DeployOutput:
+            return DeployOutput(deployed=True)
+
+        @workflow(register=False)
+        async def test_source_b() -> CheckOutput:
+            return CheckOutput(passed=True, coverage=0.7)
+
+        bound_b = test_branch_b.bind(source=test_source_b)
+        result_b = await run_graph(build_graph(bound_b), return_all=True)
+        assert result_b.outputs[bound_b.name] is None  # Skipped due to condition
