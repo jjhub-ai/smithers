@@ -49,6 +49,13 @@ if TYPE_CHECKING:
     pass
 
 
+def _is_ralph_loop(wf: Workflow) -> bool:
+    """Check if a workflow is a Ralph loop."""
+    from smithers.ralph_loop import is_ralph_loop
+
+    return is_ralph_loop(wf)
+
+
 async def _emit_event(
     store: SqliteStore,
     run_id: str,
@@ -180,6 +187,135 @@ async def _execute_with_retry(
     if last_exception is not None:
         raise last_exception
     raise RuntimeError("Unexpected state: no result and no exception")
+
+
+async def _execute_ralph_loop_node(
+    wf: Workflow,
+    kwargs: dict[str, Any],
+    *,
+    run_id: str,
+    node_id: str,
+    store: SqliteStore,
+    on_progress: Callable[[WorkflowEvent], Awaitable[None]] | None = None,
+) -> tuple[Any, float, int]:
+    """
+    Execute a Ralph loop workflow with full iteration tracking.
+
+    Returns:
+        Tuple of (output, total_duration_ms, iteration_count)
+    """
+    from smithers.ralph_loop import RalphLoopWorkflow
+
+    if not isinstance(wf, RalphLoopWorkflow):
+        raise TypeError("Workflow must be a RalphLoopWorkflow")
+
+    config = wf.loop_config
+    inner_workflow = wf.inner_workflow
+
+    if inner_workflow is None:
+        raise ValueError("RalphLoopWorkflow has no inner_workflow set")
+
+    # Get the initial input from kwargs
+    # The loop should take a single input parameter
+    input_params = list(wf.input_types.keys())
+    if not input_params:
+        raise ValueError("Ralph loop must have at least one input parameter")
+
+    # For the first iteration, use the input from kwargs
+    # For subsequent iterations, use the output of the previous iteration
+    first_param = input_params[0]
+    current = kwargs.get(first_param)
+
+    if current is None:
+        raise ValueError(f"Missing input for Ralph loop parameter: {first_param}")
+
+    total_duration_ms = 0.0
+    final_iteration = 0
+    start_time = time.perf_counter()
+
+    for iteration in range(config.max_iterations):
+        final_iteration = iteration + 1
+
+        # Emit LoopIterationStarted event
+        input_hash = hash_json(
+            current.model_dump() if hasattr(current, "model_dump") else current
+        )
+        await store.emit_loop_iteration_started(
+            run_id=run_id,
+            loop_node_id=node_id,
+            iteration=iteration,
+            input_hash=input_hash,
+        )
+
+        if on_progress:
+            await on_progress(
+                WorkflowEvent(
+                    type="loop_iteration_started",
+                    workflow_name=node_id,
+                    message=f"Iteration {iteration + 1}/{config.max_iterations}",
+                )
+            )
+
+        # Execute the inner workflow
+        iter_start = time.perf_counter()
+        iter_kwargs = {}
+        for param_name in inner_workflow.input_types:
+            if param_name in inner_workflow.bound_args:
+                iter_kwargs[param_name] = inner_workflow.bound_args[param_name]
+            else:
+                iter_kwargs[param_name] = current
+
+        # Set up RuntimeContext for LLM and tool call tracking
+        rt_ctx = RuntimeContext(run_id=run_id, node_id=node_id, store=store)
+        with runtime_context(rt_ctx):
+            result = await inner_workflow(**iter_kwargs)
+
+        iter_duration_ms = (time.perf_counter() - iter_start) * 1000.0
+        total_duration_ms += iter_duration_ms
+
+        # Emit LoopIterationFinished event
+        output_hash = hash_json(
+            result.model_dump() if hasattr(result, "model_dump") else result
+        )
+        condition_met = False
+        if config.until_condition is not None:
+            condition_met = config.until_condition(result)
+
+        await store.emit_loop_iteration_finished(
+            run_id=run_id,
+            loop_node_id=node_id,
+            iteration=iteration,
+            output_hash=output_hash,
+        )
+
+        if on_progress:
+            await on_progress(
+                WorkflowEvent(
+                    type="loop_iteration_finished",
+                    workflow_name=node_id,
+                    duration_ms=iter_duration_ms,
+                    message=f"Iteration {iteration + 1} complete"
+                    + (" (condition met)" if condition_met else ""),
+                )
+            )
+
+        # Check termination condition
+        if condition_met:
+            return result, total_duration_ms, final_iteration
+
+        # Prepare for next iteration
+        current = result
+
+    # Max iterations reached
+    await _emit_event(
+        store,
+        run_id,
+        node_id,
+        "LoopMaxIterationsReached",
+        {"max_iterations": config.max_iterations, "final_iteration": final_iteration},
+    )
+
+    return current, total_duration_ms, final_iteration
 
 
 @dataclass
@@ -376,25 +512,54 @@ async def run_graph_with_store(
 
             # Execute the workflow with retry support
             await store.update_node_status(run_id, name, NodeStatus.RUNNING)
-            await _emit_event(
-                store,
-                run_id,
-                name,
-                "NodeStarted",
-                {"max_attempts": wf.retry_policy.max_attempts},
-            )
 
             kwargs = _build_kwargs(wf, ctx.outputs)
 
-            # Execute with retry wrapper
-            output, duration_ms, attempts = await _execute_with_retry(
-                wf,
-                kwargs,
-                run_id=run_id,
-                node_id=name,
-                store=store,
-                on_progress=on_progress,
-            )
+            # Check if this is a Ralph loop and execute accordingly
+            if _is_ralph_loop(wf):
+                from smithers.ralph_loop import RalphLoopWorkflow
+
+                await _emit_event(
+                    store,
+                    run_id,
+                    name,
+                    "NodeStarted",
+                    {
+                        "is_ralph_loop": True,
+                        "max_iterations": wf.loop_config.max_iterations
+                        if isinstance(wf, RalphLoopWorkflow)
+                        else 0,
+                    },
+                )
+
+                # Execute Ralph loop with iteration tracking
+                output, duration_ms, iterations = await _execute_ralph_loop_node(
+                    wf,
+                    kwargs,
+                    run_id=run_id,
+                    node_id=name,
+                    store=store,
+                    on_progress=on_progress,
+                )
+                attempts = iterations  # For Ralph loops, "attempts" means iterations
+            else:
+                await _emit_event(
+                    store,
+                    run_id,
+                    name,
+                    "NodeStarted",
+                    {"max_attempts": wf.retry_policy.max_attempts},
+                )
+
+                # Execute with retry wrapper
+                output, duration_ms, attempts = await _execute_with_retry(
+                    wf,
+                    kwargs,
+                    run_id=run_id,
+                    node_id=name,
+                    store=store,
+                    on_progress=on_progress,
+                )
 
             if isinstance(output, SkipResult):
                 ctx.outputs[name] = None
@@ -450,12 +615,24 @@ async def run_graph_with_store(
                 validated.model_dump() if hasattr(validated, "model_dump") else validated
             )
             await store.store_node_output(run_id, name, output_to_store)
+
+            # Add loop info to NodeFinished event if this was a Ralph loop
+            finish_payload: dict[str, Any] = {
+                "duration_ms": duration_ms,
+                "cached": False,
+            }
+            if _is_ralph_loop(wf):
+                finish_payload["iterations"] = attempts
+                finish_payload["is_ralph_loop"] = True
+            else:
+                finish_payload["attempts"] = attempts
+
             await _emit_event(
                 store,
                 run_id,
                 name,
                 "NodeFinished",
-                {"duration_ms": duration_ms, "cached": False, "attempts": attempts},
+                finish_payload,
             )
 
             if on_progress:
@@ -977,25 +1154,54 @@ async def resume_run(
 
             # Execute the workflow with retry support
             await store.update_node_status(run_id, name, NodeStatus.RUNNING)
-            await _emit_event(
-                store,
-                run_id,
-                name,
-                "NodeStarted",
-                {"max_attempts": wf.retry_policy.max_attempts},
-            )
 
             kwargs = _build_kwargs(wf, ctx.outputs)
 
-            # Execute with retry wrapper
-            output, duration_ms, attempts = await _execute_with_retry(
-                wf,
-                kwargs,
-                run_id=run_id,
-                node_id=name,
-                store=store,
-                on_progress=on_progress,
-            )
+            # Check if this is a Ralph loop and execute accordingly
+            if _is_ralph_loop(wf):
+                from smithers.ralph_loop import RalphLoopWorkflow
+
+                await _emit_event(
+                    store,
+                    run_id,
+                    name,
+                    "NodeStarted",
+                    {
+                        "is_ralph_loop": True,
+                        "max_iterations": wf.loop_config.max_iterations
+                        if isinstance(wf, RalphLoopWorkflow)
+                        else 0,
+                    },
+                )
+
+                # Execute Ralph loop with iteration tracking
+                output, duration_ms, iterations = await _execute_ralph_loop_node(
+                    wf,
+                    kwargs,
+                    run_id=run_id,
+                    node_id=name,
+                    store=store,
+                    on_progress=on_progress,
+                )
+                attempts = iterations
+            else:
+                await _emit_event(
+                    store,
+                    run_id,
+                    name,
+                    "NodeStarted",
+                    {"max_attempts": wf.retry_policy.max_attempts},
+                )
+
+                # Execute with retry wrapper
+                output, duration_ms, attempts = await _execute_with_retry(
+                    wf,
+                    kwargs,
+                    run_id=run_id,
+                    node_id=name,
+                    store=store,
+                    on_progress=on_progress,
+                )
 
             if isinstance(output, SkipResult):
                 ctx.outputs[name] = None
@@ -1051,12 +1257,24 @@ async def resume_run(
                 validated.model_dump() if hasattr(validated, "model_dump") else validated
             )
             await store.store_node_output(run_id, name, output_to_store)
+
+            # Add loop info to NodeFinished event if this was a Ralph loop
+            resume_finish_payload: dict[str, Any] = {
+                "duration_ms": duration_ms,
+                "cached": False,
+            }
+            if _is_ralph_loop(wf):
+                resume_finish_payload["iterations"] = attempts
+                resume_finish_payload["is_ralph_loop"] = True
+            else:
+                resume_finish_payload["attempts"] = attempts
+
             await _emit_event(
                 store,
                 run_id,
                 name,
                 "NodeFinished",
-                {"duration_ms": duration_ms, "cached": False, "attempts": attempts},
+                resume_finish_payload,
             )
 
             if on_progress:

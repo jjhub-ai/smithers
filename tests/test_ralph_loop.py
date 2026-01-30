@@ -52,6 +52,20 @@ class DraftOutput(BaseModel):
     content: str
 
 
+class InitialDoc(BaseModel):
+    """Initial document for executor tests."""
+
+    content: str
+    quality: float = 0.0
+
+
+class StartDoc(BaseModel):
+    """Start document for max iterations test."""
+
+    content: str
+    quality: float = 0.0
+
+
 @pytest.fixture(autouse=True)
 def cleanup_registry():
     """Clean up registry before and after each test."""
@@ -427,6 +441,96 @@ class TestRalphLoopCallbacks:
         assert len(iterations_seen) == 2
         assert iterations_seen[0][0] == 0
         assert iterations_seen[1][0] == 1
+
+
+class TestRalphLoopWithExecutor:
+    """Test Ralph loops with the full executor."""
+
+    @pytest.mark.asyncio
+    async def test_ralph_loop_with_run_graph_with_store(self, tmp_path):
+        """Test Ralph loop execution via run_graph_with_store."""
+        from smithers import run_graph_with_store
+        from smithers.store.sqlite import SqliteStore
+
+        store = SqliteStore(tmp_path / "test.db")
+        await store.initialize()
+
+        call_count = 0
+
+        @workflow
+        async def start() -> InitialDoc:
+            return InitialDoc(content="initial", quality=0.0)
+
+        @workflow(register=False)
+        async def improve(doc: InitialDoc) -> RefineOutput:
+            nonlocal call_count
+            call_count += 1
+            return RefineOutput(
+                content=doc.content + f" v{call_count}", quality=doc.quality + 0.4
+            )
+
+        loop = ralph_loop(
+            improve,
+            until=lambda r: r.quality >= 0.8,
+            max_iterations=5,
+            register=False,  # Don't register - we'll build graph manually
+        )
+
+        # Build graph and run
+        graph = build_graph(loop)
+        result = await run_graph_with_store(graph, store=store)
+
+        assert isinstance(result, RefineOutput)
+        assert result.quality >= 0.8
+        assert call_count == 2  # Two iterations needed
+
+        # Verify loop iterations were tracked
+        run = (await store.list_runs())[0]
+        iterations = await store.get_loop_iterations(run.run_id)
+        assert len(iterations) == 2
+
+        # Verify events were emitted
+        events = await store.get_events(run.run_id)
+        event_types = [e.type for e in events]
+        assert "LoopIterationStarted" in event_types
+        assert "LoopIterationFinished" in event_types
+
+    @pytest.mark.asyncio
+    async def test_ralph_loop_max_iterations_event(self, tmp_path):
+        """Test that LoopMaxIterationsReached event is emitted."""
+        from smithers import run_graph_with_store
+        from smithers.store.sqlite import SqliteStore
+
+        store = SqliteStore(tmp_path / "test.db")
+        await store.initialize()
+
+        @workflow
+        async def start_doc() -> StartDoc:
+            return StartDoc(content="initial", quality=0.0)
+
+        @workflow(register=False)
+        async def never_good(doc: StartDoc) -> RefineOutput:
+            # Never reaches the threshold
+            return RefineOutput(content=doc.content, quality=0.1)
+
+        loop = ralph_loop(
+            never_good,
+            until=lambda r: r.quality >= 0.9,
+            max_iterations=3,
+            register=False,
+        )
+
+        graph = build_graph(loop)
+        result = await run_graph_with_store(graph, store=store)
+
+        # Should have run max iterations
+        assert result.quality < 0.9
+
+        # Verify max iterations event was emitted
+        run = (await store.list_runs())[0]
+        events = await store.get_events(run.run_id)
+        event_types = [e.type for e in events]
+        assert "LoopMaxIterationsReached" in event_types
 
 
 class TestRalphLoopEdgeCases:
