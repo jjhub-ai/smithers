@@ -309,6 +309,44 @@ def main() -> int:
         help="Output format (default: prometheus)",
     )
 
+    # websocket command - start WebSocket server for real-time updates
+    websocket_parser = subparsers.add_parser("websocket", help="WebSocket server for real-time progress updates")
+    websocket_sub = websocket_parser.add_subparsers(dest="websocket_command")
+
+    # websocket serve
+    websocket_serve_parser = websocket_sub.add_parser("serve", help="Start WebSocket server")
+    websocket_serve_parser.add_argument(
+        "--host",
+        default="localhost",
+        help="Host to bind to (default: localhost)",
+    )
+    websocket_serve_parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Port to listen on (default: 8765)",
+    )
+    websocket_serve_parser.add_argument(
+        "--no-heartbeat",
+        action="store_true",
+        help="Disable heartbeat pings",
+    )
+    websocket_serve_parser.add_argument(
+        "--heartbeat-interval",
+        type=float,
+        default=30.0,
+        help="Heartbeat interval in seconds (default: 30)",
+    )
+
+    # websocket status
+    websocket_status_parser = websocket_sub.add_parser("status", help="Show WebSocket server status")
+    websocket_status_parser.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format",
+    )
+
     args = parser.parse_args()
 
     if args.version:
@@ -347,6 +385,8 @@ def main() -> int:
         return _ratelimit_command(args)
     elif args.command == "metrics":
         return _metrics_command(args)
+    elif args.command == "websocket":
+        return _websocket_command(args)
 
     return 0
 
@@ -1329,6 +1369,94 @@ def _metrics_export(args: argparse.Namespace) -> int:
     else:
         print(f"Unknown format: {args.format}", file=sys.stderr)
         return 1
+
+    return 0
+
+
+def _websocket_command(args: argparse.Namespace) -> int:
+    """Handle websocket subcommands."""
+    if args.websocket_command == "serve":
+        return _websocket_serve(args)
+    elif args.websocket_command == "status":
+        return _websocket_status(args)
+    else:
+        print("Unknown websocket command. Use: serve or status", file=sys.stderr)
+        return 1
+
+
+def _websocket_serve(args: argparse.Namespace) -> int:
+    """Start the WebSocket server for real-time progress updates."""
+    try:
+        from smithers.websocket import WebSocketServer, get_websocket_server
+    except ImportError:
+        print("WebSocket support requires the 'websockets' package.", file=sys.stderr)
+        print("Install it with: pip install smithers[websocket]", file=sys.stderr)
+        return 1
+
+    heartbeat = 0 if args.no_heartbeat else args.heartbeat_interval
+    server = WebSocketServer(auto_subscribe=True, heartbeat_interval=heartbeat)
+
+    print(f"Starting WebSocket server on ws://{args.host}:{args.port}")
+    print("Press Ctrl+C to stop")
+    print()
+    print("Clients can connect and subscribe to workflow events.")
+    print("Events from the global EventBus will be broadcast to all connected clients.")
+
+    async def run_server() -> None:
+        try:
+            await server.start(host=args.host, port=args.port)
+            # Keep the server running
+            while server.is_running:
+                await asyncio.sleep(1)
+                if server.client_count > 0:
+                    pass  # Server is serving clients
+        except KeyboardInterrupt:
+            pass
+        finally:
+            await server.stop()
+
+    try:
+        asyncio.run(run_server())
+    except KeyboardInterrupt:
+        print("\nStopping WebSocket server")
+
+    return 0
+
+
+def _websocket_status(args: argparse.Namespace) -> int:
+    """Show WebSocket server status."""
+    from smithers.websocket import get_websocket_server
+
+    server = get_websocket_server()
+
+    if args.format == "json":
+        output = {
+            "running": server.is_running,
+            "client_count": server.client_count,
+            "stats": {
+                "total_connections": server.stats.total_connections,
+                "active_connections": server.stats.active_connections,
+                "messages_sent": server.stats.messages_sent,
+                "messages_received": server.stats.messages_received,
+                "events_broadcast": server.stats.events_broadcast,
+                "errors": server.stats.errors,
+            },
+        }
+        print(json.dumps(output, indent=2))
+    else:
+        print("WebSocket Server Status")
+        print("=" * 40)
+        print(f"Running: {server.is_running}")
+        print(f"Connected Clients: {server.client_count}")
+        print()
+        print("Statistics")
+        print("-" * 30)
+        print(f"  Total Connections:   {server.stats.total_connections}")
+        print(f"  Active Connections:  {server.stats.active_connections}")
+        print(f"  Messages Sent:       {server.stats.messages_sent}")
+        print(f"  Messages Received:   {server.stats.messages_received}")
+        print(f"  Events Broadcast:    {server.stats.events_broadcast}")
+        print(f"  Errors:              {server.stats.errors}")
 
     return 0
 
