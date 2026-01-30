@@ -1,6 +1,0 @@
-# Use browser export condition to get SolidJS client build with reactivity
-# (The default server build disables reactivity for SSR)
-
-# Apply to all operations
-[resolve]
-conditions = ["browser"]

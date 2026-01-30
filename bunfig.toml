@@ -1,6 +1,0 @@
-# SolidJS requires browser condition for reactivity to work
-# Without this, solid-js resolves to the server build which has no reactivity
-
-[run]
-# Note: This doesn't work - use "bun --conditions=browser" explicitly
-# conditions = ["browser"]

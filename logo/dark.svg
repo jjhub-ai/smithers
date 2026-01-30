@@ -1,8 +1,0 @@
-<svg width="120" height="40" viewBox="0 0 120 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <!-- S letter -->
-  <path d="M10 30 Q10 25 15 25 L25 25 Q30 25 30 20 Q30 15 25 15 L15 15" stroke="#60A5FA" stroke-width="3" fill="none"/>
-  <path d="M15 15 Q10 15 10 10 Q10 5 15 5 L25 5 Q30 5 30 10" stroke="#60A5FA" stroke-width="3" fill="none"/>
-
-  <!-- Text: Smithers -->
-  <text x="38" y="27" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="600" fill="#F3F4F6">Smithers</text>
-</svg>
