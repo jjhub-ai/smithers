@@ -668,3 +668,301 @@ class TestCheckpoints:
         # Checkpoint should be gone (cascade delete)
         checkpoint = await store.get_checkpoint("cp-cascade")
         assert checkpoint is None
+
+
+class TestFullTextSearch:
+    """Test full-text search (FTS5) functionality."""
+
+    @pytest.fixture
+    async def store(self, tmp_path):
+        """Create a temporary session store with searchable content."""
+        store = SessionStore(tmp_path / "sessions.db")
+        await store.initialize()
+        await store.create_session("/workspace", session_id="test-session")
+
+        # Add events with searchable content
+        await store.append_event(
+            "test-session",
+            EventType.ASSISTANT_DELTA,
+            {"content": "Hello, I can help you with Python programming"},
+        )
+        await store.append_event(
+            "test-session",
+            EventType.ASSISTANT_FINAL,
+            {"text": "Let me write a function to calculate fibonacci numbers"},
+        )
+        await store.append_event(
+            "test-session",
+            EventType.TOOL_START,
+            {"message": "Running tests on the authentication module"},
+        )
+        await store.append_event(
+            "test-session",
+            EventType.TOOL_END,
+            {"preview": "Successfully installed pytest and dependencies"},
+        )
+
+        # Add checkpoints with searchable content
+        await store.create_checkpoint(
+            checkpoint_id="cp-1",
+            session_id="test-session",
+            jj_commit_id="commit1",
+            bookmark_name="feature-authentication",
+            message="Implemented user authentication with JWT tokens",
+        )
+        await store.create_checkpoint(
+            checkpoint_id="cp-2",
+            session_id="test-session",
+            jj_commit_id="commit2",
+            bookmark_name="bugfix-database",
+            message="Fixed database connection pool exhaustion bug",
+        )
+
+        return store
+
+    @pytest.mark.asyncio
+    async def test_search_events_basic(self, store):
+        """Should search events by content."""
+        results = await store.search_events("Python")
+        assert len(results) > 0
+        assert any("Python" in str(r.payload) for r in results)
+
+    @pytest.mark.asyncio
+    async def test_search_events_multiple_fields(self, store):
+        """Should search across multiple payload fields."""
+        # Search for "fibonacci" which is in the "text" field
+        results = await store.search_events("fibonacci")
+        assert len(results) > 0
+
+        # Search for "authentication" which is in the "message" field
+        results = await store.search_events("authentication")
+        assert len(results) > 0
+
+        # Search for "pytest" which is in the "preview" field
+        results = await store.search_events("pytest")
+        assert len(results) > 0
+
+    @pytest.mark.asyncio
+    async def test_search_events_case_insensitive(self, store):
+        """Search should be case insensitive."""
+        results_lower = await store.search_events("python")
+        results_upper = await store.search_events("PYTHON")
+        results_mixed = await store.search_events("Python")
+
+        # All should return the same results
+        assert len(results_lower) == len(results_upper) == len(results_mixed)
+
+    @pytest.mark.asyncio
+    async def test_search_events_with_session_filter(self, store):
+        """Should filter search results by session ID."""
+        # Create another session with different content
+        await store.create_session("/workspace2", session_id="session2")
+        await store.append_event(
+            "session2",
+            EventType.ASSISTANT_DELTA,
+            {"content": "Working with JavaScript and React"},
+        )
+
+        # Search in specific session
+        results = await store.search_events("Python", session_id="test-session")
+        assert len(results) > 0
+        assert all(r.session_id == "test-session" for r in results)
+
+        # JavaScript should not be in test-session results
+        results = await store.search_events("JavaScript", session_id="test-session")
+        assert len(results) == 0
+
+    @pytest.mark.asyncio
+    async def test_search_events_limit(self, store):
+        """Should respect limit parameter."""
+        # Add many events
+        for i in range(20):
+            await store.append_event(
+                "test-session",
+                EventType.ASSISTANT_DELTA,
+                {"content": f"Message number {i} about Python programming"},
+            )
+
+        results = await store.search_events("Python", limit=5)
+        assert len(results) == 5
+
+    @pytest.mark.asyncio
+    async def test_search_events_no_results(self, store):
+        """Should return empty list when no matches found."""
+        results = await store.search_events("nonexistent_term_xyz")
+        assert len(results) == 0
+
+    @pytest.mark.asyncio
+    async def test_search_events_phrase_query(self, store):
+        """Should support phrase queries."""
+        results = await store.search_events('"fibonacci numbers"')
+        assert len(results) > 0
+
+    @pytest.mark.asyncio
+    async def test_search_checkpoints_basic(self, store):
+        """Should search checkpoints by message."""
+        results = await store.search_checkpoints("authentication")
+        assert len(results) > 0
+        assert any("authentication" in r.message.lower() for r in results)
+
+    @pytest.mark.asyncio
+    async def test_search_checkpoints_bookmark_name(self, store):
+        """Should search checkpoints by bookmark name."""
+        results = await store.search_checkpoints("bugfix")
+        assert len(results) > 0
+        assert any("bugfix" in r.bookmark_name.lower() for r in results)
+
+    @pytest.mark.asyncio
+    async def test_search_checkpoints_with_session_filter(self, store):
+        """Should filter checkpoint search by session ID."""
+        # Create another session with different checkpoint
+        await store.create_session("/workspace2", session_id="session2")
+        await store.create_checkpoint(
+            checkpoint_id="cp-other",
+            session_id="session2",
+            jj_commit_id="commit-other",
+            bookmark_name="feature-other",
+            message="Added feature to session2",
+        )
+
+        # Search in specific session
+        results = await store.search_checkpoints("authentication", session_id="test-session")
+        assert len(results) > 0
+        assert all(r.session_id == "test-session" for r in results)
+
+    @pytest.mark.asyncio
+    async def test_search_checkpoints_limit(self, store):
+        """Should respect limit parameter."""
+        # Add many checkpoints
+        for i in range(10):
+            await store.create_checkpoint(
+                checkpoint_id=f"cp-test-{i}",
+                session_id="test-session",
+                jj_commit_id=f"commit-{i}",
+                bookmark_name=f"test-{i}",
+                message=f"Test checkpoint {i} with keyword testquery",
+            )
+
+        results = await store.search_checkpoints("testquery", limit=5)
+        assert len(results) == 5
+
+    @pytest.mark.asyncio
+    async def test_search_checkpoints_no_results(self, store):
+        """Should return empty list when no matches found."""
+        results = await store.search_checkpoints("nonexistent_xyz")
+        assert len(results) == 0
+
+    @pytest.mark.asyncio
+    async def test_search_all(self, store):
+        """Should search across all content types."""
+        results = await store.search_all("authentication")
+
+        assert "events" in results
+        assert "checkpoints" in results
+        assert "total" in results
+
+        # Should find results in both events and checkpoints
+        assert len(results["events"]) > 0
+        assert len(results["checkpoints"]) > 0
+        assert results["total"] == len(results["events"]) + len(results["checkpoints"])
+
+    @pytest.mark.asyncio
+    async def test_search_all_with_session_filter(self, store):
+        """Should filter all search by session ID."""
+        results = await store.search_all("authentication", session_id="test-session")
+
+        assert all(e.session_id == "test-session" for e in results["events"])
+        assert all(c.session_id == "test-session" for c in results["checkpoints"])
+
+    @pytest.mark.asyncio
+    async def test_search_all_limit(self, store):
+        """Should apply limit to each category."""
+        # Add many events and checkpoints
+        for i in range(20):
+            await store.append_event(
+                "test-session",
+                EventType.ASSISTANT_DELTA,
+                {"content": f"Testing search functionality {i}"},
+            )
+            await store.create_checkpoint(
+                checkpoint_id=f"cp-search-{i}",
+                session_id="test-session",
+                jj_commit_id=f"commit-{i}",
+                bookmark_name=f"search-{i}",
+                message=f"Checkpoint for testing search {i}",
+            )
+
+        results = await store.search_all("testing", limit=5)
+
+        # Each category should respect the limit
+        assert len(results["events"]) <= 5
+        assert len(results["checkpoints"]) <= 5
+
+    @pytest.mark.asyncio
+    async def test_fts_index_synchronized_on_insert(self, store):
+        """FTS index should be updated when events are inserted."""
+        # Add a new event after store is created
+        await store.append_event(
+            "test-session",
+            EventType.ASSISTANT_DELTA,
+            {"content": "New unique search term: xyzabc123"},
+        )
+
+        # Should be immediately searchable
+        results = await store.search_events("xyzabc123")
+        assert len(results) == 1
+        assert "xyzabc123" in results[0].payload["content"]
+
+    @pytest.mark.asyncio
+    async def test_fts_index_synchronized_on_checkpoint_insert(self, store):
+        """FTS index should be updated when checkpoints are inserted."""
+        await store.create_checkpoint(
+            checkpoint_id="cp-new",
+            session_id="test-session",
+            jj_commit_id="commit-new",
+            bookmark_name="unique-bookmark-xyz789",
+            message="Checkpoint with unique term uniqueterm456",
+        )
+
+        # Should be immediately searchable
+        results = await store.search_checkpoints("uniqueterm456")
+        assert len(results) == 1
+        assert "uniqueterm456" in results[0].message
+
+    @pytest.mark.asyncio
+    async def test_fts_index_synchronized_on_delete(self, store):
+        """FTS index should be updated when sessions are deleted."""
+        # Search before deletion
+        results_before = await store.search_events("Python")
+        count_before = len(results_before)
+        assert count_before > 0
+
+        # Delete the session
+        await store.delete_session("test-session")
+
+        # Create a new session to search from
+        await store.create_session("/workspace3", session_id="session3")
+
+        # Search after deletion - should not find the deleted content
+        results_after = await store.search_events("Python", session_id="test-session")
+        assert len(results_after) == 0
+
+    @pytest.mark.asyncio
+    async def test_search_ranking(self, store):
+        """Results should be ranked by relevance."""
+        # Add events with varying relevance
+        await store.append_event(
+            "test-session",
+            EventType.ASSISTANT_DELTA,
+            {"content": "database database database"},  # More occurrences
+        )
+        await store.append_event(
+            "test-session",
+            EventType.ASSISTANT_DELTA,
+            {"content": "database query"},  # One occurrence
+        )
+
+        results = await store.search_events("database")
+        assert len(results) >= 2
+
+        # Results should be ordered by rank (FTS5 handles this automatically)

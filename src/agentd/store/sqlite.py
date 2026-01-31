@@ -99,6 +99,97 @@ CREATE INDEX IF NOT EXISTS idx_session_events_type ON session_events(session_id,
 CREATE INDEX IF NOT EXISTS idx_sessions_last_active ON sessions(last_active_at);
 CREATE INDEX IF NOT EXISTS idx_checkpoints_session_id ON checkpoints(session_id);
 CREATE INDEX IF NOT EXISTS idx_checkpoints_created_at ON checkpoints(created_at);
+
+-- Full-Text Search (FTS5) tables for search functionality
+-- Messages search: indexes message content for fast text search
+CREATE VIRTUAL TABLE IF NOT EXISTS session_events_fts USING fts5(
+    content,
+    session_id UNINDEXED,
+    event_id UNINDEXED,
+    content='session_events',
+    content_rowid='id'
+);
+
+-- Checkpoints search: indexes checkpoint messages and bookmark names
+CREATE VIRTUAL TABLE IF NOT EXISTS checkpoints_fts USING fts5(
+    message,
+    bookmark_name,
+    session_id UNINDEXED,
+    checkpoint_id UNINDEXED,
+    content='checkpoints',
+    content_rowid='rowid'
+);
+
+-- Triggers to keep FTS indexes synchronized with base tables
+-- Insert trigger for session_events
+CREATE TRIGGER IF NOT EXISTS session_events_fts_insert AFTER INSERT ON session_events BEGIN
+    INSERT INTO session_events_fts(rowid, content, session_id, event_id)
+    VALUES (
+        new.id,
+        CASE
+            WHEN json_extract(new.payload_json, '$.content') IS NOT NULL
+            THEN json_extract(new.payload_json, '$.content')
+            WHEN json_extract(new.payload_json, '$.text') IS NOT NULL
+            THEN json_extract(new.payload_json, '$.text')
+            WHEN json_extract(new.payload_json, '$.message') IS NOT NULL
+            THEN json_extract(new.payload_json, '$.message')
+            WHEN json_extract(new.payload_json, '$.preview') IS NOT NULL
+            THEN json_extract(new.payload_json, '$.preview')
+            ELSE ''
+        END,
+        new.session_id,
+        new.id
+    );
+END;
+
+-- Delete trigger for session_events
+CREATE TRIGGER IF NOT EXISTS session_events_fts_delete AFTER DELETE ON session_events BEGIN
+    INSERT INTO session_events_fts(session_events_fts, rowid, content, session_id, event_id)
+    VALUES('delete', old.id, '', old.session_id, old.id);
+END;
+
+-- Update trigger for session_events
+CREATE TRIGGER IF NOT EXISTS session_events_fts_update AFTER UPDATE ON session_events BEGIN
+    INSERT INTO session_events_fts(session_events_fts, rowid, content, session_id, event_id)
+    VALUES('delete', old.id, '', old.session_id, old.id);
+    INSERT INTO session_events_fts(rowid, content, session_id, event_id)
+    VALUES (
+        new.id,
+        CASE
+            WHEN json_extract(new.payload_json, '$.content') IS NOT NULL
+            THEN json_extract(new.payload_json, '$.content')
+            WHEN json_extract(new.payload_json, '$.text') IS NOT NULL
+            THEN json_extract(new.payload_json, '$.text')
+            WHEN json_extract(new.payload_json, '$.message') IS NOT NULL
+            THEN json_extract(new.payload_json, '$.message')
+            WHEN json_extract(new.payload_json, '$.preview') IS NOT NULL
+            THEN json_extract(new.payload_json, '$.preview')
+            ELSE ''
+        END,
+        new.session_id,
+        new.id
+    );
+END;
+
+-- Insert trigger for checkpoints
+CREATE TRIGGER IF NOT EXISTS checkpoints_fts_insert AFTER INSERT ON checkpoints BEGIN
+    INSERT INTO checkpoints_fts(rowid, message, bookmark_name, session_id, checkpoint_id)
+    VALUES (new.rowid, new.message, new.bookmark_name, new.session_id, new.checkpoint_id);
+END;
+
+-- Delete trigger for checkpoints
+CREATE TRIGGER IF NOT EXISTS checkpoints_fts_delete AFTER DELETE ON checkpoints BEGIN
+    INSERT INTO checkpoints_fts(checkpoints_fts, rowid, message, bookmark_name, session_id, checkpoint_id)
+    VALUES('delete', old.rowid, old.message, old.bookmark_name, old.session_id, old.checkpoint_id);
+END;
+
+-- Update trigger for checkpoints
+CREATE TRIGGER IF NOT EXISTS checkpoints_fts_update AFTER UPDATE ON checkpoints BEGIN
+    INSERT INTO checkpoints_fts(checkpoints_fts, rowid, message, bookmark_name, session_id, checkpoint_id)
+    VALUES('delete', old.rowid, old.message, old.bookmark_name, old.session_id, old.checkpoint_id);
+    INSERT INTO checkpoints_fts(rowid, message, bookmark_name, session_id, checkpoint_id)
+    VALUES (new.rowid, new.message, new.bookmark_name, new.session_id, new.checkpoint_id);
+END;
 """
 
 
@@ -641,6 +732,143 @@ class SessionStore:
             deleted = cursor.rowcount > 0
             await db.commit()
             return deleted
+
+    # ==================== Search Operations (FTS5) ====================
+
+    async def search_events(
+        self,
+        query: str,
+        *,
+        session_id: str | None = None,
+        limit: int = 50,
+    ) -> list[SessionEventRecord]:
+        """Search session events using full-text search.
+
+        Args:
+            query: Search query (FTS5 syntax supported)
+            session_id: Optional session ID to filter by
+            limit: Maximum number of results to return
+
+        Returns:
+            List of SessionEventRecord objects matching the query
+        """
+        await self._ensure_initialized()
+
+        # Build query with optional session filter
+        sql = """
+            SELECT se.*
+            FROM session_events_fts fts
+            JOIN session_events se ON se.id = fts.rowid
+            WHERE session_events_fts MATCH ?
+        """
+        params: list[Any] = [query]
+
+        if session_id is not None:
+            sql += " AND se.session_id = ?"
+            params.append(session_id)
+
+        sql += " ORDER BY rank LIMIT ?"
+        params.append(limit)
+
+        async with self._lock, aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(sql, params) as cursor:
+                rows = await cursor.fetchall()
+
+        return [
+            SessionEventRecord(
+                id=row["id"],
+                session_id=row["session_id"],
+                ts=_parse_timestamp(row["ts"]) or datetime.now(UTC),
+                type=row["type"],
+                payload=json.loads(row["payload_json"]),
+            )
+            for row in rows
+        ]
+
+    async def search_checkpoints(
+        self,
+        query: str,
+        *,
+        session_id: str | None = None,
+        limit: int = 50,
+    ) -> list[CheckpointRecord]:
+        """Search checkpoints using full-text search.
+
+        Args:
+            query: Search query (FTS5 syntax supported)
+            session_id: Optional session ID to filter by
+            limit: Maximum number of results to return
+
+        Returns:
+            List of CheckpointRecord objects matching the query
+        """
+        await self._ensure_initialized()
+
+        # Build query with optional session filter
+        sql = """
+            SELECT c.*
+            FROM checkpoints_fts fts
+            JOIN checkpoints c ON c.checkpoint_id = fts.checkpoint_id
+            WHERE checkpoints_fts MATCH ?
+        """
+        params: list[Any] = [query]
+
+        if session_id is not None:
+            sql += " AND c.session_id = ?"
+            params.append(session_id)
+
+        sql += " ORDER BY rank LIMIT ?"
+        params.append(limit)
+
+        async with self._lock, self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(sql, params) as cursor:
+                rows = await cursor.fetchall()
+
+        return [
+            CheckpointRecord(
+                checkpoint_id=row["checkpoint_id"],
+                session_id=row["session_id"],
+                session_node_id=row["session_node_id"],
+                jj_commit_id=row["jj_commit_id"],
+                bookmark_name=row["bookmark_name"],
+                message=row["message"],
+                created_at=_parse_timestamp(row["created_at"]) or datetime.now(UTC),
+            )
+            for row in rows
+        ]
+
+    async def search_all(
+        self,
+        query: str,
+        *,
+        session_id: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Search across all indexed content (events and checkpoints).
+
+        Args:
+            query: Search query (FTS5 syntax supported)
+            session_id: Optional session ID to filter by
+            limit: Maximum number of results per category
+
+        Returns:
+            Dict with 'events' and 'checkpoints' keys containing matching results
+        """
+        await self._ensure_initialized()
+
+        # Search both events and checkpoints concurrently
+        events_task = self.search_events(query, session_id=session_id, limit=limit)
+        checkpoints_task = self.search_checkpoints(query, session_id=session_id, limit=limit)
+
+        events, checkpoints = await asyncio.gather(events_task, checkpoints_task)
+
+        return {
+            "events": events,
+            "checkpoints": checkpoints,
+            "total": len(events) + len(checkpoints),
+        }
 
 
 def _timestamp_now() -> str:
