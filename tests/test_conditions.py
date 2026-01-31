@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -658,9 +657,10 @@ class TestConditionWithStore:
     @pytest.mark.asyncio
     async def test_condition_skips_with_store(self):
         """Condition skips workflow when using run_graph_with_store."""
+        import tempfile
+
         from smithers import run_graph_with_store
         from smithers.store.sqlite import SqliteStore
-        import tempfile
 
         @workflow
         async def run_tests() -> CheckOutput:
@@ -682,9 +682,10 @@ class TestConditionWithStore:
     @pytest.mark.asyncio
     async def test_condition_emits_event_with_store(self):
         """Condition skip emits proper event when using run_graph_with_store."""
+        import tempfile
+
         from smithers import run_graph_with_store
         from smithers.store.sqlite import SqliteStore
-        import tempfile
 
         events: list = []
 
@@ -714,7 +715,10 @@ class TestConditionWithStore:
             # Should have a skipped event for deploy
             skip_events = [e for e in events if e.type == "skipped" and e.workflow_name == "deploy"]
             assert len(skip_events) == 1
-            assert "condition" in skip_events[0].message.lower() or "Tests failed" in skip_events[0].message
+            assert (
+                "condition" in skip_events[0].message.lower()
+                or "Tests failed" in skip_events[0].message
+            )
 
 
 # ========================
@@ -735,8 +739,8 @@ class TestConditionWithBoundWorkflows:
 
         @workflow(register=False)
         @when(
-            # When using bind(), bound_deps creates a list, so access via [0]
-            lambda deps: deps.tests[0].passed and deps.tests[0].coverage > 0.8,
+            # Bound deps for non-list params are now accessed directly like regular deps
+            lambda deps: deps.tests.passed and deps.tests.coverage > 0.8,
             skip_reason="Coverage below threshold",
         )
         async def deploy(tests: CheckOutput) -> DeployOutput:
@@ -760,8 +764,8 @@ class TestConditionWithBoundWorkflows:
 
         @workflow(register=False)
         @when(
-            # When using bind(), bound_deps creates a list, so access via [0]
-            lambda deps: deps.tests[0].passed and deps.tests[0].coverage > 0.8,
+            # Bound deps for non-list params are now accessed directly like regular deps
+            lambda deps: deps.tests.passed and deps.tests.coverage > 0.8,
             skip_reason="Coverage below threshold",
         )
         async def deploy(tests: CheckOutput) -> DeployOutput:
@@ -818,7 +822,7 @@ class TestConditionParallelExecution:
 
         # Test branch_a - condition passes
         @workflow(register=False)
-        @when(lambda deps: deps.source[0].passed)  # Bound deps are lists
+        @when(lambda deps: deps.source.passed)  # Bound deps for non-list params accessed directly
         async def test_branch_a(source: CheckOutput) -> ConfigOutput:
             return ConfigOutput(env="a")
 
@@ -832,7 +836,9 @@ class TestConditionParallelExecution:
 
         # Test branch_b - condition fails
         @workflow(register=False)
-        @when(lambda deps: deps.source[0].coverage > 0.8)  # Bound deps are lists
+        @when(
+            lambda deps: deps.source.coverage > 0.8
+        )  # Bound deps for non-list params accessed directly
         async def test_branch_b(source: CheckOutput) -> DeployOutput:
             return DeployOutput(deployed=True)
 

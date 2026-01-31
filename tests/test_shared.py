@@ -454,6 +454,66 @@ class TestDependencyNamespace:
         assert ns.a.value == "val_a"
         assert ns.b.count == 42
 
+    def test_bound_deps_non_list_returns_single_value(self) -> None:
+        """Bound dependencies for non-list params return single value, not list.
+
+        This ensures consistency with build_kwargs behavior where bound_deps
+        for non-list parameters return the value directly rather than wrapping
+        it in a list.
+        """
+
+        @workflow(register=False)
+        async def producer() -> OutputA:
+            return OutputA(value="from_producer")
+
+        @workflow(register=False)
+        async def consumer(a: OutputA) -> OutputB:
+            return OutputB(count=len(a.value))
+
+        # Bind the dependency
+        bound = consumer.bind(a=producer)
+        outputs = {"producer": OutputA(value="bound_value")}
+        ns = dependency_namespace(bound, outputs)
+
+        # Non-list param should be single value, not wrapped in list
+        assert hasattr(ns, "a")
+        assert not isinstance(ns.a, list)
+        assert ns.a.value == "bound_value"
+
+    def test_bound_deps_list_returns_list(self) -> None:
+        """Bound dependencies for list params return a list.
+
+        When the parameter type is list[SomeModel], the namespace should
+        contain a list of outputs from all bound workflows.
+        """
+
+        @workflow(register=False)
+        async def producer1() -> OutputA:
+            return OutputA(value="one")
+
+        @workflow(register=False)
+        async def producer2() -> OutputA:
+            return OutputA(value="two")
+
+        @workflow(register=False)
+        async def list_consumer(items: list[OutputA]) -> OutputB:
+            return OutputB(count=len(items))
+
+        # Bind multiple dependencies
+        bound = list_consumer.bind(items=[producer1, producer2])
+        outputs = {
+            "producer1": OutputA(value="value1"),
+            "producer2": OutputA(value="value2"),
+        }
+        ns = dependency_namespace(bound, outputs)
+
+        # List param should be a list
+        assert hasattr(ns, "items")
+        assert isinstance(ns.items, list)
+        assert len(ns.items) == 2
+        assert ns.items[0].value == "value1"
+        assert ns.items[1].value == "value2"
+
 
 # =============================================================================
 # resolve_workflow tests

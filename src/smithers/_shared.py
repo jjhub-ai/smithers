@@ -244,7 +244,10 @@ def dependency_namespace(wf: Workflow, outputs: dict[str, Any]) -> SimpleNamespa
             continue
         if param_name in wf.bound_deps:
             deps = wf.bound_deps[param_name]
-            data[param_name] = [outputs[dep.name] for dep in deps]
+            if wf.input_is_list.get(param_name, False):
+                data[param_name] = [outputs.get(dep.name) for dep in deps]
+            else:
+                data[param_name] = outputs.get(deps[0].name) if deps else None
             continue
         dep_wf = get_workflow_by_output(param_type)
         if dep_wf is None:
