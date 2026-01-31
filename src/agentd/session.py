@@ -5,6 +5,7 @@ Each session represents an agent conversation with its own
 graph state, checkpoints, and tool execution context.
 """
 
+import asyncio
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -13,6 +14,7 @@ from typing import Any
 
 from agentd.adapters.base import AgentAdapter
 from agentd.protocol.events import Event, EventType
+from smithers.store.sqlite import SqliteStore
 
 
 @dataclass
@@ -36,16 +38,24 @@ class Session:
 class SessionManager:
     """Manages multiple concurrent sessions."""
 
-    def __init__(self, adapter: AgentAdapter, config: Any = None):
+    def __init__(
+        self,
+        adapter: AgentAdapter,
+        store: SqliteStore | None = None,
+        config: Any = None,
+    ):
         """Initialize the session manager with an agent adapter.
 
         Args:
             adapter: The agent adapter to use for running conversations
+            store: Optional SQLite store for persisting events
             config: Optional configuration object (for future use)
         """
         self.adapter = adapter
+        self.store = store
         self.config = config
         self.sessions: dict[str, Session] = {}
+        self._background_tasks: set[asyncio.Task[Any]] = set()
 
     async def create_session(self, workspace_root: str) -> Session:
         """Create a new session."""
@@ -81,23 +91,41 @@ class SessionManager:
         run_id = str(uuid.uuid4())
         session.current_run_id = run_id
 
-        if emit:
-            emit(
-                Event(type=EventType.RUN_STARTED, data={"run_id": run_id, "session_id": session_id})
-            )
+        # Create a wrapper that persists events to the store before emitting
+        def emit_with_persistence(event: Event) -> None:
+            """Persist event to store and then emit to callback."""
+            # Persist to store if available (schedule as background task)
+            if self.store:
+                task = asyncio.create_task(
+                    self.store.append_session_event(
+                        session_id=session_id,
+                        event_type=event.type.value,
+                        payload=event.data,
+                    )
+                )
+                # Keep a reference to prevent garbage collection
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+
+            # Then emit to callback
+            if emit:
+                emit(event)
+
+        emit_with_persistence(
+            Event(type=EventType.RUN_STARTED, data={"run_id": run_id, "session_id": session_id})
+        )
 
         # Add user message to history
         session.message_history.append({"role": "user", "content": message})
 
         # Run the agent through the adapter
-        await self._run_agent(session, surfaces or [], emit)
+        await self._run_agent(session, surfaces or [], emit_with_persistence)
 
-        if emit:
-            emit(
-                Event(
-                    type=EventType.RUN_FINISHED, data={"run_id": run_id, "session_id": session_id}
-                )
+        emit_with_persistence(
+            Event(
+                type=EventType.RUN_FINISHED, data={"run_id": run_id, "session_id": session_id}
             )
+        )
 
     async def _run_agent(
         self,

@@ -15,6 +15,7 @@ from agentd.adapters.fake import FakeAgentAdapter
 from agentd.protocol.events import Event, EventType
 from agentd.protocol.requests import Request, parse_request
 from agentd.session import SessionManager
+from smithers.store.sqlite import SqliteStore
 
 
 @dataclass
@@ -24,6 +25,7 @@ class DaemonConfig:
     workspace_root: str
     sandbox_mode: str = "host"  # "host" | "linux_vm"
     agent_backend: str = "anthropic"  # "fake" | "anthropic"
+    db_path: str = ".smithers/sessions.db"  # SQLite database path
 
 
 class AgentDaemon:
@@ -47,7 +49,11 @@ class AgentDaemon:
 
         # Create the appropriate adapter based on config
         adapter = self._create_adapter()
-        self.session_manager = SessionManager(adapter=adapter, config=config)
+
+        # Create SQLite store for event persistence
+        self.store = SqliteStore(config.db_path)
+
+        self.session_manager = SessionManager(adapter=adapter, store=self.store, config=config)
         self._running = False
 
     def _create_adapter(self) -> AgentAdapter:
@@ -110,6 +116,10 @@ class AgentDaemon:
     async def run(self) -> None:
         """Main event loop."""
         self._running = True
+
+        # Initialize the SQLite store
+        await self.store.initialize()
+
         self.emit_event(
             Event(
                 type=EventType.DAEMON_READY,

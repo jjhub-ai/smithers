@@ -207,6 +207,42 @@ class TestSessionManager:
         assert events[0].type == EventType.ERROR
         assert "not found" in events[0].data["message"]
 
+    @pytest.mark.asyncio
+    async def test_event_persistence(self, fake_adapter, tmp_path):
+        """Test that events are persisted to the store."""
+        from agentd.session import SessionManager
+        from smithers.store.sqlite import SqliteStore
+
+        # Create a store
+        db_path = tmp_path / "test_sessions.db"
+        store = SqliteStore(str(db_path))
+        await store.initialize()
+
+        # Create session manager with store
+        session_manager = SessionManager(adapter=fake_adapter, store=store)
+
+        # Create a session
+        session = await session_manager.create_session(str(tmp_path))
+
+        # Send a message
+        await session_manager.send_message(
+            session_id=session.id, message="Hello, agent!", emit=lambda e: None
+        )
+
+        # Give async tasks time to complete
+        await asyncio.sleep(0.1)
+
+        # Verify events were persisted
+        events = await store.get_session_events(session.id)
+        assert len(events) > 0
+
+        # Should have RUN_STARTED, ASSISTANT_DELTA (x2), ASSISTANT_FINAL, RUN_FINISHED
+        event_types = [e.type for e in events]
+        assert "run.started" in event_types
+        assert "assistant.delta" in event_types
+        assert "assistant.final" in event_types
+        assert "run.finished" in event_types
+
 
 class TestRepoStateService:
     """Test JJ integration for checkpoints."""
