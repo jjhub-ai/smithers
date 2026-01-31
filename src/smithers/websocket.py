@@ -63,8 +63,8 @@ from smithers.events import Event, EventBus, Subscription, get_event_bus
 
 if TYPE_CHECKING:
     import websockets  # type: ignore[import-not-found]  # noqa: F401
-    from websockets.legacy.server import (
-        WebSocketServerProtocol,  # type: ignore[import-not-found]
+    from websockets.legacy.server import (  # type: ignore[import-not-found]
+        WebSocketServerProtocol,
     )
 
 logger = logging.getLogger(__name__)

@@ -1,11 +1,19 @@
 import SwiftUI
 
+/// View mode for the session detail
+enum SessionViewMode {
+    case chat
+    case graph
+}
+
 /// The main content area showing the selected session's terminal
 struct SessionDetail: View {
     let session: Session?
     @State private var messageInput: String = ""
     @StateObject private var terminalManager = TerminalSessionManager()
     @State private var isTerminalDrawerOpen = false
+    @State private var viewMode: SessionViewMode = .chat
+    @State private var selectedNodeId: UUID?
     @EnvironmentObject var ghostty: Ghostty.App
 
     var body: some View {
@@ -16,8 +24,8 @@ struct SessionDetail: View {
 
                 Divider()
 
-                // Chat area with messages
-                chatArea(session)
+                // Main content area - switch between chat and graph views
+                contentArea(session)
 
                 // Input bar at bottom
                 inputBar
@@ -57,6 +65,17 @@ struct SessionDetail: View {
 
             // Action buttons
             HStack(spacing: 12) {
+                // View mode picker
+                Picker("View Mode", selection: $viewMode) {
+                    Text("Chat").tag(SessionViewMode.chat)
+                    Text("Graph").tag(SessionViewMode.graph)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 150)
+
+                Spacer()
+                    .frame(width: 20)
+
                 Button(action: openTerminal) {
                     Image(systemName: "terminal")
                 }
@@ -88,12 +107,38 @@ struct SessionDetail: View {
         .background(Color(nsColor: .controlBackgroundColor))
     }
 
+    private func contentArea(_ session: Session) -> some View {
+        Group {
+            switch viewMode {
+            case .chat:
+                chatArea(session)
+            case .graph:
+                graphArea(session)
+            }
+        }
+        .onChange(of: selectedNodeId) { newValue in
+            // When a node is selected in the graph, sync it to other views
+            if let nodeId = newValue {
+                handleNodeSelection(nodeId)
+            }
+        }
+    }
+
     private func chatArea(_ session: Session) -> some View {
         ZStack {
             Color(nsColor: .textBackgroundColor)
 
             // Render chat messages from the session graph
             MessageList(messages: session.graph.projectToChat())
+        }
+    }
+
+    private func graphArea(_ session: Session) -> some View {
+        ZStack {
+            Color(nsColor: .textBackgroundColor)
+
+            // Render the session graph
+            GraphView(graph: session.graph, selectedNodeId: $selectedNodeId)
         }
     }
 
@@ -143,6 +188,15 @@ struct SessionDetail: View {
         if let tab = terminalManager.selectedTab, tab.surfaceView == nil {
             terminalManager.createSurface(for: tabId, ghosttyApp: ghostty)
         }
+    }
+
+    private func handleNodeSelection(_ nodeId: UUID) {
+        // TODO: Implement selection sync
+        // When a node is selected in the graph view:
+        // 1. Scroll the chat view to show the corresponding message
+        // 2. Update the inspector panel to show node details
+        // 3. If it's a tool invocation, optionally open the terminal to the correct CWD
+        print("Node selected: \(nodeId)")
     }
 
     private var emptyState: some View {
