@@ -27,11 +27,23 @@ from pydantic import TypeAdapter
 
 from smithers._shared import (
     build_kwargs as _build_kwargs,
+)
+from smithers._shared import (
     compute_cache_key as _cache_key,
+)
+from smithers._shared import (
     dependency_namespace as _dependency_namespace,
+)
+from smithers._shared import (
     hash_inputs as _hash_inputs,
+)
+from smithers._shared import (
     normalize_invalidate as _normalize_invalidate,
+)
+from smithers._shared import (
     resolve_workflow as _resolve_workflow,
+)
+from smithers._shared import (
     validate_output as _validate_output,
 )
 from smithers.cache import Cache, SqliteCache
@@ -288,7 +300,6 @@ async def _execute_ralph_loop_node(
 
     total_duration_ms = 0.0
     final_iteration = 0
-    start_time = time.perf_counter()
 
     for iteration in range(config.max_iterations):
         final_iteration = iteration + 1
@@ -386,6 +397,21 @@ class ExecutionContext:
     approvals: list[ApprovalRecord] = field(default_factory=list)
 
 
+@dataclass
+class NodeExecutionOptions:
+    """Options for node execution to handle differences between run and resume."""
+
+    invalidated: set[str] = field(default_factory=set)
+    headless: bool = False
+    fail_fast: bool = False
+    get_effective_timeout: Callable[[Workflow, str], float | None] | None = None
+    approval_handler: Callable[[str, str], Awaitable[bool]] | None = None
+    auto_approve: bool | Iterable[str] = False
+    on_rejection: str = "fail"
+    on_progress: Callable[[WorkflowEvent], Awaitable[None]] | None = None
+    skip_completed: bool = False
+
+
 class PauseExecution(Exception):
     """Raised to indicate the run should pause for an approval."""
 
@@ -393,6 +419,382 @@ class PauseExecution(Exception):
         self.node_id = node_id
         self.message = message
         super().__init__(f"Execution paused for approval of node '{node_id}'")
+
+
+async def _execute_node(
+    name: str,
+    ctx: ExecutionContext,
+    store: SqliteStore,
+    options: NodeExecutionOptions,
+) -> None:
+    """
+    Execute a single node in the graph.
+
+    This is the shared implementation for both run_graph_with_store and resume_run.
+    All behavior differences are controlled via NodeExecutionOptions.
+    """
+    # Skip if already completed (used by resume_run)
+    if options.skip_completed and ctx.statuses.get(name) in {"success", "cached", "skipped"}:
+        return
+
+    graph = ctx.graph
+    run_id = ctx.run_id
+    cache = ctx.cache
+
+    node = graph.nodes[name]
+    wf = _resolve_workflow(graph, node)
+
+    # Check dependencies
+    for dep in node.dependencies:
+        if ctx.statuses.get(dep) in {"failed", "skipped"}:
+            ctx.statuses[name] = "skipped"
+            ctx.outputs[name] = None
+            await store.update_node_status(
+                run_id, name, NodeStatus.SKIPPED, skip_reason="dependency failed"
+            )
+            await _emit_event(store, run_id, name, "NodeSkipped", {"reason": "dependency failed"})
+            return
+
+    # Emit NodeReady event
+    await store.update_node_status(run_id, name, NodeStatus.READY)
+    await _emit_event(store, run_id, name, "NodeReady", {})
+
+    if options.on_progress:
+        await options.on_progress(WorkflowEvent(type="started", workflow_name=name))
+
+    try:
+        # Check condition (if any) before proceeding
+        condition_policy = wf.condition_policy or get_condition_policy(wf.fn)
+        if condition_policy is not None:
+            deps_namespace = _dependency_namespace(wf, ctx.outputs)
+            condition_met = evaluate_condition(condition_policy, deps_namespace)
+
+            if not condition_met:
+                skip_reason = condition_policy.skip_reason
+                on_skip_action = condition_policy.on_skip
+
+                if on_skip_action == "fail":
+                    raise ConditionNotMetError(name, skip_reason)
+                elif on_skip_action == "default":
+                    default_val = condition_policy.default_value
+                    ctx.outputs[name] = default_val
+                    ctx.statuses[name] = "skipped"
+                    ctx.results.append(
+                        WorkflowResult(name=name, output=default_val, cached=False, duration_ms=0.0)
+                    )
+                    await store.update_node_status(
+                        run_id,
+                        name,
+                        NodeStatus.SKIPPED,
+                        skip_reason=f"condition: {skip_reason}",
+                    )
+                    await _emit_event(
+                        store,
+                        run_id,
+                        name,
+                        "NodeSkipped",
+                        {"reason": f"condition: {skip_reason}", "default_returned": True},
+                    )
+                    if options.on_progress:
+                        await options.on_progress(
+                            WorkflowEvent(
+                                type="skipped",
+                                workflow_name=name,
+                                message=f"Condition not met: {skip_reason}",
+                            )
+                        )
+                    return
+                else:
+                    ctx.outputs[name] = None
+                    ctx.statuses[name] = "skipped"
+                    ctx.results.append(
+                        WorkflowResult(name=name, output=None, cached=False, duration_ms=0.0)
+                    )
+                    await store.update_node_status(
+                        run_id,
+                        name,
+                        NodeStatus.SKIPPED,
+                        skip_reason=f"condition: {skip_reason}",
+                    )
+                    await _emit_event(
+                        store,
+                        run_id,
+                        name,
+                        "NodeSkipped",
+                        {"reason": f"condition: {skip_reason}"},
+                    )
+                    if options.on_progress:
+                        await options.on_progress(
+                            WorkflowEvent(
+                                type="skipped",
+                                workflow_name=name,
+                                message=f"Condition not met: {skip_reason}",
+                            )
+                        )
+                    return
+
+        # Check cache (with optional invalidation)
+        cache_key = None
+        input_hash_value = None
+        is_invalidated = name in options.invalidated or "*" in options.invalidated
+        if cache is not None and not is_invalidated:
+            input_hash_value = _hash_inputs(wf, ctx.outputs)
+            cache_key = _cache_key(wf, input_hash_value)
+            cached_value = await cache.get(cache_key)
+            if cached_value is not None:
+                ctx.outputs[name] = cached_value
+                ctx.statuses[name] = "cached"
+                ctx.results.append(
+                    WorkflowResult(name=name, output=cached_value, cached=True, duration_ms=0.0)
+                )
+                await store.update_node_status(run_id, name, NodeStatus.CACHED, cache_key=cache_key)
+                cached_to_store = (
+                    cached_value.model_dump()
+                    if hasattr(cached_value, "model_dump")
+                    else cached_value
+                )
+                await store.store_node_output(run_id, name, cached_to_store)
+                await _emit_event(store, run_id, name, "NodeCached", {"cache_key": cache_key})
+                if options.on_progress:
+                    await options.on_progress(WorkflowEvent(type="cached", workflow_name=name))
+                return
+
+        # Handle approval
+        approved = await _maybe_require_approval(
+            wf,
+            node,
+            ctx.outputs,
+            run_id=run_id,
+            store=store,
+            approval_handler=options.approval_handler,
+            auto_approve=options.auto_approve,
+            on_rejection=options.on_rejection,
+            approvals=ctx.approvals,
+            headless=options.headless,
+        )
+        if not approved:
+            ctx.statuses[name] = "skipped"
+            ctx.outputs[name] = None
+            ctx.results.append(
+                WorkflowResult(name=name, output=None, cached=False, duration_ms=0.0)
+            )
+            if options.on_progress:
+                await options.on_progress(
+                    WorkflowEvent(
+                        type="skipped",
+                        workflow_name=name,
+                        message="Approval rejected",
+                    )
+                )
+            return
+
+        # Execute the workflow with retry support
+        await store.update_node_status(run_id, name, NodeStatus.RUNNING)
+
+        kwargs = _build_kwargs(wf, ctx.outputs)
+
+        # Check if this is a Ralph loop and execute accordingly
+        if _is_ralph_loop(wf):
+            from smithers.ralph_loop import RalphLoopWorkflow
+
+            await _emit_event(
+                store,
+                run_id,
+                name,
+                "NodeStarted",
+                {
+                    "is_ralph_loop": True,
+                    "max_iterations": wf.loop_config.max_iterations
+                    if isinstance(wf, RalphLoopWorkflow)
+                    else 0,
+                },
+            )
+
+            # Execute Ralph loop with iteration tracking
+            output, duration_ms, iterations = await _execute_ralph_loop_node(
+                wf,
+                kwargs,
+                run_id=run_id,
+                node_id=name,
+                store=store,
+                on_progress=options.on_progress,
+            )
+            attempts = iterations
+        else:
+            # Calculate effective timeout for this node (if timeout function provided)
+            effective_timeout: float | None = None
+            if options.get_effective_timeout is not None:
+                effective_timeout = options.get_effective_timeout(wf, name)
+
+            started_payload: dict[str, Any] = {"max_attempts": wf.retry_policy.max_attempts}
+            if effective_timeout is not None:
+                started_payload["timeout_seconds"] = effective_timeout
+
+            await _emit_event(
+                store,
+                run_id,
+                name,
+                "NodeStarted",
+                started_payload,
+            )
+
+            # Execute with retry wrapper
+            output, duration_ms, attempts = await _execute_with_retry(
+                wf,
+                kwargs,
+                run_id=run_id,
+                node_id=name,
+                store=store,
+                on_progress=options.on_progress,
+                timeout_seconds=effective_timeout,
+            )
+
+        if isinstance(output, SkipResult):
+            ctx.outputs[name] = None
+            ctx.statuses[name] = "skipped"
+            ctx.results.append(
+                WorkflowResult(name=name, output=None, cached=False, duration_ms=duration_ms)
+            )
+            await store.update_node_status(
+                run_id, name, NodeStatus.SKIPPED, skip_reason=output.reason
+            )
+            await _emit_event(store, run_id, name, "NodeSkipped", {"reason": output.reason})
+            if options.on_progress:
+                await options.on_progress(
+                    WorkflowEvent(
+                        type="skipped",
+                        workflow_name=name,
+                        duration_ms=duration_ms,
+                        message=output.reason,
+                    )
+                )
+            return
+
+        validated = _validate_output(wf, output)
+        ctx.outputs[name] = validated
+        ctx.statuses[name] = "success"
+        ctx.results.append(
+            WorkflowResult(name=name, output=validated, cached=False, duration_ms=duration_ms)
+        )
+
+        # Store in cache
+        if cache is not None and cache_key is not None:
+            if isinstance(cache, SqliteCache):
+                await cache.set(
+                    cache_key,
+                    validated,
+                    workflow_name=wf.name,
+                    input_hash=input_hash_value,
+                )
+            else:
+                await cache.set(cache_key, validated)
+
+        await store.update_node_status(
+            run_id,
+            name,
+            NodeStatus.SUCCESS,
+            cache_key=cache_key,
+            output_hash=hash_json(
+                validated.model_dump() if hasattr(validated, "model_dump") else validated
+            ),
+        )
+        # Store node output for potential resume
+        output_to_store = validated.model_dump() if hasattr(validated, "model_dump") else validated
+        await store.store_node_output(run_id, name, output_to_store)
+
+        # Add loop info to NodeFinished event if this was a Ralph loop
+        finish_payload: dict[str, Any] = {
+            "duration_ms": duration_ms,
+            "cached": False,
+        }
+        if _is_ralph_loop(wf):
+            finish_payload["iterations"] = attempts
+            finish_payload["is_ralph_loop"] = True
+        else:
+            finish_payload["attempts"] = attempts
+
+        await _emit_event(
+            store,
+            run_id,
+            name,
+            "NodeFinished",
+            finish_payload,
+        )
+
+        if options.on_progress:
+            await options.on_progress(
+                WorkflowEvent(type="completed", workflow_name=name, duration_ms=duration_ms)
+            )
+
+    except PauseExecution:
+        # Re-raise PauseExecution to be handled at the outer level
+        raise
+
+    except ConditionNotMetError as exc:
+        ctx.statuses[name] = "failed"
+        ctx.errors[name] = exc
+        await store.update_node_status(run_id, name, NodeStatus.FAILED, error=exc)
+        await _emit_event(store, run_id, name, "NodeConditionFailed", {"reason": exc.reason})
+        if options.on_progress:
+            await options.on_progress(
+                WorkflowEvent(type="failed", workflow_name=name, message=str(exc))
+            )
+        if options.fail_fast:
+            raise
+
+    except ApprovalRejected as exc:
+        ctx.statuses[name] = "skipped"
+        ctx.outputs[name] = None
+        ctx.errors[name] = exc
+        await store.update_node_status(
+            run_id, name, NodeStatus.SKIPPED, skip_reason="approval rejected"
+        )
+        await _emit_event(store, run_id, name, "NodeSkipped", {"reason": "approval rejected"})
+        if options.on_rejection == "fail":
+            raise
+
+    except WorkflowTimeoutError as exc:
+        ctx.statuses[name] = "failed"
+        ctx.errors[name] = exc
+        await store.update_node_status(run_id, name, NodeStatus.FAILED, error=exc)
+        await _emit_event(
+            store,
+            run_id,
+            name,
+            "NodeTimedOut",
+            {
+                "timeout_seconds": exc.timeout_seconds,
+                "elapsed_seconds": exc.elapsed_seconds,
+            },
+        )
+        if options.on_progress:
+            await options.on_progress(
+                WorkflowEvent(type="timeout", workflow_name=name, message=str(exc))
+            )
+        if options.fail_fast:
+            raise
+
+    except GraphTimeoutError:
+        # Re-raise graph timeout to be handled at the outer level
+        raise
+
+    except BaseException as exc:
+        ctx.statuses[name] = "failed"
+        ctx.errors[name] = exc
+        await store.update_node_status(run_id, name, NodeStatus.FAILED, error=exc)
+        await _emit_event(
+            store,
+            run_id,
+            name,
+            "NodeFailed",
+            {"error": str(exc), "error_type": type(exc).__name__},
+        )
+        if options.on_progress:
+            await options.on_progress(
+                WorkflowEvent(type="failed", workflow_name=name, message=str(exc))
+            )
+        if options.fail_fast:
+            raise
 
 
 async def run_graph_with_store(
@@ -518,369 +920,22 @@ async def run_graph_with_store(
 
         return effective
 
+    # Create node execution options for this run
+    node_options = NodeExecutionOptions(
+        invalidated=invalidated,
+        headless=headless,
+        fail_fast=fail_fast,
+        get_effective_timeout=_get_effective_timeout,
+        approval_handler=approval_handler,
+        auto_approve=auto_approve,
+        on_rejection=on_rejection,
+        on_progress=on_progress,
+        skip_completed=False,
+    )
+
     async def run_node_in_main(name: str) -> None:
         """Node executor for run_graph_with_store."""
-        node = graph.nodes[name]
-        wf = _resolve_workflow(graph, node)
-
-        # Check dependencies
-        for dep in node.dependencies:
-            if ctx.statuses.get(dep) in {"failed", "skipped"}:
-                ctx.statuses[name] = "skipped"
-                ctx.outputs[name] = None
-                await store.update_node_status(
-                    run_id, name, NodeStatus.SKIPPED, skip_reason="dependency failed"
-                )
-                await _emit_event(
-                    store, run_id, name, "NodeSkipped", {"reason": "dependency failed"}
-                )
-                return
-
-        # Emit NodeReady event
-        await store.update_node_status(run_id, name, NodeStatus.READY)
-        await _emit_event(store, run_id, name, "NodeReady", {})
-
-        if on_progress:
-            await on_progress(WorkflowEvent(type="started", workflow_name=name))
-
-        try:
-            # Check condition (if any) before proceeding
-            condition_policy = wf.condition_policy or get_condition_policy(wf.fn)
-            if condition_policy is not None:
-                deps_namespace = _dependency_namespace(wf, ctx.outputs)
-                condition_met = evaluate_condition(condition_policy, deps_namespace)
-
-                if not condition_met:
-                    skip_reason = condition_policy.skip_reason
-                    on_skip_action = condition_policy.on_skip
-
-                    if on_skip_action == "fail":
-                        raise ConditionNotMetError(name, skip_reason)
-                    elif on_skip_action == "default":
-                        # Return default value
-                        default_val = condition_policy.default_value
-                        ctx.outputs[name] = default_val
-                        ctx.statuses[name] = "skipped"
-                        ctx.results.append(
-                            WorkflowResult(
-                                name=name, output=default_val, cached=False, duration_ms=0.0
-                            )
-                        )
-                        await store.update_node_status(
-                            run_id,
-                            name,
-                            NodeStatus.SKIPPED,
-                            skip_reason=f"condition: {skip_reason}",
-                        )
-                        await _emit_event(
-                            store,
-                            run_id,
-                            name,
-                            "NodeSkipped",
-                            {"reason": f"condition: {skip_reason}", "default_returned": True},
-                        )
-                        if on_progress:
-                            await on_progress(
-                                WorkflowEvent(
-                                    type="skipped",
-                                    workflow_name=name,
-                                    message=f"Condition not met: {skip_reason}",
-                                )
-                            )
-                        return
-                    else:
-                        # Default: skip
-                        ctx.outputs[name] = None
-                        ctx.statuses[name] = "skipped"
-                        ctx.results.append(
-                            WorkflowResult(name=name, output=None, cached=False, duration_ms=0.0)
-                        )
-                        await store.update_node_status(
-                            run_id,
-                            name,
-                            NodeStatus.SKIPPED,
-                            skip_reason=f"condition: {skip_reason}",
-                        )
-                        await _emit_event(
-                            store,
-                            run_id,
-                            name,
-                            "NodeSkipped",
-                            {"reason": f"condition: {skip_reason}"},
-                        )
-                        if on_progress:
-                            await on_progress(
-                                WorkflowEvent(
-                                    type="skipped",
-                                    workflow_name=name,
-                                    message=f"Condition not met: {skip_reason}",
-                                )
-                            )
-                        return
-
-            # Check cache
-            cache_key = None
-            input_hash_value = None
-            if cache is not None and name not in invalidated and "*" not in invalidated:
-                input_hash_value = _hash_inputs(wf, ctx.outputs)
-                cache_key = _cache_key(wf, input_hash_value)
-                cached_value = await cache.get(cache_key)
-                if cached_value is not None:
-                    ctx.outputs[name] = cached_value
-                    ctx.statuses[name] = "cached"
-                    ctx.results.append(
-                        WorkflowResult(name=name, output=cached_value, cached=True, duration_ms=0.0)
-                    )
-                    await store.update_node_status(
-                        run_id, name, NodeStatus.CACHED, cache_key=cache_key
-                    )
-                    # Store cached output for potential resume
-                    cached_to_store = (
-                        cached_value.model_dump()
-                        if hasattr(cached_value, "model_dump")
-                        else cached_value
-                    )
-                    await store.store_node_output(run_id, name, cached_to_store)
-                    await _emit_event(store, run_id, name, "NodeCached", {"cache_key": cache_key})
-                    if on_progress:
-                        await on_progress(WorkflowEvent(type="cached", workflow_name=name))
-                    return
-
-            # Handle approval
-            approved = await _maybe_require_approval(
-                wf,
-                node,
-                ctx.outputs,
-                run_id=run_id,
-                store=store,
-                approval_handler=approval_handler,
-                auto_approve=auto_approve,
-                on_rejection=on_rejection,
-                approvals=ctx.approvals,
-                headless=headless,
-            )
-            if not approved:
-                ctx.statuses[name] = "skipped"
-                ctx.outputs[name] = None
-                ctx.results.append(
-                    WorkflowResult(name=name, output=None, cached=False, duration_ms=0.0)
-                )
-                if on_progress:
-                    await on_progress(
-                        WorkflowEvent(
-                            type="skipped",
-                            workflow_name=name,
-                            message="Approval rejected",
-                        )
-                    )
-                return
-
-            # Execute the workflow with retry support
-            await store.update_node_status(run_id, name, NodeStatus.RUNNING)
-
-            kwargs = _build_kwargs(wf, ctx.outputs)
-
-            # Check if this is a Ralph loop and execute accordingly
-            if _is_ralph_loop(wf):
-                from smithers.ralph_loop import RalphLoopWorkflow
-
-                await _emit_event(
-                    store,
-                    run_id,
-                    name,
-                    "NodeStarted",
-                    {
-                        "is_ralph_loop": True,
-                        "max_iterations": wf.loop_config.max_iterations
-                        if isinstance(wf, RalphLoopWorkflow)
-                        else 0,
-                    },
-                )
-
-                # Execute Ralph loop with iteration tracking
-                output, duration_ms, iterations = await _execute_ralph_loop_node(
-                    wf,
-                    kwargs,
-                    run_id=run_id,
-                    node_id=name,
-                    store=store,
-                    on_progress=on_progress,
-                )
-                attempts = iterations  # For Ralph loops, "attempts" means iterations
-            else:
-                # Calculate effective timeout for this node
-                effective_timeout = _get_effective_timeout(wf, name)
-
-                await _emit_event(
-                    store,
-                    run_id,
-                    name,
-                    "NodeStarted",
-                    {
-                        "max_attempts": wf.retry_policy.max_attempts,
-                        "timeout_seconds": effective_timeout,
-                    },
-                )
-
-                # Execute with retry wrapper
-                output, duration_ms, attempts = await _execute_with_retry(
-                    wf,
-                    kwargs,
-                    run_id=run_id,
-                    node_id=name,
-                    store=store,
-                    on_progress=on_progress,
-                    timeout_seconds=effective_timeout,
-                )
-
-            if isinstance(output, SkipResult):
-                ctx.outputs[name] = None
-                ctx.statuses[name] = "skipped"
-                ctx.results.append(
-                    WorkflowResult(name=name, output=None, cached=False, duration_ms=duration_ms)
-                )
-                await store.update_node_status(
-                    run_id, name, NodeStatus.SKIPPED, skip_reason=output.reason
-                )
-                await _emit_event(store, run_id, name, "NodeSkipped", {"reason": output.reason})
-                if on_progress:
-                    await on_progress(
-                        WorkflowEvent(
-                            type="skipped",
-                            workflow_name=name,
-                            duration_ms=duration_ms,
-                            message=output.reason,
-                        )
-                    )
-                return
-
-            validated = _validate_output(wf, output)
-            ctx.outputs[name] = validated
-            ctx.statuses[name] = "success"
-            ctx.results.append(
-                WorkflowResult(name=name, output=validated, cached=False, duration_ms=duration_ms)
-            )
-
-            # Store in cache
-            if cache is not None and cache_key is not None:
-                if isinstance(cache, SqliteCache):
-                    await cache.set(
-                        cache_key,
-                        validated,
-                        workflow_name=wf.name,
-                        input_hash=input_hash_value,
-                    )
-                else:
-                    await cache.set(cache_key, validated)
-
-            await store.update_node_status(
-                run_id,
-                name,
-                NodeStatus.SUCCESS,
-                cache_key=cache_key,
-                output_hash=hash_json(
-                    validated.model_dump() if hasattr(validated, "model_dump") else validated
-                ),
-            )
-            # Store node output for potential resume
-            output_to_store = (
-                validated.model_dump() if hasattr(validated, "model_dump") else validated
-            )
-            await store.store_node_output(run_id, name, output_to_store)
-
-            # Add loop info to NodeFinished event if this was a Ralph loop
-            finish_payload: dict[str, Any] = {
-                "duration_ms": duration_ms,
-                "cached": False,
-            }
-            if _is_ralph_loop(wf):
-                finish_payload["iterations"] = attempts
-                finish_payload["is_ralph_loop"] = True
-            else:
-                finish_payload["attempts"] = attempts
-
-            await _emit_event(
-                store,
-                run_id,
-                name,
-                "NodeFinished",
-                finish_payload,
-            )
-
-            if on_progress:
-                await on_progress(
-                    WorkflowEvent(type="completed", workflow_name=name, duration_ms=duration_ms)
-                )
-
-        except PauseExecution:
-            # Re-raise PauseExecution to be handled at the outer level
-            raise
-
-        except ConditionNotMetError as exc:
-            ctx.statuses[name] = "failed"
-            ctx.errors[name] = exc
-            await store.update_node_status(run_id, name, NodeStatus.FAILED, error=exc)
-            await _emit_event(store, run_id, name, "NodeConditionFailed", {"reason": exc.reason})
-            if on_progress:
-                await on_progress(
-                    WorkflowEvent(type="failed", workflow_name=name, message=str(exc))
-                )
-            if fail_fast:
-                raise
-
-        except ApprovalRejected as exc:
-            ctx.statuses[name] = "skipped"
-            ctx.outputs[name] = None
-            ctx.errors[name] = exc
-            await store.update_node_status(
-                run_id, name, NodeStatus.SKIPPED, skip_reason="approval rejected"
-            )
-            await _emit_event(store, run_id, name, "NodeSkipped", {"reason": "approval rejected"})
-            if on_rejection == "fail":
-                raise
-
-        except WorkflowTimeoutError as exc:
-            ctx.statuses[name] = "failed"
-            ctx.errors[name] = exc
-            await store.update_node_status(run_id, name, NodeStatus.FAILED, error=exc)
-            await _emit_event(
-                store,
-                run_id,
-                name,
-                "NodeTimedOut",
-                {
-                    "timeout_seconds": exc.timeout_seconds,
-                    "elapsed_seconds": exc.elapsed_seconds,
-                },
-            )
-            if on_progress:
-                await on_progress(
-                    WorkflowEvent(type="timeout", workflow_name=name, message=str(exc))
-                )
-            if fail_fast:
-                raise
-
-        except GraphTimeoutError:
-            # Re-raise graph timeout to be handled at the outer level
-            raise
-
-        except BaseException as exc:
-            ctx.statuses[name] = "failed"
-            ctx.errors[name] = exc
-            await store.update_node_status(run_id, name, NodeStatus.FAILED, error=exc)
-            await _emit_event(
-                store,
-                run_id,
-                name,
-                "NodeFailed",
-                {"error": str(exc), "error_type": type(exc).__name__},
-            )
-            if on_progress:
-                await on_progress(
-                    WorkflowEvent(type="failed", workflow_name=name, message=str(exc))
-                )
-            if fail_fast:
-                raise
+        await _execute_node(name, ctx, store, node_options)
 
     async def run_node_with_semaphore_main(name: str) -> None:
         if semaphore is None:
@@ -1210,332 +1265,22 @@ async def resume_run(
     semaphore = asyncio.Semaphore(max_concurrency) if max_concurrency else None
     start_time = time.perf_counter()
 
+    # Create node execution options for resume (no invalidation, no headless, skip completed)
+    resume_options = NodeExecutionOptions(
+        invalidated=set(),  # No invalidation for resume
+        headless=False,  # Not headless for resume
+        fail_fast=fail_fast,
+        get_effective_timeout=None,  # No timeout for resume
+        approval_handler=approval_handler,
+        auto_approve=auto_approve,
+        on_rejection=on_rejection,
+        on_progress=on_progress,
+        skip_completed=True,  # Skip already completed nodes
+    )
+
     async def run_node(name: str) -> None:
-        # Skip if already completed
-        if ctx.statuses.get(name) in {"success", "cached", "skipped"}:
-            return
-
-        node = graph.nodes[name]
-        wf = _resolve_workflow(graph, node)
-
-        # Check dependencies
-        for dep in node.dependencies:
-            if ctx.statuses.get(dep) in {"failed", "skipped"}:
-                ctx.statuses[name] = "skipped"
-                ctx.outputs[name] = None
-                await store.update_node_status(
-                    run_id, name, NodeStatus.SKIPPED, skip_reason="dependency failed"
-                )
-                await _emit_event(
-                    store, run_id, name, "NodeSkipped", {"reason": "dependency failed"}
-                )
-                return
-
-        # Emit NodeReady event
-        await store.update_node_status(run_id, name, NodeStatus.READY)
-        await _emit_event(store, run_id, name, "NodeReady", {})
-
-        if on_progress:
-            await on_progress(WorkflowEvent(type="started", workflow_name=name))
-
-        try:
-            # Check condition (if any) before proceeding
-            condition_policy = wf.condition_policy or get_condition_policy(wf.fn)
-            if condition_policy is not None:
-                deps_namespace = _dependency_namespace(wf, ctx.outputs)
-                condition_met = evaluate_condition(condition_policy, deps_namespace)
-
-                if not condition_met:
-                    skip_reason = condition_policy.skip_reason
-                    on_skip_action = condition_policy.on_skip
-
-                    if on_skip_action == "fail":
-                        raise ConditionNotMetError(name, skip_reason)
-                    elif on_skip_action == "default":
-                        default_val = condition_policy.default_value
-                        ctx.outputs[name] = default_val
-                        ctx.statuses[name] = "skipped"
-                        ctx.results.append(
-                            WorkflowResult(
-                                name=name, output=default_val, cached=False, duration_ms=0.0
-                            )
-                        )
-                        await store.update_node_status(
-                            run_id,
-                            name,
-                            NodeStatus.SKIPPED,
-                            skip_reason=f"condition: {skip_reason}",
-                        )
-                        await _emit_event(
-                            store,
-                            run_id,
-                            name,
-                            "NodeSkipped",
-                            {"reason": f"condition: {skip_reason}", "default_returned": True},
-                        )
-                        if on_progress:
-                            await on_progress(
-                                WorkflowEvent(
-                                    type="skipped",
-                                    workflow_name=name,
-                                    message=f"Condition not met: {skip_reason}",
-                                )
-                            )
-                        return
-                    else:
-                        ctx.outputs[name] = None
-                        ctx.statuses[name] = "skipped"
-                        ctx.results.append(
-                            WorkflowResult(name=name, output=None, cached=False, duration_ms=0.0)
-                        )
-                        await store.update_node_status(
-                            run_id,
-                            name,
-                            NodeStatus.SKIPPED,
-                            skip_reason=f"condition: {skip_reason}",
-                        )
-                        await _emit_event(
-                            store,
-                            run_id,
-                            name,
-                            "NodeSkipped",
-                            {"reason": f"condition: {skip_reason}"},
-                        )
-                        if on_progress:
-                            await on_progress(
-                                WorkflowEvent(
-                                    type="skipped",
-                                    workflow_name=name,
-                                    message=f"Condition not met: {skip_reason}",
-                                )
-                            )
-                        return
-
-            # Check cache
-            cache_key = None
-            input_hash_value = None
-            if cache is not None:
-                input_hash_value = _hash_inputs(wf, ctx.outputs)
-                cache_key = _cache_key(wf, input_hash_value)
-                cached_value = await cache.get(cache_key)
-                if cached_value is not None:
-                    ctx.outputs[name] = cached_value
-                    ctx.statuses[name] = "cached"
-                    ctx.results.append(
-                        WorkflowResult(name=name, output=cached_value, cached=True, duration_ms=0.0)
-                    )
-                    await store.update_node_status(
-                        run_id, name, NodeStatus.CACHED, cache_key=cache_key
-                    )
-                    cached_to_store = (
-                        cached_value.model_dump()
-                        if hasattr(cached_value, "model_dump")
-                        else cached_value
-                    )
-                    await store.store_node_output(run_id, name, cached_to_store)
-                    await _emit_event(store, run_id, name, "NodeCached", {"cache_key": cache_key})
-                    if on_progress:
-                        await on_progress(WorkflowEvent(type="cached", workflow_name=name))
-                    return
-
-            # Handle approval
-            approved = await _maybe_require_approval(
-                wf,
-                node,
-                ctx.outputs,
-                run_id=run_id,
-                store=store,
-                approval_handler=approval_handler,
-                auto_approve=auto_approve,
-                on_rejection=on_rejection,
-                approvals=ctx.approvals,
-            )
-            if not approved:
-                ctx.statuses[name] = "skipped"
-                ctx.outputs[name] = None
-                ctx.results.append(
-                    WorkflowResult(name=name, output=None, cached=False, duration_ms=0.0)
-                )
-                if on_progress:
-                    await on_progress(
-                        WorkflowEvent(
-                            type="skipped",
-                            workflow_name=name,
-                            message="Approval rejected",
-                        )
-                    )
-                return
-
-            # Execute the workflow with retry support
-            await store.update_node_status(run_id, name, NodeStatus.RUNNING)
-
-            kwargs = _build_kwargs(wf, ctx.outputs)
-
-            # Check if this is a Ralph loop and execute accordingly
-            if _is_ralph_loop(wf):
-                from smithers.ralph_loop import RalphLoopWorkflow
-
-                await _emit_event(
-                    store,
-                    run_id,
-                    name,
-                    "NodeStarted",
-                    {
-                        "is_ralph_loop": True,
-                        "max_iterations": wf.loop_config.max_iterations
-                        if isinstance(wf, RalphLoopWorkflow)
-                        else 0,
-                    },
-                )
-
-                # Execute Ralph loop with iteration tracking
-                output, duration_ms, iterations = await _execute_ralph_loop_node(
-                    wf,
-                    kwargs,
-                    run_id=run_id,
-                    node_id=name,
-                    store=store,
-                    on_progress=on_progress,
-                )
-                attempts = iterations
-            else:
-                await _emit_event(
-                    store,
-                    run_id,
-                    name,
-                    "NodeStarted",
-                    {"max_attempts": wf.retry_policy.max_attempts},
-                )
-
-                # Execute with retry wrapper
-                output, duration_ms, attempts = await _execute_with_retry(
-                    wf,
-                    kwargs,
-                    run_id=run_id,
-                    node_id=name,
-                    store=store,
-                    on_progress=on_progress,
-                )
-
-            if isinstance(output, SkipResult):
-                ctx.outputs[name] = None
-                ctx.statuses[name] = "skipped"
-                ctx.results.append(
-                    WorkflowResult(name=name, output=None, cached=False, duration_ms=duration_ms)
-                )
-                await store.update_node_status(
-                    run_id, name, NodeStatus.SKIPPED, skip_reason=output.reason
-                )
-                await _emit_event(store, run_id, name, "NodeSkipped", {"reason": output.reason})
-                if on_progress:
-                    await on_progress(
-                        WorkflowEvent(
-                            type="skipped",
-                            workflow_name=name,
-                            duration_ms=duration_ms,
-                            message=output.reason,
-                        )
-                    )
-                return
-
-            validated = _validate_output(wf, output)
-            ctx.outputs[name] = validated
-            ctx.statuses[name] = "success"
-            ctx.results.append(
-                WorkflowResult(name=name, output=validated, cached=False, duration_ms=duration_ms)
-            )
-
-            # Store in cache
-            if cache is not None and cache_key is not None:
-                if isinstance(cache, SqliteCache):
-                    await cache.set(
-                        cache_key,
-                        validated,
-                        workflow_name=wf.name,
-                        input_hash=input_hash_value,
-                    )
-                else:
-                    await cache.set(cache_key, validated)
-
-            await store.update_node_status(
-                run_id,
-                name,
-                NodeStatus.SUCCESS,
-                cache_key=cache_key,
-                output_hash=hash_json(
-                    validated.model_dump() if hasattr(validated, "model_dump") else validated
-                ),
-            )
-            # Store node output for potential resume
-            output_to_store = (
-                validated.model_dump() if hasattr(validated, "model_dump") else validated
-            )
-            await store.store_node_output(run_id, name, output_to_store)
-
-            # Add loop info to NodeFinished event if this was a Ralph loop
-            resume_finish_payload: dict[str, Any] = {
-                "duration_ms": duration_ms,
-                "cached": False,
-            }
-            if _is_ralph_loop(wf):
-                resume_finish_payload["iterations"] = attempts
-                resume_finish_payload["is_ralph_loop"] = True
-            else:
-                resume_finish_payload["attempts"] = attempts
-
-            await _emit_event(
-                store,
-                run_id,
-                name,
-                "NodeFinished",
-                resume_finish_payload,
-            )
-
-            if on_progress:
-                await on_progress(
-                    WorkflowEvent(type="completed", workflow_name=name, duration_ms=duration_ms)
-                )
-
-        except ConditionNotMetError as exc:
-            ctx.statuses[name] = "failed"
-            ctx.errors[name] = exc
-            await store.update_node_status(run_id, name, NodeStatus.FAILED, error=exc)
-            await _emit_event(store, run_id, name, "NodeConditionFailed", {"reason": exc.reason})
-            if on_progress:
-                await on_progress(
-                    WorkflowEvent(type="failed", workflow_name=name, message=str(exc))
-                )
-            if fail_fast:
-                raise
-
-        except ApprovalRejected as exc:
-            ctx.statuses[name] = "skipped"
-            ctx.outputs[name] = None
-            ctx.errors[name] = exc
-            await store.update_node_status(
-                run_id, name, NodeStatus.SKIPPED, skip_reason="approval rejected"
-            )
-            await _emit_event(store, run_id, name, "NodeSkipped", {"reason": "approval rejected"})
-            if on_rejection == "fail":
-                raise
-
-        except BaseException as exc:
-            ctx.statuses[name] = "failed"
-            ctx.errors[name] = exc
-            await store.update_node_status(run_id, name, NodeStatus.FAILED, error=exc)
-            await _emit_event(
-                store,
-                run_id,
-                name,
-                "NodeFailed",
-                {"error": str(exc), "error_type": type(exc).__name__},
-            )
-            if on_progress:
-                await on_progress(
-                    WorkflowEvent(type="failed", workflow_name=name, message=str(exc))
-                )
-            if fail_fast:
-                raise
+        """Node executor for resume_run."""
+        await _execute_node(name, ctx, store, resume_options)
 
     async def run_node_with_semaphore(name: str) -> None:
         if semaphore is None:
