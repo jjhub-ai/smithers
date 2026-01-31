@@ -152,18 +152,19 @@ class FakeToolProvider:
             raise RuntimeError(f"No fake response configured for tool: {tool_name}")
 
         response = self.responses[tool_name]
+
+        # Support callable responses for dynamic behavior
+        output = response(args) if callable(response) else response
+
         self.calls.append(
             FakeToolResult(
                 tool_name=tool_name,
                 input_args=args,
-                output=response,
+                output=output,
             )
         )
 
-        # Support callable responses for dynamic behavior
-        if callable(response):
-            return response(args)
-        return response
+        return output
 
 
 # Global state for fake provider injection

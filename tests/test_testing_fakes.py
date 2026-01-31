@@ -320,3 +320,316 @@ class TestFakeLLMProviderEdgeCases:
 
         assert outer_result.files == ["outer.py"]
         assert inner_result.files == ["inner.py"]
+
+
+class TestFakeToolResult:
+    """Tests for FakeToolResult dataclass."""
+
+    def test_creation(self):
+        """Test creating a FakeToolResult."""
+        from smithers.testing.fakes import FakeToolResult
+
+        result = FakeToolResult(
+            tool_name="Read",
+            input_args={"path": "/test.py"},
+            output={"content": "hello"},
+        )
+        assert result.tool_name == "Read"
+        assert result.input_args == {"path": "/test.py"}
+        assert result.output == {"content": "hello"}
+
+    def test_creation_with_various_outputs(self):
+        """Test creating FakeToolResult with different output types."""
+        from smithers.testing.fakes import FakeToolResult
+
+        # String output
+        result1 = FakeToolResult(tool_name="Bash", input_args={}, output="stdout data")
+        assert result1.output == "stdout data"
+
+        # List output
+        result2 = FakeToolResult(tool_name="Grep", input_args={}, output=["file1.py", "file2.py"])
+        assert result2.output == ["file1.py", "file2.py"]
+
+        # None output
+        result3 = FakeToolResult(tool_name="Delete", input_args={}, output=None)
+        assert result3.output is None
+
+
+class TestFakeToolProvider:
+    """Tests for FakeToolProvider."""
+
+    def test_creation_with_empty_responses(self):
+        """Test creating a FakeToolProvider with no responses."""
+        from smithers.testing.fakes import FakeToolProvider
+
+        provider = FakeToolProvider()
+        assert provider.responses == {}
+        assert provider.calls == []
+
+    def test_creation_with_responses(self):
+        """Test creating a FakeToolProvider with initial responses."""
+        from smithers.testing.fakes import FakeToolProvider
+
+        provider = FakeToolProvider(
+            responses={
+                "Read": {"content": "file content"},
+                "Bash": {"exit_code": 0, "stdout": "output"},
+            }
+        )
+        assert "Read" in provider.responses
+        assert "Bash" in provider.responses
+
+    def test_set_response(self):
+        """Test setting a response for a tool."""
+        from smithers.testing.fakes import FakeToolProvider
+
+        provider = FakeToolProvider()
+        provider.set_response("Read", {"content": "test content"})
+        assert provider.responses["Read"] == {"content": "test content"}
+
+    def test_set_response_overwrites(self):
+        """Test that set_response overwrites existing response."""
+        from smithers.testing.fakes import FakeToolProvider
+
+        provider = FakeToolProvider(responses={"Read": {"content": "old"}})
+        provider.set_response("Read", {"content": "new"})
+        assert provider.responses["Read"] == {"content": "new"}
+
+    @pytest.mark.asyncio
+    async def test_invoke_returns_response(self):
+        """Test that invoke returns the configured response."""
+        from smithers.testing.fakes import FakeToolProvider
+
+        provider = FakeToolProvider(
+            responses={
+                "Read": {"path": "test.py", "content": "hello world"},
+            }
+        )
+
+        result = await provider.invoke("Read", {"path": "test.py"})
+        assert result == {"path": "test.py", "content": "hello world"}
+
+    @pytest.mark.asyncio
+    async def test_invoke_records_call(self):
+        """Test that invoke records the call."""
+        from smithers.testing.fakes import FakeToolProvider
+
+        provider = FakeToolProvider(
+            responses={
+                "Bash": {"exit_code": 0, "stdout": "success"},
+            }
+        )
+
+        await provider.invoke("Bash", {"command": "echo hello"})
+
+        assert len(provider.calls) == 1
+        assert provider.calls[0].tool_name == "Bash"
+        assert provider.calls[0].input_args == {"command": "echo hello"}
+        assert provider.calls[0].output == {"exit_code": 0, "stdout": "success"}
+
+    @pytest.mark.asyncio
+    async def test_invoke_records_multiple_calls(self):
+        """Test that invoke records multiple calls in order."""
+        from smithers.testing.fakes import FakeToolProvider
+
+        provider = FakeToolProvider(
+            responses={
+                "Read": "content1",
+                "Grep": ["match1", "match2"],
+            }
+        )
+
+        await provider.invoke("Read", {"path": "a.py"})
+        await provider.invoke("Grep", {"pattern": "test"})
+        await provider.invoke("Read", {"path": "b.py"})
+
+        assert len(provider.calls) == 3
+        assert provider.calls[0].tool_name == "Read"
+        assert provider.calls[1].tool_name == "Grep"
+        assert provider.calls[2].tool_name == "Read"
+
+    @pytest.mark.asyncio
+    async def test_invoke_raises_for_unconfigured_tool(self):
+        """Test that invoke raises when tool is not configured."""
+        from smithers.testing.fakes import FakeToolProvider
+
+        provider = FakeToolProvider(responses={"Read": "content"})
+
+        with pytest.raises(RuntimeError, match="No fake response configured for tool: Write"):
+            await provider.invoke("Write", {"content": "data"})
+
+    @pytest.mark.asyncio
+    async def test_invoke_with_callable_response(self):
+        """Test that invoke supports callable responses for dynamic behavior."""
+        from typing import Any
+
+        from smithers.testing.fakes import FakeToolProvider
+
+        def dynamic_read(args: dict[str, Any]) -> dict[str, str]:
+            return {"content": f"Content of {args['path']}"}
+
+        provider = FakeToolProvider(responses={"Read": dynamic_read})
+
+        result1 = await provider.invoke("Read", {"path": "file1.py"})
+        result2 = await provider.invoke("Read", {"path": "file2.py"})
+
+        assert result1 == {"content": "Content of file1.py"}
+        assert result2 == {"content": "Content of file2.py"}
+
+    @pytest.mark.asyncio
+    async def test_invoke_callable_records_correct_output(self):
+        """Test that callable responses record the actual output."""
+        from typing import Any
+
+        from smithers.testing.fakes import FakeToolProvider
+
+        def dynamic_response(args: dict[str, Any]) -> int:
+            return args["value"] * 2
+
+        provider = FakeToolProvider(responses={"Compute": dynamic_response})
+
+        await provider.invoke("Compute", {"value": 5})
+
+        assert len(provider.calls) == 1
+        assert provider.calls[0].output == 10
+
+    @pytest.mark.asyncio
+    async def test_invoke_with_none_response(self):
+        """Test that invoke can return None."""
+        from smithers.testing.fakes import FakeToolProvider
+
+        provider = FakeToolProvider(responses={"Delete": None})
+
+        result = await provider.invoke("Delete", {"path": "temp.txt"})
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_invoke_with_string_response(self):
+        """Test that invoke works with string responses."""
+        from smithers.testing.fakes import FakeToolProvider
+
+        provider = FakeToolProvider(responses={"Read": "file contents here"})
+
+        result = await provider.invoke("Read", {"path": "test.txt"})
+        assert result == "file contents here"
+
+    @pytest.mark.asyncio
+    async def test_invoke_with_list_response(self):
+        """Test that invoke works with list responses."""
+        from smithers.testing.fakes import FakeToolProvider
+
+        provider = FakeToolProvider(responses={"Glob": ["a.py", "b.py", "c.py"]})
+
+        result = await provider.invoke("Glob", {"pattern": "*.py"})
+        assert result == ["a.py", "b.py", "c.py"]
+
+
+class TestUseFakeLLMAsync:
+    """Tests for the use_fake_llm_async async context manager."""
+
+    @pytest.mark.asyncio
+    async def test_basic_usage(self):
+        """Test basic async context manager usage."""
+        from smithers.testing.fakes import use_fake_llm_async
+
+        fake = FakeLLMProvider(responses=[{"files": ["test.py"], "summary": "Test"}])
+
+        async with use_fake_llm_async(fake):
+            result = await claude("Analyze", output=AnalysisOutput)
+
+        assert result.files == ["test.py"]
+        assert result.summary == "Test"
+
+    @pytest.mark.asyncio
+    async def test_records_calls(self):
+        """Test that calls are recorded in async context."""
+        from smithers.testing.fakes import use_fake_llm_async
+
+        fake = FakeLLMProvider(responses=[{"files": [], "summary": ""}])
+
+        async with use_fake_llm_async(fake):
+            await claude("My prompt", output=AnalysisOutput, tools=["Read"])
+
+        assert len(fake.calls) == 1
+        assert fake.calls[0].prompt == "My prompt"
+        assert fake.calls[0].tools == ["Read"]
+
+    @pytest.mark.asyncio
+    async def test_cleanup_on_exception(self):
+        """Test that async context manager cleans up on exception."""
+        from smithers.testing.fakes import get_fake_llm_provider, use_fake_llm_async
+
+        fake = FakeLLMProvider(responses=[{"files": [], "summary": ""}])
+
+        with pytest.raises(ValueError):
+            async with use_fake_llm_async(fake):
+                await claude("Test", output=AnalysisOutput)
+                raise ValueError("Intentional")
+
+        # Provider should be cleaned up
+        assert get_fake_llm_provider() is None
+
+    @pytest.mark.asyncio
+    async def test_yields_provider(self):
+        """Test that async context manager yields the provider."""
+        from smithers.testing.fakes import use_fake_llm_async
+
+        fake = FakeLLMProvider(responses=[{"files": [], "summary": ""}])
+
+        async with use_fake_llm_async(fake) as yielded:
+            assert yielded is fake
+
+    @pytest.mark.asyncio
+    async def test_nested_async_contexts(self):
+        """Test nested async context managers."""
+        from smithers.testing.fakes import use_fake_llm_async
+
+        outer = FakeLLMProvider(responses=[{"files": ["outer.py"], "summary": "Outer"}])
+        inner = FakeLLMProvider(responses=[{"files": ["inner.py"], "summary": "Inner"}])
+
+        async with use_fake_llm_async(outer):
+            r1 = await claude("Outer", output=AnalysisOutput)
+
+            async with use_fake_llm_async(inner):
+                r2 = await claude("Inner", output=AnalysisOutput)
+
+        assert r1.files == ["outer.py"]
+        assert r2.files == ["inner.py"]
+
+
+class TestUseRuntimeAsync:
+    """Tests for the use_runtime_async async context manager."""
+
+    @pytest.mark.asyncio
+    async def test_basic_usage(self):
+        """Test basic async context manager usage."""
+        from smithers.testing.fakes import use_runtime_async
+
+        fake = FakeLLMProvider(responses=[{"files": ["test.py"], "summary": "Test"}])
+
+        async with use_runtime_async(llm=fake):
+            result = await claude("Analyze", output=AnalysisOutput)
+
+        assert result.files == ["test.py"]
+
+    @pytest.mark.asyncio
+    async def test_with_none_llm(self):
+        """Test that use_runtime_async(llm=None) doesn't set a provider."""
+        from smithers.testing.fakes import get_fake_llm_provider, use_runtime_async
+
+        async with use_runtime_async(llm=None):
+            assert get_fake_llm_provider() is None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_on_exception(self):
+        """Test that async context manager cleans up on exception."""
+        from smithers.testing.fakes import get_fake_llm_provider, use_runtime_async
+
+        fake = FakeLLMProvider(responses=[{"files": [], "summary": ""}])
+
+        with pytest.raises(ValueError):
+            async with use_runtime_async(llm=fake):
+                await claude("Test", output=AnalysisOutput)
+                raise ValueError("Intentional")
+
+        assert get_fake_llm_provider() is None
