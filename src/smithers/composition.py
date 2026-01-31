@@ -592,7 +592,13 @@ def branch(
     branch_name = name or f"branch__{_hash_workflow_names([if_true.name, if_false.name])}"
 
     async def branch_fn(**kwargs: Any) -> BaseModel:
-        # Get the input value
+        # Get the input value for the condition
+        if not kwargs:
+            raise CompositionError(
+                f"Missing required input for branch workflow '{branch_name}'. "
+                f"Expected at least one of: {list(combined_inputs.keys())}",
+                workflows=[if_true.name, if_false.name],
+            )
         input_val = next(iter(kwargs.values()))
         if condition(input_val):
             return await if_true(**kwargs)

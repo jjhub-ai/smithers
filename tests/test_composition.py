@@ -552,6 +552,29 @@ class TestBranch:
         result_false = await branched(a=OutputA(result="no"))
         assert result_false.data == 0
 
+    @pytest.mark.asyncio
+    async def test_branch_missing_input_error(self):
+        """Branch raises descriptive error when called without required inputs."""
+
+        @workflow(register=False)
+        async def if_true_wf(a: OutputA) -> OutputB:
+            return OutputB(data=1)
+
+        @workflow(register=False)
+        async def if_false_wf(a: OutputA) -> OutputB:
+            return OutputB(data=0)
+
+        branched = branch(
+            condition=lambda x: x.result == "yes",
+            if_true=if_true_wf,
+            if_false=if_false_wf,
+            input_type=OutputA,
+        )
+
+        # Calling without required input should raise CompositionError, not StopIteration
+        with pytest.raises(CompositionError, match="Missing required input"):
+            await branched()
+
 
 # ============================================================================
 # map_workflow tests
