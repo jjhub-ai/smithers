@@ -17,6 +17,29 @@ zig build                  # Swift/Zig build must succeed
 
 If ANY of these fail when you start, **fix them first** before doing anything else. Never commit code that breaks any check. Every commit must leave the codebase green.
 
+### Swift UI Changes: Manual Smoke Test Required
+
+If you modify **any Swift code** (`macos/Sources/**/*.swift`), you MUST:
+
+1. Build and run the app: `zig build run`
+2. Verify the app launches without crashing
+3. **Take a screenshot** using the MCP server to verify UI looks correct
+4. Verify your changes work (click through the UI you modified)
+5. Check Console.app for crash logs if something seems wrong
+
+**Screenshot verification with MCP:**
+```
+# Use mac-commander MCP to take a screenshot
+"Take a screenshot of the Smithers app window"
+
+# Or use macos-automator to check window state
+"Use accessibility_query to verify Smithers window exists and has expected elements"
+```
+
+See `docs/testing-with-mcp.md` for full MCP testing guide.
+
+**Do NOT commit Swift changes that crash the app on launch.** The build passing is not enough — the app must actually run.
+
 ---
 
 ## Design Documents (Read These First)
@@ -167,9 +190,10 @@ If ANY of these fail when you start, **fix them first** before doing anything el
 3. Read docs: CLAUDE.md, prd/smithers-v2-task-guide.md
 4. Identify ONE task (most impactful unblocked item)
 5. Implement with TDD (test first)
-6. Verify green: uv run pytest && uv run pyright && uv run ruff check .
-7. Commit: emoji conventional commit
-8. Done — let next agent continue
+6. Verify green: uv run pytest && uv run pyright && uv run ruff check . && zig build
+7. If Swift changes: run `zig build run` and verify app launches + works
+8. Commit: emoji conventional commit
+9. Done — let next agent continue
 ```
 
 ## Commit Style
