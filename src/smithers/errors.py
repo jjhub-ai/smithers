@@ -202,6 +202,79 @@ class DuplicateProducerError(GraphBuildError):
         )
 
 
+class RalphLoopError(SmithersError):
+    """Base class for errors related to Ralph loops.
+
+    Ralph loops are declarative iteration constructs that run a workflow
+    repeatedly until a condition is met.
+    """
+
+
+class RalphLoopConfigError(RalphLoopError, ValueError):
+    """Raised when a Ralph loop is misconfigured.
+
+    This error indicates a problem with how the Ralph loop was set up,
+    such as missing required configuration or invalid parameters.
+
+    Inherits from ValueError for backwards compatibility.
+
+    Attributes:
+        loop_name: Name of the Ralph loop workflow
+        config_issue: Description of the configuration problem
+
+    Example:
+        When a Ralph loop is created without an inner workflow::
+
+            # This would raise RalphLoopConfigError
+            loop = RalphLoopWorkflow(name="my_loop", ...)
+            await execute_ralph_loop(loop, input)  # No inner_workflow set
+    """
+
+    def __init__(
+        self,
+        loop_name: str,
+        config_issue: str,
+    ) -> None:
+        self.loop_name = loop_name
+        self.config_issue = config_issue
+        super().__init__(f"Ralph loop '{loop_name}' configuration error: {config_issue}")
+
+
+class RalphLoopInputError(RalphLoopError, ValueError):
+    """Raised when a Ralph loop receives invalid input.
+
+    This error indicates a problem with the input provided to the Ralph loop
+    at execution time, such as missing required parameters.
+
+    Inherits from ValueError for backwards compatibility.
+
+    Attributes:
+        loop_name: Name of the Ralph loop workflow
+        param_name: Name of the missing or invalid parameter
+        message: Description of the input problem
+
+    Example:
+        When a Ralph loop is called without required input::
+
+            review_loop = ralph_loop(review_workflow, until=lambda x: x.approved)
+            # This would raise RalphLoopInputError
+            await execute_ralph_loop(review_loop, initial_input=None)
+    """
+
+    def __init__(
+        self,
+        loop_name: str,
+        param_name: str,
+        message: str | None = None,
+    ) -> None:
+        self.loop_name = loop_name
+        self.param_name = param_name
+        if message is None:
+            message = f"Missing required input for parameter '{param_name}'"
+        self.message = message
+        super().__init__(f"Ralph loop '{loop_name}' input error: {message}")
+
+
 class SmithersTimeoutError(SmithersError):
     """Base class for timeout-related errors.
 
@@ -336,6 +409,12 @@ def _serialize_error(
         payload["output_type"] = getattr(error.output_type, "__name__", str(error.output_type))
         payload["existing_workflow"] = error.existing_workflow
         payload["new_workflow"] = error.new_workflow
+    elif isinstance(error, RalphLoopConfigError):
+        payload["loop_name"] = error.loop_name
+        payload["config_issue"] = error.config_issue
+    elif isinstance(error, RalphLoopInputError):
+        payload["loop_name"] = error.loop_name
+        payload["param_name"] = error.param_name
 
     if max_depth > 0:
         cause = error.__cause__ or (

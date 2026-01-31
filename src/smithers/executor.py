@@ -52,7 +52,14 @@ from smithers.conditions import (
     evaluate_condition,
     get_condition_policy,
 )
-from smithers.errors import ApprovalRejected, GraphTimeoutError, WorkflowError, WorkflowTimeoutError
+from smithers.errors import (
+    ApprovalRejected,
+    GraphTimeoutError,
+    RalphLoopConfigError,
+    RalphLoopInputError,
+    WorkflowError,
+    WorkflowTimeoutError,
+)
 from smithers.events import Event, get_event_bus
 from smithers.hashing import hash_json
 from smithers.runtime import RuntimeContext, runtime_context
@@ -282,13 +289,19 @@ async def _execute_ralph_loop_node(
     inner_workflow = wf.inner_workflow
 
     if inner_workflow is None:
-        raise ValueError("RalphLoopWorkflow has no inner_workflow set")
+        raise RalphLoopConfigError(
+            loop_name=wf.name,
+            config_issue="inner_workflow is not set. Ensure the loop was created with ralph_loop().",
+        )
 
     # Get the initial input from kwargs
     # The loop should take a single input parameter
     input_params = list(wf.input_types.keys())
     if not input_params:
-        raise ValueError("Ralph loop must have at least one input parameter")
+        raise RalphLoopConfigError(
+            loop_name=wf.name,
+            config_issue="loop has no input parameters. Ralph loops require at least one input parameter.",
+        )
 
     # For the first iteration, use the input from kwargs
     # For subsequent iterations, use the output of the previous iteration
@@ -296,7 +309,10 @@ async def _execute_ralph_loop_node(
     current = kwargs.get(first_param)
 
     if current is None:
-        raise ValueError(f"Missing input for Ralph loop parameter: {first_param}")
+        raise RalphLoopInputError(
+            loop_name=wf.name,
+            param_name=first_param,
+        )
 
     total_duration_ms = 0.0
     final_iteration = 0

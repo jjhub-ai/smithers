@@ -12,6 +12,9 @@ from smithers.errors import (
     GraphBuildError,
     GraphTimeoutError,
     MissingProducerError,
+    RalphLoopConfigError,
+    RalphLoopError,
+    RalphLoopInputError,
     RateLimitError,
     SmithersError,
     SmithersTimeoutError,
@@ -1193,4 +1196,200 @@ class TestGraphBuildErrorIntegration:
                 else:
                     raise DuplicateProducerError(str, "a", "b")
             except GraphBuildError:
+                pass  # Expected
+
+
+# ============================================================================
+# RalphLoopError Tests
+# ============================================================================
+
+
+class TestRalphLoopError:
+    """Tests for RalphLoopError base class."""
+
+    def test_basic_creation(self) -> None:
+        """Test creating a basic RalphLoopError."""
+        error = RalphLoopError("Loop failed")
+        assert str(error) == "Loop failed"
+
+    def test_is_smithers_error(self) -> None:
+        """Test that RalphLoopError is a SmithersError."""
+        error = RalphLoopError("test")
+        assert isinstance(error, SmithersError)
+
+    def test_subclass_hierarchy(self) -> None:
+        """Test that all Ralph loop errors inherit from RalphLoopError."""
+        assert issubclass(RalphLoopConfigError, RalphLoopError)
+        assert issubclass(RalphLoopInputError, RalphLoopError)
+
+
+# ============================================================================
+# RalphLoopConfigError Tests
+# ============================================================================
+
+
+class TestRalphLoopConfigError:
+    """Tests for RalphLoopConfigError exception."""
+
+    def test_basic_creation(self) -> None:
+        """Test creating a RalphLoopConfigError."""
+        error = RalphLoopConfigError(
+            loop_name="review_loop",
+            config_issue="inner_workflow is not set",
+        )
+        assert error.loop_name == "review_loop"
+        assert error.config_issue == "inner_workflow is not set"
+        assert "review_loop" in str(error)
+        assert "inner_workflow is not set" in str(error)
+
+    def test_message_format(self) -> None:
+        """Test the error message format."""
+        error = RalphLoopConfigError(
+            loop_name="my_loop",
+            config_issue="max_iterations must be positive",
+        )
+        message = str(error)
+        assert "Ralph loop 'my_loop' configuration error:" in message
+        assert "max_iterations must be positive" in message
+
+    def test_inherits_from_ralph_loop_error(self) -> None:
+        """Test that RalphLoopConfigError inherits from RalphLoopError."""
+        assert issubclass(RalphLoopConfigError, RalphLoopError)
+
+    def test_inherits_from_value_error(self) -> None:
+        """Test that RalphLoopConfigError inherits from ValueError."""
+        assert issubclass(RalphLoopConfigError, ValueError)
+
+    def test_can_be_caught_as_value_error(self) -> None:
+        """Test backwards compatibility with ValueError catching."""
+        with pytest.raises(ValueError, match="configuration error"):
+            raise RalphLoopConfigError("loop", "test issue")
+
+    def test_can_be_caught_as_smithers_error(self) -> None:
+        """Test that RalphLoopConfigError can be caught as SmithersError."""
+        with pytest.raises(SmithersError):
+            raise RalphLoopConfigError("loop", "test issue")
+
+    def test_serialization(self) -> None:
+        """Test that RalphLoopConfigError serializes correctly."""
+        error = RalphLoopConfigError(
+            loop_name="test_loop",
+            config_issue="missing inner workflow",
+        )
+        result = serialize_error(error)
+        assert result["type"] == "RalphLoopConfigError"
+        assert result["loop_name"] == "test_loop"
+        assert result["config_issue"] == "missing inner workflow"
+
+
+# ============================================================================
+# RalphLoopInputError Tests
+# ============================================================================
+
+
+class TestRalphLoopInputError:
+    """Tests for RalphLoopInputError exception."""
+
+    def test_basic_creation(self) -> None:
+        """Test creating a RalphLoopInputError."""
+        error = RalphLoopInputError(
+            loop_name="refine_loop",
+            param_name="document",
+        )
+        assert error.loop_name == "refine_loop"
+        assert error.param_name == "document"
+        assert "refine_loop" in str(error)
+        assert "document" in str(error)
+
+    def test_default_message(self) -> None:
+        """Test the default error message."""
+        error = RalphLoopInputError("loop", "data")
+        assert "Missing required input for parameter 'data'" in error.message
+
+    def test_custom_message(self) -> None:
+        """Test with a custom message."""
+        error = RalphLoopInputError(
+            loop_name="my_loop",
+            param_name="input",
+            message="Input must be a valid document",
+        )
+        assert error.message == "Input must be a valid document"
+        assert "Input must be a valid document" in str(error)
+
+    def test_message_format(self) -> None:
+        """Test the error message format."""
+        error = RalphLoopInputError(
+            loop_name="review_loop",
+            param_name="code",
+        )
+        message = str(error)
+        assert "Ralph loop 'review_loop' input error:" in message
+
+    def test_inherits_from_ralph_loop_error(self) -> None:
+        """Test that RalphLoopInputError inherits from RalphLoopError."""
+        assert issubclass(RalphLoopInputError, RalphLoopError)
+
+    def test_inherits_from_value_error(self) -> None:
+        """Test that RalphLoopInputError inherits from ValueError."""
+        assert issubclass(RalphLoopInputError, ValueError)
+
+    def test_can_be_caught_as_value_error(self) -> None:
+        """Test backwards compatibility with ValueError catching."""
+        with pytest.raises(ValueError, match="input error"):
+            raise RalphLoopInputError("loop", "param")
+
+    def test_can_be_caught_as_smithers_error(self) -> None:
+        """Test that RalphLoopInputError can be caught as SmithersError."""
+        with pytest.raises(SmithersError):
+            raise RalphLoopInputError("loop", "param")
+
+    def test_serialization(self) -> None:
+        """Test that RalphLoopInputError serializes correctly."""
+        error = RalphLoopInputError(
+            loop_name="test_loop",
+            param_name="initial_value",
+        )
+        result = serialize_error(error)
+        assert result["type"] == "RalphLoopInputError"
+        assert result["loop_name"] == "test_loop"
+        assert result["param_name"] == "initial_value"
+
+
+# ============================================================================
+# RalphLoop Error Integration Tests
+# ============================================================================
+
+
+class TestRalphLoopErrorIntegration:
+    """Integration tests for Ralph loop errors."""
+
+    def test_all_ralph_loop_errors_are_value_errors(self) -> None:
+        """Verify all Ralph loop errors can be caught as ValueError."""
+        errors: list[Exception] = [
+            RalphLoopConfigError("loop", "issue"),
+            RalphLoopInputError("loop", "param"),
+        ]
+        for error in errors:
+            assert isinstance(error, ValueError)
+            assert isinstance(error, SmithersError)
+
+    def test_all_ralph_loop_errors_are_smithers_errors(self) -> None:
+        """Verify all Ralph loop errors are SmithersErrors."""
+        errors: list[Exception] = [
+            RalphLoopError("base"),
+            RalphLoopConfigError("loop", "issue"),
+            RalphLoopInputError("loop", "param"),
+        ]
+        for error in errors:
+            assert isinstance(error, SmithersError)
+
+    def test_catch_all_ralph_loop_errors_with_ralph_loop_error(self) -> None:
+        """Test that all Ralph loop errors can be caught with RalphLoopError."""
+        for ErrorClass in [RalphLoopConfigError, RalphLoopInputError]:
+            try:
+                if ErrorClass == RalphLoopConfigError:
+                    raise RalphLoopConfigError("loop", "issue")
+                else:
+                    raise RalphLoopInputError("loop", "param")
+            except RalphLoopError:
                 pass  # Expected

@@ -37,12 +37,13 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import Any, ParamSpec, TypeVar, get_type_hints
+from typing import Any, ParamSpec, TypeVar
 
 from pydantic import BaseModel
 
-from smithers.types import NO_RETRY, RetryPolicy
-from smithers.workflow import Workflow, _extract_dependency_type
+from smithers.errors import DuplicateProducerError, RalphLoopConfigError
+from smithers.types import RetryPolicy
+from smithers.workflow import Workflow
 
 P = ParamSpec("P")
 T = TypeVar("T", bound=BaseModel)
@@ -178,9 +179,10 @@ def ralph_loop(
             existing = _registry[loop_workflow.output_type]
             # Only error if it's a different workflow
             if existing.name != loop_workflow.name:
-                raise ValueError(
-                    f"Multiple workflows produce {loop_workflow.output_type.__name__}: "
-                    f"{existing.name} and {loop_workflow.name}"
+                raise DuplicateProducerError(
+                    output_type=loop_workflow.output_type,
+                    existing_workflow=existing.name,
+                    new_workflow=loop_workflow.name,
                 )
         _registry[loop_workflow.output_type] = loop_workflow
 
@@ -223,7 +225,10 @@ async def execute_ralph_loop(
     inner_workflow = loop.inner_workflow
 
     if inner_workflow is None:
-        raise ValueError("RalphLoopWorkflow has no inner_workflow set")
+        raise RalphLoopConfigError(
+            loop_name=loop.name,
+            config_issue="inner_workflow is not set. Ensure the loop was created with ralph_loop().",
+        )
 
     current = initial_input
     final_iteration = 0
