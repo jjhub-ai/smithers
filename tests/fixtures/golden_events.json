@@ -1,14 +1,14 @@
 [
-  {"type": "daemon.ready", "data": {"version": "0.1.0", "config": {"sandbox_mode": "host", "agent_backend": "fake"}}},
-  {"type": "session.created", "data": {"session_id": "test-session-1"}},
-  {"type": "run.started", "data": {"run_id": "run-1", "session_id": "test-session-1"}},
-  {"type": "assistant.delta", "data": {"text": "I'll help you with that. "}},
-  {"type": "assistant.delta", "data": {"text": "Let me analyze the code..."}},
-  {"type": "tool.start", "data": {"tool_use_id": "t1", "name": "Read", "input": {"path": "/src/main.py"}}},
-  {"type": "tool.output_ref", "data": {"tool_use_id": "t1", "artifact_ref": "sha256:abc123", "preview": "def main():\n    ..."}},
-  {"type": "tool.end", "data": {"tool_use_id": "t1", "status": "success"}},
-  {"type": "assistant.delta", "data": {"text": "\n\nI found the issue. The authentication function..."}},
-  {"type": "assistant.final", "data": {"message_id": "msg-1"}},
-  {"type": "checkpoint.created", "data": {"checkpoint_id": "cp-1", "label": "Before fix", "stack_position": 0}},
-  {"type": "run.finished", "data": {"run_id": "run-1", "session_id": "test-session-1"}}
+  {"type": "daemon.ready", "data": {"version": "0.1.0", "config": {"sandbox_mode": "host", "agent_backend": "fake"}}, "timestamp": "2024-01-01T00:00:00"},
+  {"type": "session.created", "data": {"session_id": "test-session-1"}, "timestamp": "2024-01-01T00:00:01"},
+  {"type": "run.started", "data": {"run_id": "run-1", "session_id": "test-session-1"}, "timestamp": "2024-01-01T00:00:02"},
+  {"type": "assistant.delta", "data": {"text": "I'll help you with that. "}, "timestamp": "2024-01-01T00:00:03"},
+  {"type": "assistant.delta", "data": {"text": "Let me analyze the code..."}, "timestamp": "2024-01-01T00:00:04"},
+  {"type": "tool.start", "data": {"tool_use_id": "t1", "name": "Read", "input": {"path": "/src/main.py"}}, "timestamp": "2024-01-01T00:00:05"},
+  {"type": "tool.output_ref", "data": {"tool_use_id": "t1", "artifact_ref": "sha256:abc123", "preview": "def main():\n    ..."}, "timestamp": "2024-01-01T00:00:06"},
+  {"type": "tool.end", "data": {"tool_use_id": "t1", "status": "success"}, "timestamp": "2024-01-01T00:00:07"},
+  {"type": "assistant.delta", "data": {"text": "\n\nI found the issue. The authentication function..."}, "timestamp": "2024-01-01T00:00:08"},
+  {"type": "assistant.final", "data": {"message_id": "msg-1"}, "timestamp": "2024-01-01T00:00:09"},
+  {"type": "checkpoint.created", "data": {"checkpoint_id": "cp-1", "label": "Before fix", "stack_position": 0}, "timestamp": "2024-01-01T00:00:10"},
+  {"type": "run.finished", "data": {"run_id": "run-1", "session_id": "test-session-1"}, "timestamp": "2024-01-01T00:00:11"}
 ]

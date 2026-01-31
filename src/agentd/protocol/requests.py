@@ -25,6 +25,25 @@ class Request:
             params=data.get("params", {}),
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to JSON-compatible dict."""
+        return {
+            "id": self.id,
+            "method": self.method,
+            "params": self.params,
+        }
+
+    def validate(self) -> None:
+        """
+        Validate this request against the protocol schema.
+
+        Raises:
+            ValidationError: If the request doesn't match the schema
+        """
+        from agentd.protocol.validation import validate_request
+
+        validate_request(self.to_dict())
+
 
 def parse_request(line: str) -> Request:
     """Parse an NDJSON line into a Request."""

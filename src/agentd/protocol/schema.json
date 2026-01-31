@@ -1,0 +1,585 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/evmts/smithers/agentd/protocol/v1",
+  "title": "Agent Runtime Protocol",
+  "description": "Event-based protocol for communication between Swift UI and Python agent runtime",
+  "version": "1.0.0",
+  "definitions": {
+    "event": {
+      "type": "object",
+      "required": ["type", "data", "timestamp"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "daemon.ready",
+            "daemon.error",
+            "session.created",
+            "session.closed",
+            "run.started",
+            "run.finished",
+            "run.cancelled",
+            "run.error",
+            "assistant.delta",
+            "assistant.final",
+            "tool.start",
+            "tool.output_ref",
+            "tool.end",
+            "checkpoint.created",
+            "checkpoint.restored",
+            "stack.rebased",
+            "sync.status",
+            "subagent.start",
+            "subagent.end",
+            "skill.start",
+            "skill.result",
+            "skill.end",
+            "form.create",
+            "form.submit",
+            "error"
+          ]
+        },
+        "data": {
+          "type": "object"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "request": {
+      "type": "object",
+      "required": ["id", "method", "params"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique request ID for correlation"
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "session.create",
+            "session.send",
+            "session.close",
+            "run.cancel",
+            "checkpoint.create",
+            "checkpoint.restore"
+          ]
+        },
+        "params": {
+          "type": "object"
+        }
+      }
+    },
+    "daemon_ready_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "daemon.ready"},
+            "data": {
+              "type": "object",
+              "required": ["version"],
+              "properties": {
+                "version": {"type": "string"},
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "sandbox_mode": {"type": "string", "enum": ["host", "vm"]},
+                    "agent_backend": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "daemon_error_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "daemon.error"},
+            "data": {
+              "type": "object",
+              "required": ["error"],
+              "properties": {
+                "error": {"type": "string"},
+                "traceback": {"type": "string"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "session_created_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "session.created"},
+            "data": {
+              "type": "object",
+              "required": ["session_id"],
+              "properties": {
+                "session_id": {"type": "string"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "session_closed_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "session.closed"},
+            "data": {
+              "type": "object",
+              "required": ["session_id"],
+              "properties": {
+                "session_id": {"type": "string"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "run_started_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "run.started"},
+            "data": {
+              "type": "object",
+              "required": ["run_id", "session_id"],
+              "properties": {
+                "run_id": {"type": "string"},
+                "session_id": {"type": "string"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "run_finished_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "run.finished"},
+            "data": {
+              "type": "object",
+              "required": ["run_id", "session_id"],
+              "properties": {
+                "run_id": {"type": "string"},
+                "session_id": {"type": "string"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "run_cancelled_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "run.cancelled"},
+            "data": {
+              "type": "object",
+              "required": ["run_id", "session_id"],
+              "properties": {
+                "run_id": {"type": "string"},
+                "session_id": {"type": "string"},
+                "reason": {"type": "string"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "run_error_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "run.error"},
+            "data": {
+              "type": "object",
+              "required": ["run_id", "session_id", "error"],
+              "properties": {
+                "run_id": {"type": "string"},
+                "session_id": {"type": "string"},
+                "error": {"type": "string"},
+                "traceback": {"type": "string"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "assistant_delta_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "assistant.delta"},
+            "data": {
+              "type": "object",
+              "required": ["text"],
+              "properties": {
+                "text": {"type": "string"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "assistant_final_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "assistant.final"},
+            "data": {
+              "type": "object",
+              "required": ["message_id"],
+              "properties": {
+                "message_id": {"type": "string"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "tool_start_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "tool.start"},
+            "data": {
+              "type": "object",
+              "required": ["tool_use_id", "name", "input"],
+              "properties": {
+                "tool_use_id": {"type": "string"},
+                "name": {"type": "string"},
+                "input": {"type": "object"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "tool_output_ref_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "tool.output_ref"},
+            "data": {
+              "type": "object",
+              "required": ["tool_use_id"],
+              "properties": {
+                "tool_use_id": {"type": "string"},
+                "artifact_ref": {
+                  "type": "string",
+                  "description": "Content-addressed reference (e.g. sha256:...)"
+                },
+                "preview": {
+                  "type": "string",
+                  "description": "First ~200 chars for inline display"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "tool_end_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "tool.end"},
+            "data": {
+              "type": "object",
+              "required": ["tool_use_id", "status"],
+              "properties": {
+                "tool_use_id": {"type": "string"},
+                "status": {
+                  "type": "string",
+                  "enum": ["success", "error"]
+                },
+                "error": {"type": "string"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "checkpoint_created_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "checkpoint.created"},
+            "data": {
+              "type": "object",
+              "required": ["checkpoint_id", "label"],
+              "properties": {
+                "checkpoint_id": {"type": "string"},
+                "label": {"type": "string"},
+                "stack_position": {"type": "integer", "minimum": 0}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "checkpoint_restored_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "checkpoint.restored"},
+            "data": {
+              "type": "object",
+              "required": ["checkpoint_id"],
+              "properties": {
+                "checkpoint_id": {"type": "string"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "stack_rebased_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "stack.rebased"},
+            "data": {
+              "type": "object",
+              "required": ["base_checkpoint_id"],
+              "properties": {
+                "base_checkpoint_id": {"type": "string"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "sync_status_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "sync.status"},
+            "data": {
+              "type": "object",
+              "required": ["ahead", "behind"],
+              "properties": {
+                "ahead": {"type": "integer", "minimum": 0},
+                "behind": {"type": "integer", "minimum": 0},
+                "needs_rebase": {"type": "boolean"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "subagent_start_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "subagent.start"},
+            "data": {
+              "type": "object",
+              "required": ["subagent_id", "task"],
+              "properties": {
+                "subagent_id": {"type": "string"},
+                "task": {"type": "string"},
+                "parent_run_id": {"type": "string"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "subagent_end_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "subagent.end"},
+            "data": {
+              "type": "object",
+              "required": ["subagent_id", "status"],
+              "properties": {
+                "subagent_id": {"type": "string"},
+                "status": {
+                  "type": "string",
+                  "enum": ["success", "error", "cancelled"]
+                },
+                "error": {"type": "string"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "skill_start_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "skill.start"},
+            "data": {
+              "type": "object",
+              "required": ["skill_id", "name"],
+              "properties": {
+                "skill_id": {"type": "string"},
+                "name": {"type": "string"},
+                "args": {"type": "string"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "skill_result_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "skill.result"},
+            "data": {
+              "type": "object",
+              "required": ["skill_id", "result"],
+              "properties": {
+                "skill_id": {"type": "string"},
+                "result": {"type": "string"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "skill_end_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "skill.end"},
+            "data": {
+              "type": "object",
+              "required": ["skill_id", "status"],
+              "properties": {
+                "skill_id": {"type": "string"},
+                "status": {
+                  "type": "string",
+                  "enum": ["success", "error"]
+                },
+                "error": {"type": "string"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "form_create_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "form.create"},
+            "data": {
+              "type": "object",
+              "required": ["form_id", "schema"],
+              "properties": {
+                "form_id": {"type": "string"},
+                "schema": {
+                  "type": "object",
+                  "description": "JSON Schema for form validation"
+                },
+                "title": {"type": "string"},
+                "description": {"type": "string"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "form_submit_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "form.submit"},
+            "data": {
+              "type": "object",
+              "required": ["form_id", "values"],
+              "properties": {
+                "form_id": {"type": "string"},
+                "values": {"type": "object"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "error_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "error"},
+            "data": {
+              "type": "object",
+              "required": ["error"],
+              "properties": {
+                "error": {"type": "string"},
+                "context": {"type": "object"}
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "oneOf": [
+    {"$ref": "#/definitions/daemon_ready_event"},
+    {"$ref": "#/definitions/daemon_error_event"},
+    {"$ref": "#/definitions/session_created_event"},
+    {"$ref": "#/definitions/session_closed_event"},
+    {"$ref": "#/definitions/run_started_event"},
+    {"$ref": "#/definitions/run_finished_event"},
+    {"$ref": "#/definitions/run_cancelled_event"},
+    {"$ref": "#/definitions/run_error_event"},
+    {"$ref": "#/definitions/assistant_delta_event"},
+    {"$ref": "#/definitions/assistant_final_event"},
+    {"$ref": "#/definitions/tool_start_event"},
+    {"$ref": "#/definitions/tool_output_ref_event"},
+    {"$ref": "#/definitions/tool_end_event"},
+    {"$ref": "#/definitions/checkpoint_created_event"},
+    {"$ref": "#/definitions/checkpoint_restored_event"},
+    {"$ref": "#/definitions/stack_rebased_event"},
+    {"$ref": "#/definitions/sync_status_event"},
+    {"$ref": "#/definitions/subagent_start_event"},
+    {"$ref": "#/definitions/subagent_end_event"},
+    {"$ref": "#/definitions/skill_start_event"},
+    {"$ref": "#/definitions/skill_result_event"},
+    {"$ref": "#/definitions/skill_end_event"},
+    {"$ref": "#/definitions/form_create_event"},
+    {"$ref": "#/definitions/form_submit_event"},
+    {"$ref": "#/definitions/error_event"}
+  ]
+}

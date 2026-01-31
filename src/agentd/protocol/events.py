@@ -76,3 +76,14 @@ class Event:
             "data": self.data,
             "timestamp": self.timestamp.isoformat(),
         }
+
+    def validate(self) -> None:
+        """
+        Validate this event against the protocol schema.
+
+        Raises:
+            ValidationError: If the event doesn't match the schema
+        """
+        from agentd.protocol.validation import validate_event
+
+        validate_event(self.to_dict())
