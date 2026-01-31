@@ -144,7 +144,7 @@ from smithers.snapshot import (
     snapshot_from_json_file,
     snapshots_equal,
 )
-from smithers.store.sqlite import LoopIteration, SqliteStore
+from smithers.store.sqlite import LoopIteration, NodeStatus, RunStatus, SqliteStore
 from smithers.testing import (
     FakeLLMProvider,
     RecordingStore,
@@ -206,7 +206,6 @@ from smithers.verification import (
 from smithers.visualization import (
     GraphVisualization,
     NodeState,
-    NodeStatus,
     ProgressVisualizer,
     create_progress_callback,
     print_graph,
@@ -310,6 +309,7 @@ __all__ = [
     "RecordingStore",
     "ReplayLLMProvider",
     "RetryPolicy",
+    "RunStatus",
     "RuntimeContext",
     "SmithersTimeoutError",
     "SnapshotStore",

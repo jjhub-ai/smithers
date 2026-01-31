@@ -172,14 +172,16 @@ class TestNodeStatus:
     """Tests for NodeStatus enum."""
 
     def test_status_values(self):
-        """Test all status values exist."""
-        assert NodeStatus.PENDING == "pending"
-        assert NodeStatus.READY == "ready"
-        assert NodeStatus.RUNNING == "running"
-        assert NodeStatus.CACHED == "cached"
-        assert NodeStatus.SUCCESS == "success"
-        assert NodeStatus.SKIPPED == "skipped"
-        assert NodeStatus.FAILED == "failed"
+        """Test all status values exist (UPPERCASE as defined in store.sqlite)."""
+        assert NodeStatus.PENDING == "PENDING"
+        assert NodeStatus.READY == "READY"
+        assert NodeStatus.RUNNING == "RUNNING"
+        assert NodeStatus.CACHED == "CACHED"
+        assert NodeStatus.SUCCESS == "SUCCESS"
+        assert NodeStatus.SKIPPED == "SKIPPED"
+        assert NodeStatus.FAILED == "FAILED"
+        assert NodeStatus.CANCELLED == "CANCELLED"
+        assert NodeStatus.PAUSED == "PAUSED"
 
 
 class TestNodeState:
@@ -275,7 +277,9 @@ class TestGraphVisualization:
         viz = GraphVisualization(graph=simple_graph, use_colors=False, use_unicode=False)
 
         results = [
-            WorkflowResult(name="step_a", output=OutputA(value="a"), cached=False, duration_ms=100.0),
+            WorkflowResult(
+                name="step_a", output=OutputA(value="a"), cached=False, duration_ms=100.0
+            ),
             WorkflowResult(name="step_b", output=OutputB(value="b"), cached=True, duration_ms=0.0),
         ]
         viz.update_from_results(results)
@@ -535,18 +539,24 @@ class TestVisualizeGraphFunction:
 
     def test_mermaid_format(self, simple_graph):
         """Test mermaid format output."""
-        output = visualize_graph(simple_graph, format="mermaid", use_colors=False, use_unicode=False)
+        output = visualize_graph(
+            simple_graph, format="mermaid", use_colors=False, use_unicode=False
+        )
         assert "graph LR" in output
 
     def test_summary_format(self, simple_graph):
         """Test summary format output."""
-        output = visualize_graph(simple_graph, format="summary", use_colors=False, use_unicode=False)
+        output = visualize_graph(
+            simple_graph, format="summary", use_colors=False, use_unicode=False
+        )
         assert "Total nodes" in output
 
     def test_with_results(self, simple_graph):
         """Test visualization with execution results."""
         results = [
-            WorkflowResult(name="step_a", output=OutputA(value="a"), cached=False, duration_ms=100.0),
+            WorkflowResult(
+                name="step_a", output=OutputA(value="a"), cached=False, duration_ms=100.0
+            ),
             WorkflowResult(name="step_b", output=OutputB(value="b"), cached=True, duration_ms=0.0),
         ]
         output = visualize_graph(

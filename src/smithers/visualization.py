@@ -4,23 +4,12 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import TYPE_CHECKING, Any
+
+from smithers.store.sqlite import NodeStatus
 
 if TYPE_CHECKING:
     from smithers.types import WorkflowGraph, WorkflowResult
-
-
-class NodeStatus(str, Enum):
-    """Status of a node during execution."""
-
-    PENDING = "pending"
-    READY = "ready"
-    RUNNING = "running"
-    CACHED = "cached"
-    SUCCESS = "success"
-    SKIPPED = "skipped"
-    FAILED = "failed"
 
 
 # ANSI color codes
@@ -81,6 +70,8 @@ STATUS_ICONS = {
     NodeStatus.SUCCESS: ("✓", "+"),  # Checkmark
     NodeStatus.SKIPPED: ("⊘", "-"),  # Skipped
     NodeStatus.FAILED: ("✗", "x"),  # X mark
+    NodeStatus.CANCELLED: ("⊗", "C"),  # Cancelled
+    NodeStatus.PAUSED: ("⏸", "P"),  # Paused
 }
 
 STATUS_COLORS = {
@@ -91,6 +82,8 @@ STATUS_COLORS = {
     NodeStatus.SUCCESS: Colors.GREEN,
     NodeStatus.SKIPPED: Colors.YELLOW,
     NodeStatus.FAILED: Colors.RED,
+    NodeStatus.CANCELLED: Colors.YELLOW,
+    NodeStatus.PAUSED: Colors.BLUE,
 }
 
 
@@ -212,8 +205,7 @@ class GraphVisualization:
         # Calculate node widths for alignment
         node_widths = self._calculate_node_widths(show_status, show_timing)
         max_level_width = max(
-            sum(node_widths.get(n, len(n)) for n in level) + len(level) * 4
-            for level in levels
+            sum(node_widths.get(n, len(n)) for n in level) + len(level) * 4 for level in levels
         )
 
         # Build the ASCII representation
@@ -237,9 +229,7 @@ class GraphVisualization:
             return _colorize(title, Colors.BOLD, self.use_colors)
         return title
 
-    def _calculate_node_widths(
-        self, show_status: bool, show_timing: bool
-    ) -> dict[str, int]:
+    def _calculate_node_widths(self, show_status: bool, show_timing: bool) -> dict[str, int]:
         """Calculate the display width of each node."""
         widths: dict[str, int] = {}
         for name in self.graph.nodes:
@@ -277,9 +267,7 @@ class GraphVisualization:
             # Add connector to next level
             if next_level:
                 # Check if this node connects to nodes in the next level
-                connections = [
-                    n for n in next_level if self._has_edge(name, n)
-                ]
+                connections = [n for n in next_level if self._has_edge(name, n)]
                 if connections:
                     arrow = " ──▶ " if self.use_unicode else " --> "
                     if len(connections) > 1 or i < len(level) - 1:
@@ -293,9 +281,7 @@ class GraphVisualization:
         lines.append(level_line)
         return lines
 
-    def _render_node(
-        self, name: str, show_status: bool, show_timing: bool
-    ) -> str:
+    def _render_node(self, name: str, show_status: bool, show_timing: bool) -> str:
         """Render a single node with optional status and timing."""
         state = self.node_states.get(name, NodeState(name=name))
         parts: list[str] = []
@@ -374,9 +360,7 @@ class GraphVisualization:
         lines.append("")
 
         visited: set[str] = set()
-        self._render_tree_node(
-            self.graph.root, lines, "", True, visited, show_status, show_timing
-        )
+        self._render_tree_node(self.graph.root, lines, "", True, visited, show_status, show_timing)
 
         if show_status:
             lines.append("")
@@ -541,7 +525,9 @@ class GraphVisualization:
         # Status needs special handling due to ANSI codes
         visible_status_len = len(f"{icon} {state.status.value.capitalize()}")
         status_padding = status_w - visible_status_len
-        status_padded = " " * (status_padding // 2) + status_text + " " * (status_padding - status_padding // 2)
+        status_padded = (
+            " " * (status_padding // 2) + status_text + " " * (status_padding - status_padding // 2)
+        )
 
         return f"{v}{name_padded}{v}{status_padded}{v}{duration_padded}{v}{cached_padded}{v}"
 
@@ -556,11 +542,14 @@ class GraphVisualization:
         # Add class definitions for styling
         lines.append("    %% Status styles")
         lines.append("    classDef pending fill:#e0e0e0,stroke:#9e9e9e")
+        lines.append("    classDef ready fill:#bbdefb,stroke:#1976d2")
         lines.append("    classDef running fill:#bbdefb,stroke:#1976d2")
         lines.append("    classDef success fill:#c8e6c9,stroke:#388e3c")
         lines.append("    classDef cached fill:#e1bee7,stroke:#7b1fa2")
         lines.append("    classDef skipped fill:#fff9c4,stroke:#f9a825")
         lines.append("    classDef failed fill:#ffcdd2,stroke:#d32f2f")
+        lines.append("    classDef cancelled fill:#fff9c4,stroke:#f9a825")
+        lines.append("    classDef paused fill:#bbdefb,stroke:#1976d2")
         lines.append("")
 
         # Add nodes with their display labels
@@ -582,12 +571,11 @@ class GraphVisualization:
         # Apply status classes
         for status in NodeStatus:
             nodes_with_status = [
-                name for name, state in self.node_states.items()
-                if state.status == status
+                name for name, state in self.node_states.items() if state.status == status
             ]
             if nodes_with_status:
                 nodes_str = ",".join(nodes_with_status)
-                lines.append(f"    class {nodes_str} {status.value}")
+                lines.append(f"    class {nodes_str} {status.value.lower()}")
 
         return "\n".join(lines)
 
@@ -610,7 +598,7 @@ class GraphVisualization:
         for status, count in sorted(by_status.items(), key=lambda x: x[0].value):
             icon = _get_status_icon(status, self.use_unicode)
             color = STATUS_COLORS.get(status, Colors.WHITE)
-            part = f"{icon} {count} {status.value}"
+            part = f"{icon} {count} {status.value.lower()}"
             if self.use_colors:
                 part = _colorize(part, color, self.use_colors)
             status_parts.append(part)
@@ -665,7 +653,7 @@ def visualize_graph(
     if node_statuses:
         for name, status_str in node_statuses.items():
             try:
-                status = NodeStatus(status_str.lower())
+                status = NodeStatus(status_str.upper())
             except ValueError:
                 status = NodeStatus.PENDING
             viz.update_status(name, status)
@@ -752,7 +740,6 @@ class ProgressVisualizer:
 
         This method is designed to be passed to run_graph's on_progress callback.
         """
-        import sys
 
         # Map event types to node statuses
         event_type = getattr(event, "type", None)
