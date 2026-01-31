@@ -22,6 +22,7 @@ from smithers import (
     field_gte,
     field_in,
     field_lt,
+    field_lte,
     get_condition_policy,
     has_attr,
     has_condition,
@@ -217,6 +218,13 @@ class TestPreBuiltConditions:
         cond = field_lt("tests", "coverage", 0.8)
         assert cond(SimpleNamespace(tests=CheckOutput(passed=True, coverage=0.5))) is True
         assert cond(SimpleNamespace(tests=CheckOutput(passed=True, coverage=0.8))) is False
+
+    def test_field_lte(self):
+        """field_lte checks field <= threshold."""
+        cond = field_lte("tests", "coverage", 0.8)
+        assert cond(SimpleNamespace(tests=CheckOutput(passed=True, coverage=0.8))) is True
+        assert cond(SimpleNamespace(tests=CheckOutput(passed=True, coverage=0.5))) is True
+        assert cond(SimpleNamespace(tests=CheckOutput(passed=True, coverage=0.9))) is False
 
     def test_field_in(self):
         """field_in checks field in allowed values."""
@@ -552,6 +560,28 @@ class TestConditionEdgeCases:
         """field_gt handles non-numeric fields."""
         cond = field_gt("dep", "field", 5)
         assert cond(SimpleNamespace(dep=SimpleNamespace(field="not a number"))) is False
+
+    def test_field_lte_with_none_dep(self):
+        """field_lte handles None dependency."""
+        cond = field_lte("dep", "field", 5)
+        assert cond(SimpleNamespace(dep=None)) is False
+
+    def test_field_lte_with_missing_dep(self):
+        """field_lte handles missing dependency."""
+        cond = field_lte("dep", "field", 5)
+        assert cond(SimpleNamespace()) is False
+
+    def test_field_lte_with_non_numeric(self):
+        """field_lte handles non-numeric fields."""
+        cond = field_lte("dep", "field", 5)
+        assert cond(SimpleNamespace(dep=SimpleNamespace(field="not a number"))) is False
+
+    def test_field_lte_with_dict(self):
+        """field_lte works with dict values."""
+        cond = field_lte("dep", "field", 5)
+        assert cond(SimpleNamespace(dep={"field": 3})) is True
+        assert cond(SimpleNamespace(dep={"field": 5})) is True
+        assert cond(SimpleNamespace(dep={"field": 6})) is False
 
     def test_condition_description_preserved(self):
         """Condition descriptions are preserved in combinators."""

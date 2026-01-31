@@ -497,6 +497,45 @@ def field_lt(dep_name: str, field_name: str, threshold: float) -> Condition:
     return Condition(evaluate, f"{dep_name}.{field_name} < {threshold}")
 
 
+def field_lte(dep_name: str, field_name: str, threshold: float) -> Condition:
+    """
+    Condition that checks if a dependency field is less than or equal to a threshold.
+
+    Args:
+        dep_name: Name of the dependency.
+        field_name: Name of the field to check.
+        threshold: Maximum value (inclusive).
+
+    Returns:
+        A Condition that evaluates to True if the field value <= threshold.
+
+    Example:
+        @when(field_lte("metrics", "error_rate", 0.05))
+        async def deploy(...):
+            ...
+    """
+
+    def evaluate(deps: SimpleNamespace) -> bool:
+        if not hasattr(deps, dep_name):
+            return False
+        dep = getattr(deps, dep_name)
+        if dep is None:
+            return False
+        val = None
+        if hasattr(dep, field_name):
+            val = getattr(dep, field_name)
+        elif isinstance(dep, dict) and field_name in dep:
+            val = dep[field_name]
+        if val is None:
+            return False
+        try:
+            return float(val) <= threshold
+        except (TypeError, ValueError):
+            return False
+
+    return Condition(evaluate, f"{dep_name}.{field_name} <= {threshold}")
+
+
 def field_in(dep_name: str, field_name: str, allowed_values: list[Any]) -> Condition:
     """
     Condition that checks if a dependency field is in a list of allowed values.
