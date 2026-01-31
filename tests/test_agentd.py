@@ -105,3 +105,104 @@ class TestHostRuntime:
 
         content = await runtime.read_file(sandbox_id, test_file)
         assert content == "Hello, world!"
+
+
+class TestSessionManager:
+    """Test SessionManager adapter wiring."""
+
+    @pytest.fixture
+    def fake_adapter(self):
+        """Create a fake adapter with a simple script."""
+        from agentd.adapters.fake import FakeAgentAdapter
+
+        script = [
+            {"type": "assistant.delta", "text": "Hello! "},
+            {"type": "assistant.delta", "text": "How can I help?"},
+            {"type": "assistant.final", "message_id": "msg-1"},
+        ]
+        return FakeAgentAdapter(script=script)
+
+    @pytest.fixture
+    def session_manager(self, fake_adapter):
+        """Create a SessionManager with fake adapter."""
+        from agentd.session import SessionManager
+
+        return SessionManager(adapter=fake_adapter)
+
+    @pytest.mark.asyncio
+    async def test_create_session(self, session_manager, tmp_path):
+        """Test creating a session."""
+        session = await session_manager.create_session(str(tmp_path))
+
+        assert session.id is not None
+        assert session.workspace_root == str(tmp_path)
+        assert session.id in session_manager.sessions
+
+    @pytest.mark.asyncio
+    async def test_send_message_calls_adapter(self, session_manager, tmp_path):
+        """Test that send_message calls the adapter and emits events."""
+        session = await session_manager.create_session(str(tmp_path))
+
+        # Collect events
+        events = []
+
+        def collect_event(event):
+            events.append(event)
+
+        # Send a message
+        await session_manager.send_message(
+            session_id=session.id, message="Hello, agent!", emit=collect_event
+        )
+
+        # Verify events were emitted
+        event_types = [e.type for e in events]
+
+        # Should have: RUN_STARTED, ASSISTANT_DELTA (x2), ASSISTANT_FINAL, RUN_FINISHED
+        assert EventType.RUN_STARTED in event_types
+        assert EventType.ASSISTANT_DELTA in event_types
+        assert EventType.ASSISTANT_FINAL in event_types
+        assert EventType.RUN_FINISHED in event_types
+
+        # Verify we got the expected assistant deltas
+        delta_events = [e for e in events if e.type == EventType.ASSISTANT_DELTA]
+        assert len(delta_events) == 2
+        assert delta_events[0].data["text"] == "Hello! "
+        assert delta_events[1].data["text"] == "How can I help?"
+
+    @pytest.mark.asyncio
+    async def test_message_history_updated(self, session_manager, tmp_path):
+        """Test that message history is maintained."""
+        session = await session_manager.create_session(str(tmp_path))
+
+        # Send first message
+        await session_manager.send_message(
+            session_id=session.id, message="Hello, agent!", emit=lambda e: None
+        )
+
+        # Check history has user message
+        assert len(session.message_history) == 1
+        assert session.message_history[0]["role"] == "user"
+        assert session.message_history[0]["content"] == "Hello, agent!"
+
+        # Send second message
+        await session_manager.send_message(
+            session_id=session.id, message="Can you help me?", emit=lambda e: None
+        )
+
+        # History should now have both messages
+        assert len(session.message_history) == 2
+        assert session.message_history[1]["content"] == "Can you help me?"
+
+    @pytest.mark.asyncio
+    async def test_session_not_found(self, session_manager):
+        """Test error when session not found."""
+        events = []
+
+        await session_manager.send_message(
+            session_id="nonexistent", message="Hello", emit=lambda e: events.append(e)
+        )
+
+        # Should emit ERROR event
+        assert len(events) == 1
+        assert events[0].type == EventType.ERROR
+        assert "not found" in events[0].data["message"]

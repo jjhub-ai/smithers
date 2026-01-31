@@ -10,6 +10,8 @@ import sys
 from dataclasses import dataclass
 from typing import TextIO
 
+from agentd.adapters.base import AgentAdapter
+from agentd.adapters.fake import FakeAgentAdapter
 from agentd.protocol.events import Event, EventType
 from agentd.protocol.requests import Request, parse_request
 from agentd.session import SessionManager
@@ -42,8 +44,23 @@ class AgentDaemon:
         self.config = config
         self.input_stream = input_stream
         self.output_stream = output_stream
-        self.session_manager = SessionManager(config)
+
+        # Create the appropriate adapter based on config
+        adapter = self._create_adapter()
+        self.session_manager = SessionManager(adapter=adapter, config=config)
         self._running = False
+
+    def _create_adapter(self) -> AgentAdapter:
+        """Create the agent adapter based on config."""
+        if self.config.agent_backend == "fake":
+            return FakeAgentAdapter()
+        elif self.config.agent_backend == "anthropic":
+            # Import here to avoid requiring anthropic for fake mode
+            from agentd.adapters.anthropic import AnthropicAgentAdapter
+
+            return AnthropicAgentAdapter()
+        else:
+            raise ValueError(f"Unknown agent backend: {self.config.agent_backend}")
 
     def emit_event(self, event: Event) -> None:
         """Send an event to the Swift client."""
