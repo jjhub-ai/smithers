@@ -8,14 +8,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-# Optional dependency - gracefully degrade if not available
-try:
-    import jsonschema
-    from jsonschema import Draft7Validator
+import jsonschema
+from jsonschema import Draft7Validator
 
-    VALIDATION_AVAILABLE = True
-except ImportError:
-    VALIDATION_AVAILABLE = False
+# jsonschema is now a core dependency - always available
+VALIDATION_AVAILABLE = True
 
 
 # Load schema once at module import
@@ -43,18 +40,8 @@ def validate_event(event_dict: dict[str, Any]) -> None:
         event_dict: The event dictionary to validate (with type, data, timestamp)
 
     Raises:
-        ValidationError: If the event is invalid or validation is not available
+        ValidationError: If the event is invalid
     """
-    if not VALIDATION_AVAILABLE:
-        # Gracefully degrade - perform basic structure check
-        if "type" not in event_dict:
-            raise ValidationError("Event missing required 'type' field")
-        if "data" not in event_dict:
-            raise ValidationError("Event missing required 'data' field")
-        if "timestamp" not in event_dict:
-            raise ValidationError("Event missing required 'timestamp' field")
-        return
-
     try:
         validator = Draft7Validator(PROTOCOL_SCHEMA)
         errors = list(validator.iter_errors(event_dict))
@@ -76,18 +63,8 @@ def validate_request(request_dict: dict[str, Any]) -> None:
         request_dict: The request dictionary to validate (with id, method, params)
 
     Raises:
-        ValidationError: If the request is invalid or validation is not available
+        ValidationError: If the request is invalid
     """
-    if not VALIDATION_AVAILABLE:
-        # Gracefully degrade - perform basic structure check
-        if "id" not in request_dict:
-            raise ValidationError("Request missing required 'id' field")
-        if "method" not in request_dict:
-            raise ValidationError("Request missing required 'method' field")
-        if "params" not in request_dict:
-            raise ValidationError("Request missing required 'params' field")
-        return
-
     # Validate against the request definition
     request_schema = PROTOCOL_SCHEMA["definitions"]["request"]
     try:
