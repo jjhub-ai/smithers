@@ -1,5 +1,6 @@
 """Tests for the tools system."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,25 @@ from smithers.tools import (
     Tool,
     get_all_tools,
     get_tool,
+    read_web_page,
+    web_search,
 )
+from smithers.errors import ToolError
+
+
+class _MockResponse:
+    def __init__(self, payload: bytes, content_type: str = "application/json") -> None:
+        self._payload = payload
+        self.headers = {"Content-Type": content_type}
+
+    def read(self) -> bytes:
+        return self._payload
+
+    def __enter__(self) -> "_MockResponse":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
 
 
 class TestBuiltinTools:
@@ -104,6 +123,65 @@ class TestBuiltinTools:
         result = await Bash("echo 'error' >&2")
 
         assert "error" in result["stderr"]
+
+    async def test_web_search_tool(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        payload = {
+            "Heading": "Python",
+            "AbstractText": "Python is a language.",
+            "AbstractURL": "https://example.com/python",
+            "RelatedTopics": [
+                {"Text": "Python Language", "FirstURL": "https://example.com/lang"},
+                {"Text": "Python History", "FirstURL": "https://example.com/history"},
+            ],
+        }
+
+        def _fake_urlopen(url: str, timeout: int = 10) -> _MockResponse:
+            return _MockResponse(
+                json.dumps(payload).encode("utf-8"),
+                content_type="application/json",
+            )
+
+        monkeypatch.setattr("smithers.tools.urllib.request.urlopen", _fake_urlopen)
+
+        result = await web_search("python", max_results=2)
+
+        assert len(result["results"]) == 2
+        assert result["results"][0]["title"] == "Python"
+        assert result["results"][1]["title"] == "Python Language"
+
+    async def test_web_search_tool_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _fake_urlopen(url: str, timeout: int = 10) -> _MockResponse:
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("smithers.tools.urllib.request.urlopen", _fake_urlopen)
+
+        with pytest.raises(ToolError, match="Web search failed"):
+            await web_search("python")
+
+    async def test_read_web_page_html(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        html = "<html><body><h1>Title</h1><p>Hello <b>world</b></p></body></html>"
+
+        def _fake_urlopen(url: str, timeout: int = 10) -> _MockResponse:
+            return _MockResponse(html.encode("utf-8"), content_type="text/html")
+
+        monkeypatch.setattr("smithers.tools.urllib.request.urlopen", _fake_urlopen)
+
+        result = await read_web_page("https://example.com", max_chars=5)
+
+        assert result["url"] == "https://example.com"
+        assert result["content"] == "Title"
+
+    async def test_read_web_page_plain_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        raw = "Just text"
+
+        def _fake_urlopen(url: str, timeout: int = 10) -> _MockResponse:
+            return _MockResponse(raw.encode("utf-8"), content_type="text/plain")
+
+        monkeypatch.setattr("smithers.tools.urllib.request.urlopen", _fake_urlopen)
+
+        result = await read_web_page("https://example.com")
+
+        assert result["content"] == "Just text"
 
 
 class TestToolRegistry:
