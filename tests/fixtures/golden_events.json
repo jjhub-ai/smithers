@@ -1,0 +1,14 @@
+[
+  {"type": "daemon.ready", "data": {"version": "0.1.0", "config": {"sandbox_mode": "host", "agent_backend": "fake"}}},
+  {"type": "session.created", "data": {"session_id": "test-session-1"}},
+  {"type": "run.started", "data": {"run_id": "run-1", "session_id": "test-session-1"}},
+  {"type": "assistant.delta", "data": {"text": "I'll help you with that. "}},
+  {"type": "assistant.delta", "data": {"text": "Let me analyze the code..."}},
+  {"type": "tool.start", "data": {"tool_use_id": "t1", "name": "Read", "input": {"path": "/src/main.py"}}},
+  {"type": "tool.output_ref", "data": {"tool_use_id": "t1", "artifact_ref": "sha256:abc123", "preview": "def main():\n    ..."}},
+  {"type": "tool.end", "data": {"tool_use_id": "t1", "status": "success"}},
+  {"type": "assistant.delta", "data": {"text": "\n\nI found the issue. The authentication function..."}},
+  {"type": "assistant.final", "data": {"message_id": "msg-1"}},
+  {"type": "checkpoint.created", "data": {"checkpoint_id": "cp-1", "label": "Before fix", "stack_position": 0}},
+  {"type": "run.finished", "data": {"run_id": "run-1", "session_id": "test-session-1"}}
+]
