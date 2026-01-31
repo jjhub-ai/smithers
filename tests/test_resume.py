@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 from pathlib import Path
@@ -12,6 +11,9 @@ from pydantic import BaseModel
 
 from smithers import (
     PauseExecution,
+    PendingApprovalsError,
+    RunNotFoundError,
+    RunNotPausedError,
     build_graph,
     resume_run,
     run_graph_with_store,
@@ -55,9 +57,8 @@ class TestPauseExecution:
         graph = build_graph(step_one)
         store = SqliteStore(tmp_path / "test.db")
 
-        with pytest.raises(PauseExecution) as exc_info:
-            with use_fake_llm(FakeLLMProvider()):
-                await run_graph_with_store(graph, store=store, headless=True)
+        with pytest.raises(PauseExecution) as exc_info, use_fake_llm(FakeLLMProvider()):
+            await run_graph_with_store(graph, store=store, headless=True)
 
         assert exc_info.value.node_id == "step_one"
         assert "Proceed with step one?" in exc_info.value.message
@@ -152,8 +153,11 @@ class TestResumeRun:
         store = SqliteStore(tmp_path / "store.db")
         await store.initialize()
 
-        with pytest.raises(ValueError, match="Run not found"):
+        with pytest.raises(RunNotFoundError) as exc_info:
             await resume_run("nonexistent-run", store, graph)
+        assert exc_info.value.run_id == "nonexistent-run"
+        # Also verify backward compatibility with ValueError
+        assert isinstance(exc_info.value, ValueError)
 
     async def test_resume_validates_paused_status(self, tmp_path: Path) -> None:
         """Test that resume_run raises if run is not paused."""
@@ -170,8 +174,12 @@ class TestResumeRun:
         run_id = await store.create_run("test-hash", "simple_workflow", run_id="test-run")
         await store.update_run_status(run_id, RunStatus.RUNNING)
 
-        with pytest.raises(ValueError, match="Run is not paused"):
+        with pytest.raises(RunNotPausedError) as exc_info:
             await resume_run(run_id, store, graph)
+        assert exc_info.value.run_id == run_id
+        assert exc_info.value.current_status == "RUNNING"
+        # Also verify backward compatibility with ValueError
+        assert isinstance(exc_info.value, ValueError)
 
     async def test_resume_validates_no_pending_approvals(self, tmp_path: Path) -> None:
         """Test that resume_run raises if there are pending approvals."""
@@ -189,8 +197,12 @@ class TestResumeRun:
         await store.update_run_status(run_id, RunStatus.PAUSED)
         await store.request_approval(run_id, "simple_workflow", "Approve?")
 
-        with pytest.raises(ValueError, match="pending approvals"):
+        with pytest.raises(PendingApprovalsError) as exc_info:
             await resume_run(run_id, store, graph)
+        assert exc_info.value.run_id == run_id
+        assert "simple_workflow" in exc_info.value.pending_nodes
+        # Also verify backward compatibility with ValueError
+        assert isinstance(exc_info.value, ValueError)
 
     async def test_resume_after_approval(self, tmp_path: Path) -> None:
         """Test that a paused run can be resumed after approval."""

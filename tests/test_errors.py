@@ -12,10 +12,14 @@ from smithers.errors import (
     GraphBuildError,
     GraphTimeoutError,
     MissingProducerError,
+    PendingApprovalsError,
     RalphLoopConfigError,
     RalphLoopError,
     RalphLoopInputError,
     RateLimitError,
+    ResumeError,
+    RunNotFoundError,
+    RunNotPausedError,
     SmithersError,
     SmithersTimeoutError,
     ToolError,
@@ -1393,3 +1397,258 @@ class TestRalphLoopErrorIntegration:
                     raise RalphLoopInputError("loop", "param")
             except RalphLoopError:
                 pass  # Expected
+
+
+# ============================================================================
+# ResumeError Tests
+# ============================================================================
+
+
+class TestResumeError:
+    """Tests for ResumeError base class."""
+
+    def test_basic_creation(self) -> None:
+        """Test creating a basic ResumeError."""
+        error = ResumeError("Resume failed")
+        assert str(error) == "Resume failed"
+
+    def test_is_smithers_error(self) -> None:
+        """Test that ResumeError is a SmithersError."""
+        error = ResumeError("test")
+        assert isinstance(error, SmithersError)
+
+    def test_is_value_error(self) -> None:
+        """Test that ResumeError is a ValueError for backwards compatibility."""
+        error = ResumeError("test")
+        assert isinstance(error, ValueError)
+
+    def test_subclass_hierarchy(self) -> None:
+        """Test that all resume errors inherit from ResumeError."""
+        assert issubclass(RunNotFoundError, ResumeError)
+        assert issubclass(RunNotPausedError, ResumeError)
+        assert issubclass(PendingApprovalsError, ResumeError)
+
+
+# ============================================================================
+# RunNotFoundError Tests
+# ============================================================================
+
+
+class TestRunNotFoundError:
+    """Tests for RunNotFoundError exception."""
+
+    def test_basic_creation(self) -> None:
+        """Test creating a RunNotFoundError."""
+        error = RunNotFoundError("run-123")
+        assert error.run_id == "run-123"
+        assert "run-123" in str(error)
+        assert "Run not found" in str(error)
+
+    def test_message_format(self) -> None:
+        """Test the error message format."""
+        error = RunNotFoundError("my-run-id")
+        assert str(error) == "Run not found: my-run-id"
+
+    def test_inherits_from_resume_error(self) -> None:
+        """Test that RunNotFoundError inherits from ResumeError."""
+        assert issubclass(RunNotFoundError, ResumeError)
+
+    def test_inherits_from_value_error(self) -> None:
+        """Test that RunNotFoundError inherits from ValueError."""
+        assert issubclass(RunNotFoundError, ValueError)
+
+    def test_can_be_caught_as_value_error(self) -> None:
+        """Test backwards compatibility with ValueError catching."""
+        with pytest.raises(ValueError, match="Run not found"):
+            raise RunNotFoundError("test-run")
+
+    def test_can_be_caught_as_smithers_error(self) -> None:
+        """Test that RunNotFoundError can be caught as SmithersError."""
+        with pytest.raises(SmithersError):
+            raise RunNotFoundError("test-run")
+
+    def test_serialization(self) -> None:
+        """Test that RunNotFoundError serializes correctly."""
+        error = RunNotFoundError("run-abc-123")
+        result = serialize_error(error)
+        assert result["type"] == "RunNotFoundError"
+        assert result["run_id"] == "run-abc-123"
+
+
+# ============================================================================
+# RunNotPausedError Tests
+# ============================================================================
+
+
+class TestRunNotPausedError:
+    """Tests for RunNotPausedError exception."""
+
+    def test_basic_creation(self) -> None:
+        """Test creating a RunNotPausedError."""
+        error = RunNotPausedError("run-456", "RUNNING")
+        assert error.run_id == "run-456"
+        assert error.current_status == "RUNNING"
+        assert "RUNNING" in str(error)
+        assert "not paused" in str(error)
+
+    def test_message_format(self) -> None:
+        """Test the error message format."""
+        error = RunNotPausedError("my-run", "SUCCESS")
+        assert str(error) == "Run is not paused (status: SUCCESS)"
+
+    def test_various_statuses(self) -> None:
+        """Test with various run statuses."""
+        for status in ["RUNNING", "SUCCESS", "FAILED", "PENDING"]:
+            error = RunNotPausedError("run", status)
+            assert error.current_status == status
+            assert status in str(error)
+
+    def test_inherits_from_resume_error(self) -> None:
+        """Test that RunNotPausedError inherits from ResumeError."""
+        assert issubclass(RunNotPausedError, ResumeError)
+
+    def test_inherits_from_value_error(self) -> None:
+        """Test that RunNotPausedError inherits from ValueError."""
+        assert issubclass(RunNotPausedError, ValueError)
+
+    def test_can_be_caught_as_value_error(self) -> None:
+        """Test backwards compatibility with ValueError catching."""
+        with pytest.raises(ValueError, match="not paused"):
+            raise RunNotPausedError("test-run", "RUNNING")
+
+    def test_can_be_caught_as_smithers_error(self) -> None:
+        """Test that RunNotPausedError can be caught as SmithersError."""
+        with pytest.raises(SmithersError):
+            raise RunNotPausedError("test-run", "RUNNING")
+
+    def test_serialization(self) -> None:
+        """Test that RunNotPausedError serializes correctly."""
+        error = RunNotPausedError("run-xyz", "FAILED")
+        result = serialize_error(error)
+        assert result["type"] == "RunNotPausedError"
+        assert result["run_id"] == "run-xyz"
+        assert result["current_status"] == "FAILED"
+
+
+# ============================================================================
+# PendingApprovalsError Tests
+# ============================================================================
+
+
+class TestPendingApprovalsError:
+    """Tests for PendingApprovalsError exception."""
+
+    def test_basic_creation(self) -> None:
+        """Test creating a PendingApprovalsError."""
+        error = PendingApprovalsError("run-789", ["node_a"])
+        assert error.run_id == "run-789"
+        assert error.pending_nodes == ["node_a"]
+        assert "node_a" in str(error)
+        assert "pending approvals" in str(error)
+
+    def test_multiple_pending_nodes(self) -> None:
+        """Test with multiple pending nodes."""
+        nodes = ["workflow_a", "workflow_b", "workflow_c"]
+        error = PendingApprovalsError("run-id", nodes)
+        assert error.pending_nodes == nodes
+        message = str(error)
+        for node in nodes:
+            assert node in message
+
+    def test_message_format(self) -> None:
+        """Test the error message format."""
+        error = PendingApprovalsError("my-run", ["deploy", "release"])
+        expected = "Cannot resume: pending approvals for nodes: deploy, release"
+        assert str(error) == expected
+
+    def test_empty_nodes_list(self) -> None:
+        """Test with empty pending nodes list (edge case)."""
+        error = PendingApprovalsError("run", [])
+        assert error.pending_nodes == []
+        # Should still create error even if empty
+
+    def test_inherits_from_resume_error(self) -> None:
+        """Test that PendingApprovalsError inherits from ResumeError."""
+        assert issubclass(PendingApprovalsError, ResumeError)
+
+    def test_inherits_from_value_error(self) -> None:
+        """Test that PendingApprovalsError inherits from ValueError."""
+        assert issubclass(PendingApprovalsError, ValueError)
+
+    def test_can_be_caught_as_value_error(self) -> None:
+        """Test backwards compatibility with ValueError catching."""
+        with pytest.raises(ValueError, match="pending approvals"):
+            raise PendingApprovalsError("run", ["node"])
+
+    def test_can_be_caught_as_smithers_error(self) -> None:
+        """Test that PendingApprovalsError can be caught as SmithersError."""
+        with pytest.raises(SmithersError):
+            raise PendingApprovalsError("run", ["node"])
+
+    def test_serialization(self) -> None:
+        """Test that PendingApprovalsError serializes correctly."""
+        error = PendingApprovalsError("run-abc", ["node_1", "node_2"])
+        result = serialize_error(error)
+        assert result["type"] == "PendingApprovalsError"
+        assert result["run_id"] == "run-abc"
+        assert result["pending_nodes"] == ["node_1", "node_2"]
+
+
+# ============================================================================
+# Resume Error Integration Tests
+# ============================================================================
+
+
+class TestResumeErrorIntegration:
+    """Integration tests for resume errors."""
+
+    def test_all_resume_errors_are_value_errors(self) -> None:
+        """Verify all resume errors can be caught as ValueError."""
+        errors: list[Exception] = [
+            RunNotFoundError("run"),
+            RunNotPausedError("run", "RUNNING"),
+            PendingApprovalsError("run", ["node"]),
+        ]
+        for error in errors:
+            assert isinstance(error, ValueError)
+            assert isinstance(error, SmithersError)
+
+    def test_all_resume_errors_are_smithers_errors(self) -> None:
+        """Verify all resume errors are SmithersErrors."""
+        errors: list[Exception] = [
+            ResumeError("base"),
+            RunNotFoundError("run"),
+            RunNotPausedError("run", "RUNNING"),
+            PendingApprovalsError("run", ["node"]),
+        ]
+        for error in errors:
+            assert isinstance(error, SmithersError)
+
+    def test_catch_all_resume_errors_with_resume_error(self) -> None:
+        """Test that all resume errors can be caught with ResumeError."""
+        errors = [
+            RunNotFoundError("run"),
+            RunNotPausedError("run", "RUNNING"),
+            PendingApprovalsError("run", ["node"]),
+        ]
+        for error in errors:
+            try:
+                raise error
+            except ResumeError:
+                pass  # Expected
+
+    def test_existing_code_catching_value_error_still_works(self) -> None:
+        """Test backwards compatibility: code catching ValueError still works."""
+        # Simulate old code pattern that catches ValueError for resume failures
+        caught_errors = 0
+        for error in [
+            RunNotFoundError("run"),
+            RunNotPausedError("run", "RUNNING"),
+            PendingApprovalsError("run", ["node"]),
+        ]:
+            try:
+                raise error
+            except ValueError:
+                caught_errors += 1
+
+        assert caught_errors == 3

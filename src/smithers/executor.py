@@ -58,8 +58,11 @@ from smithers.conditions import (
 from smithers.errors import (
     ApprovalRejected,
     GraphTimeoutError,
+    PendingApprovalsError,
     RalphLoopConfigError,
     RalphLoopInputError,
+    RunNotFoundError,
+    RunNotPausedError,
     WorkflowError,
     WorkflowTimeoutError,
 )
@@ -1212,7 +1215,9 @@ async def resume_run(
         The output of the root workflow (or ExecutionResult if return_all=True)
 
     Raises:
-        ValueError: If run not found, not paused, or has pending approvals
+        RunNotFoundError: If run does not exist
+        RunNotPausedError: If run is not in paused state
+        PendingApprovalsError: If run has pending approvals that need to be decided
     """
     from smithers.config import get_config
 
@@ -1221,16 +1226,16 @@ async def resume_run(
     # Get the run
     run = await store.get_run(run_id)
     if run is None:
-        raise ValueError(f"Run not found: {run_id}")
+        raise RunNotFoundError(run_id)
 
     if run.status != RunStatus.PAUSED:
-        raise ValueError(f"Run is not paused (status: {run.status.value})")
+        raise RunNotPausedError(run_id, run.status.value)
 
     # Check for pending approvals
     pending_approvals = await store.get_pending_approvals(run_id)
     if pending_approvals:
         node_ids = [a.node_id for a in pending_approvals]
-        raise ValueError(f"Cannot resume: pending approvals for nodes: {', '.join(node_ids)}")
+        raise PendingApprovalsError(run_id, node_ids)
 
     if max_concurrency is None:
         max_concurrency = get_config().max_concurrency

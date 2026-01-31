@@ -18,6 +18,10 @@ Exception Hierarchy:
     ├── RalphLoopError - Ralph loop errors
     │   ├── RalphLoopConfigError - Loop misconfiguration
     │   └── RalphLoopInputError - Invalid loop input
+    ├── ResumeError (also ValueError) - Run resume errors
+    │   ├── RunNotFoundError - Run does not exist
+    │   ├── RunNotPausedError - Run is not in paused state
+    │   └── PendingApprovalsError - Run has pending approvals
     └── SmithersTimeoutError - Timeout errors
         ├── WorkflowTimeoutError - Single workflow timeout
         └── GraphTimeoutError - Full graph execution timeout
@@ -408,6 +412,76 @@ class GraphTimeoutError(SmithersTimeoutError):
         )
 
 
+class ResumeError(SmithersError, ValueError):
+    """Base class for errors related to resuming paused runs.
+
+    Inherits from ValueError for backwards compatibility with existing code
+    that catches ValueError for resume failures.
+    """
+
+
+class RunNotFoundError(ResumeError):
+    """Raised when attempting to resume a run that does not exist.
+
+    Attributes:
+        run_id: The ID of the run that was not found
+
+    Example:
+        try:
+            await resume_run("nonexistent-run", store, graph)
+        except RunNotFoundError as e:
+            print(f"Run {e.run_id} not found in store")
+    """
+
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
+        super().__init__(f"Run not found: {run_id}")
+
+
+class RunNotPausedError(ResumeError):
+    """Raised when attempting to resume a run that is not paused.
+
+    Attributes:
+        run_id: The ID of the run
+        current_status: The current status of the run
+
+    Example:
+        try:
+            await resume_run(run_id, store, graph)
+        except RunNotPausedError as e:
+            print(f"Run {e.run_id} is {e.current_status}, not paused")
+    """
+
+    def __init__(self, run_id: str, current_status: str) -> None:
+        self.run_id = run_id
+        self.current_status = current_status
+        super().__init__(f"Run is not paused (status: {current_status})")
+
+
+class PendingApprovalsError(ResumeError):
+    """Raised when attempting to resume a run that has pending approvals.
+
+    The run cannot be resumed until all pending approvals are decided.
+
+    Attributes:
+        run_id: The ID of the run
+        pending_nodes: List of node IDs with pending approvals
+
+    Example:
+        try:
+            await resume_run(run_id, store, graph)
+        except PendingApprovalsError as e:
+            print(f"Approve these nodes first: {e.pending_nodes}")
+            for node_id in e.pending_nodes:
+                await store.decide_approval(run_id, node_id, approved=True)
+    """
+
+    def __init__(self, run_id: str, pending_nodes: list[str]) -> None:
+        self.run_id = run_id
+        self.pending_nodes = pending_nodes
+        super().__init__(f"Cannot resume: pending approvals for nodes: {', '.join(pending_nodes)}")
+
+
 def serialize_error(error: BaseException, *, max_depth: int = 3) -> dict[str, Any]:
     """Serialize an exception to a JSON-safe dict."""
     return _serialize_error(error, max_depth=max_depth, seen=set())
@@ -486,6 +560,14 @@ def _serialize_error(
     elif isinstance(error, RalphLoopInputError):
         payload["loop_name"] = error.loop_name
         payload["param_name"] = error.param_name
+    elif isinstance(error, RunNotFoundError):
+        payload["run_id"] = error.run_id
+    elif isinstance(error, RunNotPausedError):
+        payload["run_id"] = error.run_id
+        payload["current_status"] = error.current_status
+    elif isinstance(error, PendingApprovalsError):
+        payload["run_id"] = error.run_id
+        payload["pending_nodes"] = list(error.pending_nodes)
     # Handle ConditionNotMetError without direct import to avoid circular dependency
     # We use getattr to access attributes dynamically to avoid circular import with conditions.py
     elif type(error).__name__ == "ConditionNotMetError":
