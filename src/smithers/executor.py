@@ -21,16 +21,28 @@ import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from pydantic import TypeAdapter
 
+from smithers._shared import (
+    build_kwargs as _build_kwargs,
+    compute_cache_key as _cache_key,
+    dependency_namespace as _dependency_namespace,
+    hash_inputs as _hash_inputs,
+    normalize_invalidate as _normalize_invalidate,
+    resolve_workflow as _resolve_workflow,
+    validate_output as _validate_output,
+)
 from smithers.cache import Cache, SqliteCache
-from smithers.errors import ApprovalRejected, WorkflowError, WorkflowTimeoutError, GraphTimeoutError
+from smithers.conditions import (
+    ConditionNotMetError,
+    evaluate_condition,
+    get_condition_policy,
+)
+from smithers.errors import ApprovalRejected, GraphTimeoutError, WorkflowError, WorkflowTimeoutError
 from smithers.events import Event, get_event_bus
-from smithers.hashing import code_hash, hash_json
-from smithers.hashing import input_hash as compute_input_hash
+from smithers.hashing import hash_json
 from smithers.runtime import RuntimeContext, runtime_context
 from smithers.store.sqlite import NodeStatus, RunStatus, SqliteStore
 from smithers.types import (
@@ -43,13 +55,7 @@ from smithers.types import (
     WorkflowNode,
     WorkflowResult,
 )
-from smithers.workflow import SkipResult, Workflow, get_workflow_by_output
-from smithers.conditions import (
-    ConditionNotMetError,
-    ConditionPolicy,
-    evaluate_condition,
-    get_condition_policy,
-)
+from smithers.workflow import SkipResult, Workflow
 
 if TYPE_CHECKING:
     pass
@@ -182,7 +188,7 @@ async def _execute_with_retry(
                             wf(**kwargs),
                             timeout=remaining_timeout,
                         )
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         elapsed_total = time.perf_counter() - execution_start
                         raise WorkflowTimeoutError(
                             workflow_name=node_id,
@@ -288,9 +294,7 @@ async def _execute_ralph_loop_node(
         final_iteration = iteration + 1
 
         # Emit LoopIterationStarted event
-        input_hash = hash_json(
-            current.model_dump() if hasattr(current, "model_dump") else current
-        )
+        input_hash = hash_json(current.model_dump() if hasattr(current, "model_dump") else current)
         await store.emit_loop_iteration_started(
             run_id=run_id,
             loop_node_id=node_id,
@@ -325,9 +329,7 @@ async def _execute_ralph_loop_node(
         total_duration_ms += iter_duration_ms
 
         # Emit LoopIterationFinished event
-        output_hash = hash_json(
-            result.model_dump() if hasattr(result, "model_dump") else result
-        )
+        output_hash = hash_json(result.model_dump() if hasattr(result, "model_dump") else result)
         condition_met = False
         if config.until_condition is not None:
             condition_met = config.until_condition(result)
@@ -501,8 +503,14 @@ async def run_graph_with_store(
                 raise GraphTimeoutError(
                     timeout_seconds=timeout,
                     elapsed_seconds=elapsed,
-                    completed_nodes=[n for n, s in ctx.statuses.items() if s in ("success", "cached")],
-                    running_nodes=[n for n, s in ctx.statuses.items() if s not in ("success", "cached", "skipped", "failed")],
+                    completed_nodes=[
+                        n for n, s in ctx.statuses.items() if s in ("success", "cached")
+                    ],
+                    running_nodes=[
+                        n
+                        for n, s in ctx.statuses.items()
+                        if s not in ("success", "cached", "skipped", "failed")
+                    ],
                 )
             if effective is not None:
                 return min(effective, remaining)
@@ -554,14 +562,22 @@ async def run_graph_with_store(
                         ctx.outputs[name] = default_val
                         ctx.statuses[name] = "skipped"
                         ctx.results.append(
-                            WorkflowResult(name=name, output=default_val, cached=False, duration_ms=0.0)
+                            WorkflowResult(
+                                name=name, output=default_val, cached=False, duration_ms=0.0
+                            )
                         )
                         await store.update_node_status(
-                            run_id, name, NodeStatus.SKIPPED, skip_reason=f"condition: {skip_reason}"
+                            run_id,
+                            name,
+                            NodeStatus.SKIPPED,
+                            skip_reason=f"condition: {skip_reason}",
                         )
                         await _emit_event(
-                            store, run_id, name, "NodeSkipped",
-                            {"reason": f"condition: {skip_reason}", "default_returned": True}
+                            store,
+                            run_id,
+                            name,
+                            "NodeSkipped",
+                            {"reason": f"condition: {skip_reason}", "default_returned": True},
                         )
                         if on_progress:
                             await on_progress(
@@ -580,11 +596,17 @@ async def run_graph_with_store(
                             WorkflowResult(name=name, output=None, cached=False, duration_ms=0.0)
                         )
                         await store.update_node_status(
-                            run_id, name, NodeStatus.SKIPPED, skip_reason=f"condition: {skip_reason}"
+                            run_id,
+                            name,
+                            NodeStatus.SKIPPED,
+                            skip_reason=f"condition: {skip_reason}",
                         )
                         await _emit_event(
-                            store, run_id, name, "NodeSkipped",
-                            {"reason": f"condition: {skip_reason}"}
+                            store,
+                            run_id,
+                            name,
+                            "NodeSkipped",
+                            {"reason": f"condition: {skip_reason}"},
                         )
                         if on_progress:
                             await on_progress(
@@ -797,13 +819,8 @@ async def run_graph_with_store(
         except ConditionNotMetError as exc:
             ctx.statuses[name] = "failed"
             ctx.errors[name] = exc
-            await store.update_node_status(
-                run_id, name, NodeStatus.FAILED, error=exc
-            )
-            await _emit_event(
-                store, run_id, name, "NodeConditionFailed",
-                {"reason": exc.reason}
-            )
+            await store.update_node_status(run_id, name, NodeStatus.FAILED, error=exc)
+            await _emit_event(store, run_id, name, "NodeConditionFailed", {"reason": exc.reason})
             if on_progress:
                 await on_progress(
                     WorkflowEvent(type="failed", workflow_name=name, message=str(exc))
@@ -886,7 +903,9 @@ async def run_graph_with_store(
                     raise GraphTimeoutError(
                         timeout_seconds=timeout,
                         elapsed_seconds=elapsed,
-                        completed_nodes=[n for n, s in ctx.statuses.items() if s in ("success", "cached")],
+                        completed_nodes=[
+                            n for n, s in ctx.statuses.items() if s in ("success", "cached")
+                        ],
                         running_nodes=[],
                     )
 
@@ -980,89 +999,6 @@ async def run_graph_with_store(
         )
 
     return root_output
-
-
-# Helper functions (duplicated from graph.py for now - could be refactored to shared module)
-
-
-def _normalize_invalidate(invalidate: Iterable[str] | str | None) -> set[str]:
-    if invalidate is None:
-        return set()
-    if isinstance(invalidate, str):
-        return {invalidate}
-    return set(invalidate)
-
-
-def _resolve_workflow(graph: WorkflowGraph, node: WorkflowNode) -> Workflow:
-    if node.name in graph.workflows:
-        return graph.workflows[node.name]
-    wf = get_workflow_by_output(node.output_type)
-    if wf is None:
-        raise ValueError(f"No workflow registered for output type {node.output_type.__name__}")
-    return wf
-
-
-def _build_kwargs(wf: Workflow, outputs: dict[str, Any]) -> dict[str, Any]:
-    kwargs = dict(wf.bound_args)
-    for param_name, param_type in wf.input_types.items():
-        if param_name in wf.bound_args:
-            continue
-        if param_name in wf.bound_deps:
-            deps = wf.bound_deps[param_name]
-            if wf.input_is_list.get(param_name, False):
-                kwargs[param_name] = [outputs[dep.name] for dep in deps]
-            else:
-                kwargs[param_name] = outputs[deps[0].name]
-            continue
-
-        dep_wf = get_workflow_by_output(param_type)
-        if dep_wf is None:
-            raise ValueError(
-                f"Workflow '{wf.name}' depends on {param_type.__name__}, "
-                f"but no workflow produces that type"
-            )
-        if wf.input_is_list.get(param_name, False):
-            kwargs[param_name] = [outputs[dep_wf.name]]
-        else:
-            kwargs[param_name] = outputs[dep_wf.name]
-
-    return kwargs
-
-
-def _validate_output(wf: Workflow, output: Any) -> Any:
-    if output is None and wf.output_optional:
-        return None
-    adapter = TypeAdapter(wf.output_type)
-    return adapter.validate_python(output)
-
-
-def _hash_inputs(wf: Workflow, outputs: dict[str, Any]) -> str:
-    inputs: dict[str, Any] = {}
-    inputs["bound_args"] = wf.bound_args
-    deps: dict[str, Any] = {}
-    for param_name, param_type in wf.input_types.items():
-        if param_name in wf.bound_deps:
-            bound_deps = wf.bound_deps[param_name]
-            deps[param_name] = [outputs[dep.name] for dep in bound_deps]
-            continue
-        if param_name in wf.bound_args:
-            continue
-        dep_wf = get_workflow_by_output(param_type)
-        if dep_wf is None:
-            continue
-        deps[param_name] = outputs[dep_wf.name]
-    inputs["deps"] = deps
-    return compute_input_hash(inputs)
-
-
-def _cache_key(wf: Workflow, input_hash_value: str) -> str:
-    return hash_json(
-        {
-            "workflow_name": wf.name,
-            "code_hash": code_hash(wf),
-            "input_hash": input_hash_value,
-        }
-    )
 
 
 async def _maybe_require_approval(
@@ -1169,23 +1105,6 @@ async def _prompt_for_approval(message: str) -> bool:
     prompt = f"{message}\n\nProceed? [y/N]: "
     response = await asyncio.to_thread(input, prompt)
     return response.strip().lower() in {"y", "yes"}
-
-
-def _dependency_namespace(wf: Workflow, outputs: dict[str, Any]) -> SimpleNamespace:
-    data: dict[str, Any] = {}
-    for param_name, param_type in wf.input_types.items():
-        if param_name in wf.bound_args:
-            data[param_name] = wf.bound_args[param_name]
-            continue
-        if param_name in wf.bound_deps:
-            deps = wf.bound_deps[param_name]
-            data[param_name] = [outputs[dep.name] for dep in deps]
-            continue
-        dep_wf = get_workflow_by_output(param_type)
-        if dep_wf is None:
-            continue
-        data[param_name] = outputs.get(dep_wf.name)
-    return SimpleNamespace(**data)
 
 
 async def resume_run(
@@ -1337,14 +1256,22 @@ async def resume_run(
                         ctx.outputs[name] = default_val
                         ctx.statuses[name] = "skipped"
                         ctx.results.append(
-                            WorkflowResult(name=name, output=default_val, cached=False, duration_ms=0.0)
+                            WorkflowResult(
+                                name=name, output=default_val, cached=False, duration_ms=0.0
+                            )
                         )
                         await store.update_node_status(
-                            run_id, name, NodeStatus.SKIPPED, skip_reason=f"condition: {skip_reason}"
+                            run_id,
+                            name,
+                            NodeStatus.SKIPPED,
+                            skip_reason=f"condition: {skip_reason}",
                         )
                         await _emit_event(
-                            store, run_id, name, "NodeSkipped",
-                            {"reason": f"condition: {skip_reason}", "default_returned": True}
+                            store,
+                            run_id,
+                            name,
+                            "NodeSkipped",
+                            {"reason": f"condition: {skip_reason}", "default_returned": True},
                         )
                         if on_progress:
                             await on_progress(
@@ -1362,11 +1289,17 @@ async def resume_run(
                             WorkflowResult(name=name, output=None, cached=False, duration_ms=0.0)
                         )
                         await store.update_node_status(
-                            run_id, name, NodeStatus.SKIPPED, skip_reason=f"condition: {skip_reason}"
+                            run_id,
+                            name,
+                            NodeStatus.SKIPPED,
+                            skip_reason=f"condition: {skip_reason}",
                         )
                         await _emit_event(
-                            store, run_id, name, "NodeSkipped",
-                            {"reason": f"condition: {skip_reason}"}
+                            store,
+                            run_id,
+                            name,
+                            "NodeSkipped",
+                            {"reason": f"condition: {skip_reason}"},
                         )
                         if on_progress:
                             await on_progress(
@@ -1566,13 +1499,8 @@ async def resume_run(
         except ConditionNotMetError as exc:
             ctx.statuses[name] = "failed"
             ctx.errors[name] = exc
-            await store.update_node_status(
-                run_id, name, NodeStatus.FAILED, error=exc
-            )
-            await _emit_event(
-                store, run_id, name, "NodeConditionFailed",
-                {"reason": exc.reason}
-            )
+            await store.update_node_status(run_id, name, NodeStatus.FAILED, error=exc)
+            await _emit_event(store, run_id, name, "NodeConditionFailed", {"reason": exc.reason})
             if on_progress:
                 await on_progress(
                     WorkflowEvent(type="failed", workflow_name=name, message=str(exc))

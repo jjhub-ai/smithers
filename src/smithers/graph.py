@@ -6,11 +6,19 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import Any
 
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel
 
+from smithers._shared import (
+    build_kwargs as _build_kwargs,
+    compute_cache_key as _cache_key,
+    dependency_namespace as _dependency_namespace,
+    hash_inputs as _hash_inputs,
+    normalize_invalidate as _normalize_invalidate,
+    resolve_workflow as _resolve_workflow,
+    validate_output as _validate_output,
+)
 from smithers.cache import Cache, SqliteCache
 from smithers.conditions import (
     ConditionNotMetError,
@@ -19,13 +27,6 @@ from smithers.conditions import (
 )
 from smithers.config import get_config
 from smithers.errors import ApprovalRejected, WorkflowError
-from smithers.hashing import (
-    code_hash,
-    hash_json,
-)
-from smithers.hashing import (
-    input_hash as compute_input_hash,
-)
 from smithers.types import (
     ApprovalRecord,
     DryRunPlan,
@@ -459,103 +460,6 @@ def _resolve_dependencies_for_param(
     return [dep_wf]
 
 
-def _resolve_workflow(graph: WorkflowGraph, node: WorkflowNode) -> Workflow:
-    if node.name in graph.workflows:
-        return graph.workflows[node.name]
-    wf = get_workflow_by_output(node.output_type)
-    if wf is None:
-        raise ValueError(f"No workflow registered for output type {node.output_type.__name__}")
-    return wf
-
-
-def _build_kwargs(wf: Workflow, outputs: dict[str, Any]) -> dict[str, Any]:
-    kwargs = dict(wf.bound_args)
-    for param_name, param_type in wf.input_types.items():
-        if param_name in wf.bound_args:
-            continue
-        if param_name in wf.bound_deps:
-            deps = wf.bound_deps[param_name]
-            if wf.input_is_list.get(param_name, False):
-                kwargs[param_name] = [outputs[dep.name] for dep in deps]
-            else:
-                kwargs[param_name] = outputs[deps[0].name]
-            continue
-
-        dep_wf = get_workflow_by_output(param_type)
-        if dep_wf is None:
-            raise ValueError(
-                f"Workflow '{wf.name}' depends on {param_type.__name__}, "
-                f"but no workflow produces that type"
-            )
-        if wf.input_is_list.get(param_name, False):
-            kwargs[param_name] = [outputs[dep_wf.name]]
-        else:
-            kwargs[param_name] = outputs[dep_wf.name]
-
-    return kwargs
-
-
-def _validate_output(wf: Workflow, output: Any) -> Any:
-    if output is None and wf.output_optional:
-        return None
-    adapter = TypeAdapter(wf.output_type)
-    return adapter.validate_python(output)
-
-
-def _normalize_invalidate(invalidate: Iterable[str] | str | None) -> set[str]:
-    if invalidate is None:
-        return set()
-    if isinstance(invalidate, str):
-        return {invalidate}
-    return {item for item in invalidate}
-
-
-def _hash_inputs(wf: Workflow, outputs: dict[str, Any]) -> str:
-    """Build inputs dict and compute hash using hashing module."""
-    inputs: dict[str, Any] = {}
-
-    # Add bound arguments
-    inputs["bound_args"] = wf.bound_args
-
-    # Add dependency outputs
-    deps: dict[str, Any] = {}
-    for param_name, param_type in wf.input_types.items():
-        if param_name in wf.bound_deps:
-            bound_deps = wf.bound_deps[param_name]
-            deps[param_name] = [outputs[dep.name] for dep in bound_deps]
-            continue
-        if param_name in wf.bound_args:
-            continue
-        dep_wf = get_workflow_by_output(param_type)
-        if dep_wf is None:
-            continue
-        if wf.input_is_list.get(param_name, False):
-            deps[param_name] = [outputs[dep_wf.name]]
-        else:
-            deps[param_name] = outputs[dep_wf.name]
-
-    inputs["deps"] = deps
-    return compute_input_hash(inputs)
-
-
-def _cache_key(wf: Workflow, input_hash_value: str) -> str:
-    """Compute cache key using the hashing module.
-
-    cache_key = H(workflow_name + code_hash + input_hash)
-
-    This ensures cache invalidation when:
-    - Workflow code changes (code_hash changes)
-    - Input values change (input_hash changes)
-    """
-    return hash_json(
-        {
-            "workflow_name": wf.name,
-            "code_hash": code_hash(wf),
-            "input_hash": input_hash_value,
-        }
-    )
-
-
 async def _maybe_require_approval(
     wf: Workflow,
     node: WorkflowNode,
@@ -628,23 +532,3 @@ async def _prompt_for_approval(message: str) -> bool:
     prompt = f"{message}\n\nProceed? [y/N]: "
     response = await asyncio.to_thread(input, prompt)
     return response.strip().lower() in {"y", "yes"}
-
-
-def _dependency_namespace(wf: Workflow, outputs: dict[str, Any]) -> SimpleNamespace:
-    data: dict[str, Any] = {}
-    for param_name, param_type in wf.input_types.items():
-        if param_name in wf.bound_args:
-            data[param_name] = wf.bound_args[param_name]
-            continue
-        if param_name in wf.bound_deps:
-            deps = wf.bound_deps[param_name]
-            data[param_name] = [outputs[dep.name] for dep in deps]
-            continue
-        dep_wf = get_workflow_by_output(param_type)
-        if dep_wf is None:
-            continue
-        if wf.input_is_list.get(param_name, False):
-            data[param_name] = [outputs.get(dep_wf.name)]
-        else:
-            data[param_name] = outputs.get(dep_wf.name)
-    return SimpleNamespace(**data)
