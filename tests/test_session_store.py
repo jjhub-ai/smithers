@@ -966,3 +966,240 @@ class TestFullTextSearch:
         assert len(results) >= 2
 
         # Results should be ordered by rank (FTS5 handles this automatically)
+
+
+class TestPerformance:
+    """Test performance requirements for session store operations."""
+
+    @pytest.fixture
+    async def store(self, tmp_path):
+        """Create a temporary session store."""
+        store = SessionStore(tmp_path / "sessions.db")
+        await store.initialize()
+        return store
+
+    @pytest.mark.asyncio
+    async def test_load_10k_events_under_500ms(self, store):
+        """Should load 10k events in under 500ms (PRD requirement 4.4)."""
+        import time
+
+        # Create a session
+        await store.create_session("/workspace", session_id="perf-session")
+
+        # Insert 10,000 events
+        print("\nInserting 10,000 events...")
+        insert_start = time.monotonic()
+        for i in range(10000):
+            await store.append_event(
+                "perf-session",
+                EventType.ASSISTANT_DELTA,
+                {"text": f"Message {i}", "index": i},
+            )
+        insert_time = time.monotonic() - insert_start
+        print(f"Insert time: {insert_time:.2f}s ({10000/insert_time:.0f} events/sec)")
+
+        # Measure load time
+        print("Loading all events...")
+        load_start = time.monotonic()
+        events = await store.get_events("perf-session", limit=20000)
+        load_time = (time.monotonic() - load_start) * 1000  # Convert to ms
+        print(f"Load time: {load_time:.0f}ms for {len(events)} events")
+
+        # Verify we got all events (10k + 1 SESSION_CREATED)
+        assert len(events) == 10001
+
+        # PRD requirement: 10k events should load under 500ms
+        assert load_time < 500, f"Load took {load_time:.0f}ms, expected < 500ms"
+
+    @pytest.mark.asyncio
+    async def test_incremental_event_loading_performance(self, store):
+        """Should efficiently support incremental event loading for streaming."""
+        import time
+
+        await store.create_session("/workspace", session_id="stream-session")
+
+        # Insert 1000 events
+        for i in range(1000):
+            await store.append_event(
+                "stream-session",
+                EventType.ASSISTANT_DELTA,
+                {"text": f"Message {i}"},
+            )
+
+        # Simulate incremental loading (like a UI polling for updates)
+        last_id = 0
+        total_time = 0
+        for _ in range(100):
+            start = time.monotonic()
+            new_events = await store.get_events("stream-session", since_id=last_id, limit=100)
+            elapsed = (time.monotonic() - start) * 1000
+            total_time += elapsed
+
+            if new_events:
+                last_id = new_events[-1].id
+
+        avg_poll_time = total_time / 100
+        print(f"\nAverage poll time: {avg_poll_time:.2f}ms")
+
+        # Each poll should be very fast (< 50ms)
+        assert avg_poll_time < 50, f"Average poll took {avg_poll_time:.2f}ms, expected < 50ms"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_read_write_performance(self, store):
+        """Should handle concurrent reads and writes efficiently."""
+        import time
+
+        await store.create_session("/workspace", session_id="concurrent-session")
+
+        # Insert initial events
+        for i in range(100):
+            await store.append_event(
+                "concurrent-session",
+                EventType.ASSISTANT_DELTA,
+                {"text": f"Initial {i}"},
+            )
+
+        # Concurrent operations: 50 writes + 50 reads
+        start = time.monotonic()
+        write_tasks = [
+            store.append_event(
+                "concurrent-session",
+                EventType.ASSISTANT_DELTA,
+                {"text": f"Concurrent write {i}"},
+            )
+            for i in range(50)
+        ]
+        read_tasks = [store.get_events("concurrent-session", limit=1000) for _ in range(50)]
+
+        # Mix reads and writes
+        all_tasks = write_tasks + read_tasks
+        results = await asyncio.gather(*all_tasks)
+        elapsed = (time.monotonic() - start) * 1000
+
+        print(f"\n100 concurrent operations: {elapsed:.0f}ms ({1000/elapsed:.0f} ops/sec)")
+
+        # Should complete in reasonable time (< 2 seconds for 100 ops)
+        assert elapsed < 2000, f"Concurrent ops took {elapsed:.0f}ms, expected < 2000ms"
+
+        # Verify all writes succeeded
+        event_ids = [r for r in results if isinstance(r, int)]
+        assert len(event_ids) == 50
+
+    @pytest.mark.asyncio
+    async def test_search_performance_large_dataset(self, store):
+        """Should perform FTS searches efficiently on large datasets."""
+        import time
+
+        await store.create_session("/workspace", session_id="search-perf")
+
+        # Insert 5000 events with varied content
+        words = ["python", "javascript", "rust", "golang", "typescript", "java", "kotlin"]
+        for i in range(5000):
+            word = words[i % len(words)]
+            await store.append_event(
+                "search-perf",
+                EventType.ASSISTANT_DELTA,
+                {"content": f"Programming in {word} is great for project {i}"},
+            )
+
+        # Warm up the FTS index
+        await store.search_events("python")
+
+        # Measure search performance
+        start = time.monotonic()
+        results = await store.search_events("python", limit=100)
+        search_time = (time.monotonic() - start) * 1000
+
+        print(f"\nFTS search time: {search_time:.2f}ms for {len(results)} results")
+
+        # Search should be fast (< 100ms)
+        assert search_time < 100, f"Search took {search_time:.2f}ms, expected < 100ms"
+        assert len(results) > 0
+
+    @pytest.mark.asyncio
+    async def test_checkpoint_operations_performance(self, store):
+        """Should handle checkpoint operations efficiently."""
+        import time
+
+        await store.create_session("/workspace", session_id="cp-perf")
+
+        # Create 100 checkpoints
+        start = time.monotonic()
+        for i in range(100):
+            await store.create_checkpoint(
+                checkpoint_id=f"cp-{i}",
+                session_id="cp-perf",
+                jj_commit_id=f"commit-{i}",
+                bookmark_name=f"checkpoint-{i}",
+                message=f"Checkpoint {i} for performance testing",
+            )
+        create_time = (time.monotonic() - start) * 1000
+
+        print(f"\nCreate 100 checkpoints: {create_time:.0f}ms ({100000/create_time:.0f} cp/sec)")
+
+        # List checkpoints
+        start = time.monotonic()
+        checkpoints = await store.list_checkpoints("cp-perf", limit=200)
+        list_time = (time.monotonic() - start) * 1000
+
+        print(f"List 100 checkpoints: {list_time:.2f}ms")
+
+        assert len(checkpoints) == 100
+        assert list_time < 100, f"List took {list_time:.2f}ms, expected < 100ms"
+
+    @pytest.mark.asyncio
+    async def test_event_count_performance(self, store):
+        """Should count events efficiently even with large datasets."""
+        import time
+
+        await store.create_session("/workspace", session_id="count-perf")
+
+        # Insert 10,000 events
+        for i in range(10000):
+            await store.append_event(
+                "count-perf",
+                EventType.ASSISTANT_DELTA,
+                {"text": f"Message {i}"},
+            )
+
+        # Measure count performance
+        start = time.monotonic()
+        count = await store.get_event_count("count-perf")
+        count_time = (time.monotonic() - start) * 1000
+
+        print(f"\nCount 10k events: {count_time:.2f}ms")
+
+        assert count == 10001  # 10k + SESSION_CREATED
+        # Count should be very fast (indexed query)
+        assert count_time < 50, f"Count took {count_time:.2f}ms, expected < 50ms"
+
+    @pytest.mark.asyncio
+    async def test_session_stats_performance(self, store):
+        """Should compute session stats efficiently."""
+        import time
+
+        await store.create_session("/workspace", session_id="stats-perf")
+
+        # Insert diverse events
+        event_types = [
+            EventType.RUN_STARTED,
+            EventType.ASSISTANT_DELTA,
+            EventType.TOOL_START,
+            EventType.TOOL_END,
+            EventType.RUN_FINISHED,
+        ]
+        for i in range(1000):
+            event_type = event_types[i % len(event_types)]
+            await store.append_event("stats-perf", event_type, {"index": i})
+
+        # Measure stats computation
+        start = time.monotonic()
+        stats = await store.get_session_stats("stats-perf")
+        stats_time = (time.monotonic() - start) * 1000
+
+        print(f"\nCompute stats for 1k events: {stats_time:.0f}ms")
+
+        assert stats["total_events"] == 1001  # 1k + SESSION_CREATED
+        assert len(stats["event_counts"]) > 0
+        # Stats computation should be reasonable
+        assert stats_time < 500, f"Stats took {stats_time:.0f}ms, expected < 500ms"
