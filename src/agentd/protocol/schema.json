@@ -64,7 +64,8 @@
             "session.close",
             "run.cancel",
             "checkpoint.create",
-            "checkpoint.restore"
+            "checkpoint.restore",
+            "skill.run"
           ]
         },
         "params": {

@@ -92,6 +92,14 @@ class AgentDaemon:
                 await self.session_manager.cancel_run(run_id)
                 self.emit_event(Event(type=EventType.RUN_CANCELLED, data={"run_id": run_id}))
 
+            case "skill.run":
+                session_id = request.params["session_id"]
+                skill_id = request.params["skill_id"]
+                args = request.params.get("args")
+                await self.session_manager.run_skill(
+                    session_id, skill_id, args, self.emit_event
+                )
+
             case _:
                 self.emit_event(
                     Event(

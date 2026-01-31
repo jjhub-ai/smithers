@@ -129,3 +129,98 @@ class SessionManager:
             if session.current_run_id == run_id:
                 session.current_run_id = None
                 break
+
+    async def run_skill(
+        self,
+        session_id: str,
+        skill_id: str,
+        args: str | None = None,
+        emit: Callable[[Event], None] | None = None,
+    ) -> None:
+        """Execute a skill in the context of a session.
+
+        Args:
+            session_id: ID of the session to run skill in
+            skill_id: ID of the skill to run
+            args: Optional arguments for the skill
+            emit: Optional callback for events
+        """
+        from agentd.skills.base import SkillContext
+        from agentd.skills.registry import get_skill_registry
+
+        session = self.sessions.get(session_id)
+        if not session:
+            if emit:
+                emit(
+                    Event(
+                        type=EventType.ERROR,
+                        data={"message": f"Session not found: {session_id}"},
+                    )
+                )
+            return
+
+        # Get the skill from registry
+        registry = get_skill_registry()
+        skill = registry.get(skill_id)
+        if not skill:
+            if emit:
+                emit(
+                    Event(
+                        type=EventType.ERROR,
+                        data={"message": f"Skill not found: {skill_id}"},
+                    )
+                )
+            return
+
+        # Emit skill start event
+        if emit:
+            emit(
+                Event(
+                    type=EventType.SKILL_START,
+                    data={"skill_id": skill_id, "name": skill.name, "args": args or ""},
+                )
+            )
+
+        # Build skill context
+        context = SkillContext(
+            workspace_path=session.workspace_root,
+            session_id=session_id,
+            session_messages=session.message_history,
+        )
+
+        try:
+            # Execute the skill
+            result = await skill.execute(context, args)
+
+            # Emit result event
+            if emit:
+                emit(
+                    Event(
+                        type=EventType.SKILL_RESULT,
+                        data={"skill_id": skill_id, "result": result.result},
+                    )
+                )
+
+            # Emit end event
+            if emit:
+                status = "success" if result.success else "error"
+                emit(
+                    Event(
+                        type=EventType.SKILL_END,
+                        data={
+                            "skill_id": skill_id,
+                            "status": status,
+                            "error": result.error or "",
+                        },
+                    )
+                )
+
+        except Exception as e:
+            # Emit error events
+            if emit:
+                emit(
+                    Event(
+                        type=EventType.SKILL_END,
+                        data={"skill_id": skill_id, "status": "error", "error": str(e)},
+                    )
+                )

@@ -399,3 +399,256 @@ class TestRepoStateService:
         assert not status.is_jj_repo
         assert status.current_commit is None
         assert not status.has_changes
+
+
+class TestSkillsSystem:
+    """Test the skills system."""
+
+    @pytest.fixture
+    def registry(self):
+        """Create a fresh skill registry for testing."""
+        from agentd.skills.registry import SkillRegistry
+
+        return SkillRegistry()
+
+    def test_register_skill(self, registry):
+        """Test registering a skill."""
+        from agentd.skills.base import Skill, SkillContext, SkillResult
+
+        class TestSkill(Skill):
+            @property
+            def skill_id(self) -> str:
+                return "test"
+
+            @property
+            def name(self) -> str:
+                return "Test Skill"
+
+            async def execute(
+                self, context: SkillContext, args: str | None = None
+            ) -> SkillResult:
+                return SkillResult(success=True, result="test result")
+
+        skill = TestSkill()
+        registry.register(skill)
+
+        retrieved = registry.get("test")
+        assert retrieved is not None
+        assert retrieved.skill_id == "test"
+        assert retrieved.name == "Test Skill"
+
+    def test_list_skills(self, registry):
+        """Test listing all skills."""
+        from agentd.skills.base import Skill, SkillContext, SkillResult
+
+        class Skill1(Skill):
+            @property
+            def skill_id(self) -> str:
+                return "skill1"
+
+            @property
+            def name(self) -> str:
+                return "Skill 1"
+
+            async def execute(
+                self, context: SkillContext, args: str | None = None
+            ) -> SkillResult:
+                return SkillResult(success=True, result="result1")
+
+        class Skill2(Skill):
+            @property
+            def skill_id(self) -> str:
+                return "skill2"
+
+            @property
+            def name(self) -> str:
+                return "Skill 2"
+
+            async def execute(
+                self, context: SkillContext, args: str | None = None
+            ) -> SkillResult:
+                return SkillResult(success=True, result="result2")
+
+        registry.register(Skill1())
+        registry.register(Skill2())
+
+        skills = registry.list_skills()
+        assert len(skills) == 2
+        skill_ids = {s.skill_id for s in skills}
+        assert skill_ids == {"skill1", "skill2"}
+
+    @pytest.mark.asyncio
+    async def test_summarize_skill(self):
+        """Test the Summarize skill."""
+        from agentd.skills.base import SkillContext
+        from agentd.skills.builtin.summarize import SummarizeSkill
+
+        skill = SummarizeSkill()
+        assert skill.skill_id == "summarize"
+        assert skill.name == "Summarize Session"
+
+        # Test with empty session
+        context = SkillContext(
+            workspace_path="/tmp",
+            session_id="test-session",
+            session_messages=[],
+        )
+        result = await skill.execute(context)
+        assert result.success
+        assert "No messages" in result.result
+
+        # Test with messages
+        context = SkillContext(
+            workspace_path="/tmp",
+            session_id="test-session",
+            session_messages=[
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi there!"},
+                {"role": "user", "content": "How are you?"},
+            ],
+        )
+        result = await skill.execute(context)
+        assert result.success
+        assert "Session Summary" in result.result
+        assert "3 total" in result.result
+
+    @pytest.mark.asyncio
+    async def test_plan_skill(self):
+        """Test the Plan skill."""
+        from agentd.skills.base import SkillContext
+        from agentd.skills.builtin.plan import PlanSkill
+
+        skill = PlanSkill()
+        assert skill.skill_id == "plan"
+        assert skill.name == "Create Implementation Plan"
+
+        context = SkillContext(
+            workspace_path="/tmp",
+            session_id="test-session",
+            session_messages=[],
+        )
+        result = await skill.execute(context, args="Build a new feature")
+        assert result.success
+        assert "Implementation Plan" in result.result
+        assert "Build a new feature" in result.result
+        assert "Implementation Steps" in result.result
+
+    @pytest.mark.asyncio
+    async def test_session_manager_run_skill(self, tmp_path):
+        """Test running a skill through SessionManager."""
+        from agentd.adapters.fake import FakeAgentAdapter
+        from agentd.protocol.events import Event, EventType
+        from agentd.session import SessionManager
+
+        adapter = FakeAgentAdapter()
+        manager = SessionManager(adapter)
+
+        # Create a session
+        session = await manager.create_session(str(tmp_path))
+
+        # Add some messages
+        session.message_history = [
+            {"role": "user", "content": "Test message"},
+            {"role": "assistant", "content": "Test response"},
+        ]
+
+        # Track emitted events
+        events: list[Event] = []
+
+        def collect_event(event: Event) -> None:
+            events.append(event)
+
+        # Run summarize skill
+        await manager.run_skill(session.id, "summarize", emit=collect_event)
+
+        # Check events
+        assert len(events) == 3
+        assert events[0].type == EventType.SKILL_START
+        assert events[0].data["skill_id"] == "summarize"
+        assert events[1].type == EventType.SKILL_RESULT
+        assert "Session Summary" in events[1].data["result"]
+        assert events[2].type == EventType.SKILL_END
+        assert events[2].data["status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_daemon_skill_run_request(self, tmp_path):
+        """Test skill.run request through the daemon."""
+        from io import StringIO
+
+        from agentd.daemon import AgentDaemon, DaemonConfig
+
+        config = DaemonConfig(
+            workspace_root=str(tmp_path),
+            sandbox_mode="host",
+            agent_backend="fake",
+        )
+
+        input_stream = StringIO()
+        output_stream = StringIO()
+
+        # Create session and run skill
+        requests = [
+            json.dumps(
+                {
+                    "id": "req-1",
+                    "method": "session.create",
+                    "params": {"workspace_root": str(tmp_path)},
+                }
+            ),
+            json.dumps(
+                {
+                    "id": "req-2",
+                    "method": "skill.run",
+                    "params": {
+                        "session_id": "SESSION_ID",  # Will be replaced
+                        "skill_id": "plan",
+                        "args": "Test task",
+                    },
+                }
+            ),
+        ]
+
+        daemon = AgentDaemon(config, input_stream, output_stream)
+
+        # Process first request to create session
+        input_stream.write(requests[0] + "\n")
+        input_stream.seek(0)
+
+        # Run daemon for first request only
+        line = input_stream.readline()
+        request_obj = json.loads(line.strip())
+        from agentd.protocol.requests import Request
+
+        request = Request.from_dict(request_obj)
+        await daemon.handle_request(request)
+
+        # Get session ID from output
+        output_stream.seek(0)
+        lines = output_stream.read().strip().split("\n")
+        # Skip daemon.ready event
+        session_created_line = next(
+            line for line in lines if "session.created" in line
+        )
+        session_event = json.loads(session_created_line)
+        session_id = session_event["data"]["session_id"]
+
+        # Now run skill request with real session ID
+        skill_request = json.loads(requests[1])
+        skill_request["params"]["session_id"] = session_id
+
+        request = Request.from_dict(skill_request)
+        await daemon.handle_request(request)
+
+        # Check skill events
+        output_stream.seek(0)
+        all_output = output_stream.read()
+        events = [json.loads(line) for line in all_output.strip().split("\n")]
+
+        skill_events = [e for e in events if e["type"].startswith("skill.")]
+        assert len(skill_events) == 3
+        assert skill_events[0]["type"] == "skill.start"
+        assert skill_events[0]["data"]["skill_id"] == "plan"
+        assert skill_events[1]["type"] == "skill.result"
+        assert "Implementation Plan" in skill_events[1]["data"]["result"]
+        assert skill_events[2]["type"] == "skill.end"
+        assert skill_events[2]["data"]["status"] == "success"
