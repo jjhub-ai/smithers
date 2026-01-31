@@ -232,8 +232,8 @@ def _normalize_value(value: Any) -> Any:
         return {str(k): _normalize_value(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_normalize_value(v) for v in value]
-    if isinstance(value, set):
-        # Sets are converted to sorted lists for determinism
+    if isinstance(value, (set, frozenset)):
+        # Sets and frozensets are converted to sorted lists for determinism
         return sorted(_normalize_value(v) for v in value)
     if isinstance(value, bytes):
         # Bytes are hex-encoded

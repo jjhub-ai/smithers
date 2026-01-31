@@ -64,6 +64,11 @@ class TestCanonicalJson:
         # Sets should be sorted for determinism
         assert result == '{"items":["a","b","c"]}'
 
+    def test_frozenset_becomes_sorted_list(self):
+        result = canonical_json({"items": frozenset(["c", "a", "b"])})
+        # Frozensets should be sorted for determinism, same as sets
+        assert result == '{"items":["a","b","c"]}'
+
     def test_bytes_hex_encoded(self):
         result = canonical_json({"data": b"\x00\xff"})
         assert result == '{"data":"00ff"}'
