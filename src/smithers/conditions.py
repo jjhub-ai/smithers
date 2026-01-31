@@ -42,10 +42,10 @@ Example:
 from __future__ import annotations
 
 from collections.abc import Callable, Coroutine
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import wraps
 from types import SimpleNamespace
-from typing import Any, ParamSpec, TypeVar, Union
+from typing import Any, ParamSpec, TypeVar
 
 from pydantic import BaseModel
 
@@ -65,6 +65,7 @@ class Condition:
             of dependency outputs and returns True if the workflow should run.
         description: Human-readable description of the condition.
     """
+
     fn: ConditionFn
     description: str = ""
 
@@ -72,15 +73,15 @@ class Condition:
         """Evaluate the condition."""
         return self.fn(deps)
 
-    def __and__(self, other: "Condition") -> "Condition":
+    def __and__(self, other: Condition) -> Condition:
         """Combine conditions with AND."""
         return all_of(self, other)
 
-    def __or__(self, other: "Condition") -> "Condition":
+    def __or__(self, other: Condition) -> Condition:
         """Combine conditions with OR."""
         return any_of(self, other)
 
-    def __invert__(self) -> "Condition":
+    def __invert__(self) -> Condition:
         """Negate the condition."""
         return not_(self)
 
@@ -98,6 +99,7 @@ class ConditionPolicy:
                  "default" - Return a default value.
         default_value: Default value to return when on_skip="default".
     """
+
     condition: Condition | ConditionFn
     skip_reason: str = "Condition not met"
     on_skip: str = "skip"  # "skip", "fail", or "default"
@@ -134,6 +136,7 @@ def when(
         async def review(analysis: AnalysisOutput) -> ReviewOutput:
             ...
     """
+
     def decorator(fn: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, Coroutine[Any, Any, T]]:
         @wraps(fn)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
@@ -181,6 +184,7 @@ def skip_if(
         async def run_tests(config: ConfigOutput) -> TestOutput:
             ...
     """
+
     # Invert the condition
     def inverted(deps: SimpleNamespace) -> bool:
         cond = condition if isinstance(condition, Condition) else Condition(condition)
@@ -218,6 +222,7 @@ def run_if(
 
 
 # Condition combinators
+
 
 def all_of(*conditions: Condition | ConditionFn) -> Condition:
     """
@@ -289,6 +294,7 @@ def not_(condition: Condition | ConditionFn) -> Condition:
 
 # Pre-built conditions
 
+
 def has_attr(name: str, value: Any = None) -> Condition:
     """
     Condition that checks if a dependency has a specific attribute.
@@ -304,6 +310,7 @@ def has_attr(name: str, value: Any = None) -> Condition:
         async def deploy(...):
             ...
     """
+
     def evaluate(deps: SimpleNamespace) -> bool:
         parts = name.split(".")
         obj: Any = deps
@@ -334,6 +341,7 @@ def dep_succeeded(dep_name: str) -> Condition:
         async def process(optional_analysis: AnalysisOutput | None) -> ProcessOutput:
             ...
     """
+
     def evaluate(deps: SimpleNamespace) -> bool:
         if not hasattr(deps, dep_name):
             return False
@@ -357,6 +365,7 @@ def field_equals(dep_name: str, field_name: str, expected: Any) -> Condition:
         async def deploy(...):
             ...
     """
+
     def evaluate(deps: SimpleNamespace) -> bool:
         if not hasattr(deps, dep_name):
             return False
@@ -386,6 +395,7 @@ def field_gt(dep_name: str, field_name: str, threshold: float) -> Condition:
         async def deploy(...):
             ...
     """
+
     def evaluate(deps: SimpleNamespace) -> bool:
         if not hasattr(deps, dep_name):
             return False
@@ -409,8 +419,22 @@ def field_gt(dep_name: str, field_name: str, threshold: float) -> Condition:
 
 def field_gte(dep_name: str, field_name: str, threshold: float) -> Condition:
     """
-    Condition that checks if a dependency field is >= a threshold.
+    Condition that checks if a dependency field is greater than or equal to a threshold.
+
+    Args:
+        dep_name: Name of the dependency.
+        field_name: Name of the field to check.
+        threshold: Minimum value (inclusive).
+
+    Returns:
+        A Condition that evaluates to True if the field value >= threshold.
+
+    Example:
+        @when(field_gte("tests", "coverage", 0.8))
+        async def deploy(...):
+            ...
     """
+
     def evaluate(deps: SimpleNamespace) -> bool:
         if not hasattr(deps, dep_name):
             return False
@@ -435,7 +459,21 @@ def field_gte(dep_name: str, field_name: str, threshold: float) -> Condition:
 def field_lt(dep_name: str, field_name: str, threshold: float) -> Condition:
     """
     Condition that checks if a dependency field is less than a threshold.
+
+    Args:
+        dep_name: Name of the dependency.
+        field_name: Name of the field to check.
+        threshold: Maximum value (exclusive).
+
+    Returns:
+        A Condition that evaluates to True if the field value < threshold.
+
+    Example:
+        @when(field_lt("metrics", "error_rate", 0.01))
+        async def deploy(...):
+            ...
     """
+
     def evaluate(deps: SimpleNamespace) -> bool:
         if not hasattr(deps, dep_name):
             return False
@@ -471,6 +509,7 @@ def field_in(dep_name: str, field_name: str, allowed_values: list[Any]) -> Condi
         async def deploy(...):
             ...
     """
+
     def evaluate(deps: SimpleNamespace) -> bool:
         if not hasattr(deps, dep_name):
             return False
@@ -498,6 +537,7 @@ def never() -> Condition:
 
 
 # Error class for condition failures
+
 
 class ConditionNotMetError(Exception):
     """Raised when a workflow condition is not met and on_skip="fail"."""
