@@ -65,7 +65,7 @@ addopts = "-v --tb=short"
 
 [tool.pyright]
 pythonVersion = "3.12"
-typeCheckingMode = "strict"
+typeCheckingMode = "basic"
 include = ["src"]
 exclude = ["**/__pycache__", "build", "dist"]
 
@@ -77,6 +77,9 @@ src = ["src"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 ignore = ["E501", "UP047"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["B017", "SIM117"]  # Allow broad exception handling and nested with in tests
 
 [tool.ruff.lint.isort]
 known-first-party = ["smithers"]

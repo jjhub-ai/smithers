@@ -23,7 +23,7 @@ class Session:
     workspace_root: str
     created_at: datetime = field(default_factory=datetime.now)
     current_run_id: str | None = None
-    message_history: list[dict[str, Any]] = field(default_factory=list)
+    message_history: list[dict[str, Any]] = field(default_factory=lambda: [])
 
     @classmethod
     def create(cls, workspace_root: str) -> "Session":

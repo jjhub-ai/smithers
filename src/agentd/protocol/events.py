@@ -66,7 +66,7 @@ class Event:
     """A protocol event to send to Swift."""
 
     type: EventType
-    data: dict[str, Any] = field(default_factory=dict)
+    data: dict[str, Any] = field(default_factory=lambda: {})
     timestamp: datetime = field(default_factory=datetime.now)
 
     def to_dict(self) -> dict[str, Any]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import BaseModel
 
 from smithers.ratelimit import (
     RateLimitConfig,
@@ -314,9 +315,6 @@ class TestCLIRateLimitCommands:
         assert result == 0
         captured = capsys.readouterr()
         assert "No rate limiter" in captured.out
-
-
-from pydantic import BaseModel
 
 
 class WorkflowTestOutput(BaseModel):

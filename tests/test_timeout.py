@@ -774,10 +774,8 @@ class TestTimeoutEdgeCases:
         # The dependency should complete, but main_task may timeout
         # depending on timing. This tests that the timeout doesn't
         # propagate to the dependency.
-        try:
+        with contextlib.suppress(Exception):
             await run_graph_with_store(graph)
-        except Exception:
-            pass  # Expected if main_task times out
 
     def test_frozen_timeout_policy(self):
         """Test that TimeoutPolicy is immutable."""

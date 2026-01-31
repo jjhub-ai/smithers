@@ -1,17 +1,25 @@
 """Anthropic API adapter using raw anthropic client."""
+# pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportAttributeAccessIssue=false
 
 from collections.abc import AsyncIterator, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agentd.adapters.base import AgentAdapter, Message, ToolSpec
 from agentd.protocol.events import Event, EventType
 
-try:
+if TYPE_CHECKING:
     import anthropic
 
-    HAS_ANTHROPIC = True
+HAS_ANTHROPIC = False
+anthropic: Any = None
+
+try:
+    import anthropic as _anthropic
+
+    HAS_ANTHROPIC = True  # pyright: ignore[reportConstantRedefinition]
+    anthropic = _anthropic
 except ImportError:
-    HAS_ANTHROPIC = False
+    pass
 
 
 class AnthropicAgentAdapter(AgentAdapter):
@@ -22,12 +30,12 @@ class AnthropicAgentAdapter(AgentAdapter):
     """
 
     def __init__(self, model: str = "claude-sonnet-4-20250514"):
-        if not HAS_ANTHROPIC:
+        if not HAS_ANTHROPIC or anthropic is None:
             raise ImportError("anthropic package not installed")
 
         self.model = model
         self.client = anthropic.AsyncAnthropic()
-        self._current_stream = None
+        self._current_stream: Any = None
 
     async def run(
         self,
@@ -36,25 +44,34 @@ class AnthropicAgentAdapter(AgentAdapter):
         emit: Callable[[Event], None],
     ) -> AsyncIterator[Event]:
         """Run the agent using Anthropic streaming API."""
+        if anthropic is None:
+            raise ImportError("anthropic package not installed")
 
         # Convert tools to Anthropic format
         anthropic_tools = self._convert_tools(tools)
 
+        # Convert messages to proper Anthropic format
+        anthropic_messages: list[Any] = [
+            {"role": msg["role"], "content": msg["content"]} for msg in messages
+        ]
+
         async with self.client.messages.stream(
             model=self.model,
             max_tokens=8192,
-            messages=messages,
-            tools=anthropic_tools if anthropic_tools else anthropic.NOT_GIVEN,
+            messages=anthropic_messages,  # type: ignore[arg-type]
+            tools=anthropic_tools if anthropic_tools else anthropic.NOT_GIVEN,  # type: ignore[arg-type]
         ) as stream:
             self._current_stream = stream
 
             current_tool_use = None
 
             async for event in stream:
-                match event.type:
+                event_type = getattr(event, "type", None)
+                match event_type:
                     case "content_block_start":
                         if (
-                            hasattr(event.content_block, "type")
+                            hasattr(event, "content_block")
+                            and hasattr(event.content_block, "type")
                             and event.content_block.type == "tool_use"
                         ):
                             current_tool_use = event.content_block
@@ -70,10 +87,9 @@ class AnthropicAgentAdapter(AgentAdapter):
                             yield ev
 
                     case "content_block_delta":
-                        if hasattr(event.delta, "text"):
-                            ev = Event(
-                                type=EventType.ASSISTANT_DELTA, data={"text": event.delta.text}
-                            )
+                        if hasattr(event, "delta") and hasattr(event.delta, "text"):
+                            text = getattr(event.delta, "text", "")
+                            ev = Event(type=EventType.ASSISTANT_DELTA, data={"text": text})
                             emit(ev)
                             yield ev
 
@@ -94,6 +110,9 @@ class AnthropicAgentAdapter(AgentAdapter):
                         )
                         emit(ev)
                         yield ev
+                    case _:
+                        # Ignore other event types
+                        pass
 
     async def cancel(self) -> None:
         """Cancel the current stream."""

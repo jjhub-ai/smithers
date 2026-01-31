@@ -19,7 +19,7 @@ class HostSandbox:
 
     id: str
     workspace_root: Path
-    allowed_paths: set[Path] = field(default_factory=set)
+    allowed_paths: set[Path] = field(default_factory=lambda: set())
 
 
 class HostRuntime(SandboxRuntime):

@@ -339,12 +339,13 @@ class TestExecutorRuntimeIntegration:
         # The run_id is tracked in the store
         runs = await store.list_runs(limit=1)
         assert len(runs) == 1
-        runs[0].run_id
+        run_id = runs[0].run_id
 
         # Note: With fake provider, real LLM calls aren't made, so tracking
         # won't record actual calls. This test verifies the execution works
         # with RuntimeContext active.
         assert runs[0].status.value == "SUCCESS"
+        assert run_id is not None  # Verify run_id exists
 
     @pytest.mark.asyncio
     async def test_multiple_nodes_have_correct_context(self, store: SqliteStore) -> None:

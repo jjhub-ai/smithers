@@ -53,7 +53,7 @@ import asyncio
 import contextlib
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
@@ -62,7 +62,10 @@ from uuid import uuid4
 from smithers.events import Event, EventBus, Subscription, get_event_bus
 
 if TYPE_CHECKING:
-    pass
+    import websockets  # type: ignore[import-not-found]  # noqa: F401
+    from websockets.server import (
+        WebSocketServerProtocol,  # type: ignore[import-not-found]  # noqa: F401
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -266,7 +269,7 @@ class WebSocketServer:
             raise RuntimeError("WebSocket server is already running")
 
         try:
-            import websockets
+            import websockets  # type: ignore[import-not-found]
         except ImportError as e:
             raise ImportError(
                 "websockets library required for WebSocket support. "
@@ -279,7 +282,7 @@ class WebSocketServer:
             self._event_subscription = bus.subscribe_all(self._on_event)
 
         # Start the WebSocket server
-        self._server = await websockets.serve(
+        self._server = await websockets.serve(  # type: ignore[attr-defined]
             self._handle_connection,
             host,
             port,
@@ -454,20 +457,21 @@ class WebSocketServer:
 
             logger.debug(f"Client {client.id} disconnected")
 
-    async def _receive_messages(self, websocket: WebSocketProtocol) -> Any:
+    async def _receive_messages(self, websocket: WebSocketProtocol) -> AsyncIterator[str]:
         """Async generator to receive messages from a WebSocket."""
         try:
-            import websockets
+            import websockets  # type: ignore[import-not-found]
 
             while True:
                 try:
                     message = await websocket.recv()
-                    yield message
-                except websockets.exceptions.ConnectionClosed:
+                    yield message  # type: ignore[misc]
+                except websockets.exceptions.ConnectionClosed:  # type: ignore[attr-defined]
                     break
         except ImportError:
             # Fallback for testing without websockets installed
-            pass
+            return
+            yield  # Make this an async generator even if not used
 
     async def _handle_client_message(
         self,

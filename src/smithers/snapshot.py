@@ -470,7 +470,7 @@ def create_snapshot(
         description=description,
         root=graph.root,
         nodes=tuple(nodes),
-        edges=tuple(tuple(e) for e in sorted(graph.edges)),
+        edges=tuple((e[0], e[1]) for e in sorted(graph.edges)),  # type: ignore[misc]
         levels=tuple(tuple(level) for level in graph.levels),
         content_hash=content_hash,
         metadata=metadata or {},

@@ -274,7 +274,7 @@ async def _execute_with_retry(
                         elapsed_total = time.perf_counter() - execution_start
                         raise WorkflowTimeoutError(
                             workflow_name=node_id,
-                            timeout_seconds=timeout_seconds,
+                            timeout_seconds=timeout_seconds or 0.0,
                             elapsed_seconds=elapsed_total,
                         ) from None
                 else:
@@ -800,7 +800,8 @@ async def _execute_node(
     except BaseException as exc:
         ctx.statuses[name] = "failed"
         ctx.errors[name] = exc
-        await store.update_node_status(run_id, name, NodeStatus.FAILED, error=exc)
+        error_to_store = exc if isinstance(exc, Exception) else Exception(str(exc))
+        await store.update_node_status(run_id, name, NodeStatus.FAILED, error=error_to_store)
         await _emit_event(
             store,
             run_id,
