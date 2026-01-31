@@ -3,7 +3,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 
 @dataclass
@@ -33,8 +32,8 @@ class SandboxRuntime(ABC):
         self,
         sandbox_id: str,
         command: list[str],
-        cwd: Optional[Path] = None,
-        env: Optional[dict[str, str]] = None,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
     ) -> ExecResult:
         """Execute a command in the sandbox."""
         pass

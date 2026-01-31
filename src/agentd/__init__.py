@@ -8,13 +8,13 @@ session management, and tool execution.
 __version__ = "0.1.0"
 
 from agentd.daemon import AgentDaemon
-from agentd.session import Session, SessionManager
 from agentd.protocol.events import Event, EventType
+from agentd.session import Session, SessionManager
 
 __all__ = [
     "AgentDaemon",
-    "Session",
-    "SessionManager",
     "Event",
     "EventType",
+    "Session",
+    "SessionManager",
 ]

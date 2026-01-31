@@ -1,7 +1,8 @@
 """Fake agent adapter for deterministic testing."""
 
 import asyncio
-from typing import Any, AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable
+from typing import Any
 
 from agentd.adapters.base import AgentAdapter, Message, ToolSpec
 from agentd.protocol.events import Event, EventType

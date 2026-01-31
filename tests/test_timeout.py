@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import timedelta
 
 import pytest
@@ -715,10 +716,8 @@ class TestTimeoutEvents:
         store = SqliteStore(str(tmp_path / "test.db"))
         await store.initialize()
 
-        try:
+        with contextlib.suppress(Exception):
             await run_graph_with_store(graph, store=store, timeout=0.05)
-        except Exception:
-            pass
 
         # Get all runs from the store to find the run_id
         runs = await store.list_runs()

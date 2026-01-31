@@ -1,9 +1,10 @@
 """Tests for the agentd daemon."""
 
-import pytest
-import json
 import asyncio
+import json
 from io import StringIO
+
+import pytest
 
 from agentd.daemon import AgentDaemon, DaemonConfig
 from agentd.protocol.events import EventType
@@ -52,7 +53,7 @@ class TestProtocolEvents:
     """Test protocol event serialization."""
 
     def test_event_serialization(self):
-        from agentd.protocol.events import Event, EventType
+        from agentd.protocol.events import Event
 
         event = Event(
             type=EventType.ASSISTANT_DELTA,

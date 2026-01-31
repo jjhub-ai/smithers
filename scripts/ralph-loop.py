@@ -22,23 +22,23 @@ PROJECT_ROOT = Path(__file__).parent.parent
 # Implementation focuses (Smithers v2) come first, then maintenance
 FOCUSES = [
     # === Backend (Python) ===
-    "AGENTD",           # Agent daemon: session management, tool execution, streaming
-    "PROTOCOL",         # Event types, request/response, NDJSON serialization
-    "STORAGE",          # SQLite tables, event sourcing, session persistence
-    "FOUNDATION",       # Wire core integration: adapters → persistence → UI
+    "AGENTD",  # Agent daemon: session management, tool execution, streaming
+    "PROTOCOL",  # Event types, request/response, NDJSON serialization
+    "STORAGE",  # SQLite tables, event sourcing, session persistence
+    "FOUNDATION",  # Wire core integration: adapters → persistence → UI
     # === Frontend (Swift) ===
-    "SWIFT_UI",         # SwiftUI: chat transcript, message rendering, tool cards
-    "SWIFT_TERMINAL",   # libghostty integration: terminal drawer, PTY, tabs
-    "SWIFT_GRAPH",      # Graph view: canvas, layout engine, selection sync
+    "SWIFT_UI",  # SwiftUI: chat transcript, message rendering, tool cards
+    "SWIFT_TERMINAL",  # libghostty integration: terminal drawer, PTY, tabs
+    "SWIFT_GRAPH",  # Graph view: canvas, layout engine, selection sync
     "SWIFT_INSPECTOR",  # Inspector panels: Stack, Diff, Todos, Browser, Tools
     # === Features (Python + Swift) ===
-    "CHECKPOINTS",      # JJ integration: checkpoint create/restore, stack ops
-    "SKILLS",           # Skills system: registry, ⌘K palette, execution
-    "SEARCH",           # FTS search: SQLite indexing, global search UI
+    "CHECKPOINTS",  # JJ integration: checkpoint create/restore, stack ops
+    "SKILLS",  # Skills system: registry, ⌘K palette, execution
+    "SEARCH",  # FTS search: SQLite indexing, global search UI
     # === Maintenance ===
-    "TESTING",          # Add missing tests, improve coverage, edge cases
-    "TYPE_SAFETY",      # Fix pyright errors, improve type hints
-    "BUG_HUNTING",      # Search for bugs, edge cases, race conditions
+    "TESTING",  # Add missing tests, improve coverage, edge cases
+    "TYPE_SAFETY",  # Fix pyright errors, improve type hints
+    "BUG_HUNTING",  # Search for bugs, edge cases, race conditions
 ]
 
 # Focus descriptions for the prompt
@@ -155,9 +155,9 @@ def verify_green() -> tuple[bool, list[str]]:
     )
     if result.returncode != 0:
         failures.append("pytest")
-        log(f"  ❌ pytest failed")
+        log("  ❌ pytest failed")
     else:
-        log(f"  ✅ pytest passed")
+        log("  ✅ pytest passed")
 
     # Check 2: pyright
     log("Checking pyright...")
@@ -170,9 +170,9 @@ def verify_green() -> tuple[bool, list[str]]:
     )
     if result.returncode != 0:
         failures.append("pyright")
-        log(f"  ❌ pyright failed")
+        log("  ❌ pyright failed")
     else:
-        log(f"  ✅ pyright passed")
+        log("  ✅ pyright passed")
 
     # Check 3: ruff
     log("Checking ruff...")
@@ -185,9 +185,9 @@ def verify_green() -> tuple[bool, list[str]]:
     )
     if result.returncode != 0:
         failures.append("ruff")
-        log(f"  ❌ ruff failed")
+        log("  ❌ ruff failed")
     else:
-        log(f"  ✅ ruff passed")
+        log("  ✅ ruff passed")
 
     return len(failures) == 0, failures
 
@@ -212,7 +212,7 @@ def run_amp_review() -> bool:
             [
                 "amp",
                 "-p",
-                f"""Review the latest git commit for quality and correctness.
+                """Review the latest git commit for quality and correctness.
 
 Run these checks:
 1. `git show HEAD` - review the actual changes
@@ -258,7 +258,8 @@ def run_agent(focus: str, cycle: int, agent_cmd: str = "claude") -> bool:
             # Claude Code CLI
             cmd = [
                 "claude",
-                "-p", prompt,
+                "-p",
+                prompt,
                 "--dangerously-skip-permissions",
             ]
         elif agent_cmd == "codex":

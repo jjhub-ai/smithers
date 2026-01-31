@@ -451,7 +451,7 @@ class TestDiffSnapshots:
             return OutputB(result=1)
 
         graph1 = build_graph(uses_a)
-        snapshot1 = create_snapshot(graph1, version="1.0.0")
+        create_snapshot(graph1, version="1.0.0")
         clear_registry()
 
         @workflow

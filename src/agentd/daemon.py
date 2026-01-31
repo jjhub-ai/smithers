@@ -7,12 +7,12 @@ Implements the Agent Runtime Protocol over NDJSON.
 import asyncio
 import json
 import sys
-from typing import Optional, TextIO
 from dataclasses import dataclass
+from typing import TextIO
 
-from agentd.session import SessionManager
 from agentd.protocol.events import Event, EventType
 from agentd.protocol.requests import Request, parse_request
+from agentd.session import SessionManager
 
 
 @dataclass

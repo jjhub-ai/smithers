@@ -29,6 +29,7 @@ Example:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -37,6 +38,8 @@ from functools import wraps
 from typing import Any, ParamSpec, TypeVar
 
 from pydantic import BaseModel
+
+from smithers.errors import WorkflowTimeoutError
 
 P = ParamSpec("P")
 T = TypeVar("T", bound=BaseModel)
@@ -118,10 +121,6 @@ NO_TIMEOUT: TimeoutPolicy | None = None
 SHORT_TIMEOUT = TimeoutPolicy(timeout_seconds=30.0)
 MEDIUM_TIMEOUT = TimeoutPolicy(timeout_seconds=120.0)
 LONG_TIMEOUT = TimeoutPolicy(timeout_seconds=600.0)
-
-
-# Import error types from smithers.errors for consistency
-from smithers.errors import WorkflowTimeoutError
 
 
 def timeout(
@@ -260,18 +259,18 @@ async def execute_with_timeout(
         )
 
         if on_timeout_callback is not None:
-            try:
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(
                     on_timeout_callback(error),
                     timeout=policy.grace_period_seconds,
-                )
-            except TimeoutError:
-                pass  # Grace period also expired
+                )  # Grace period also expired
 
         if policy.on_timeout == TimeoutAction.FAIL:
             raise error from None
         elif policy.on_timeout == TimeoutAction.CANCEL:
-            raise asyncio.CancelledError(f"Workflow '{workflow_name}' cancelled due to timeout")
+            raise asyncio.CancelledError(
+                f"Workflow '{workflow_name}' cancelled due to timeout"
+            ) from error
         else:
             # SKIP - the caller should handle this case
             raise error from None

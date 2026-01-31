@@ -122,9 +122,7 @@ def _supports_color() -> bool:
         return False
     # Check for TERM
     term = os.environ.get("TERM", "")
-    if term == "dumb":
-        return False
-    return True
+    return term != "dumb"
 
 
 def _colorize(text: str, color: str, use_colors: bool = True) -> str:
@@ -170,9 +168,7 @@ def _supports_unicode() -> bool:
         return True
     # Check LANG
     lang = os.environ.get("LANG", "").lower()
-    if "utf" in lang:
-        return True
-    return False
+    return "utf" in lang
 
 
 def _get_status_icon(status: NodeStatus, use_unicode: bool = True) -> str:
@@ -277,9 +273,7 @@ class GraphVisualization:
 
         # Calculate node widths for alignment
         node_widths = self._calculate_node_widths(show_status, show_timing)
-        max_level_width = max(
-            sum(node_widths.get(n, len(n)) for n in level) + len(level) * 4 for level in levels
-        )
+        max(sum(node_widths.get(n, len(n)) for n in level) + len(level) * 4 for level in levels)
 
         # Build the ASCII representation
         for level_idx, level in enumerate(levels):
@@ -577,10 +571,7 @@ class GraphVisualization:
             status_text = _colorize(status_text, color, self.use_colors)
 
         # Duration
-        if state.duration_ms is not None:
-            duration = f"{state.duration_ms:.0f}ms"
-        else:
-            duration = "-"
+        duration = f"{state.duration_ms:.0f}ms" if state.duration_ms is not None else "-"
 
         # Cached
         if state.cached:
@@ -626,7 +617,7 @@ class GraphVisualization:
         lines.append("")
 
         # Add nodes with their display labels
-        for name, node in self.graph.nodes.items():
+        for name, _node in self.graph.nodes.items():
             state = self.node_states.get(name, NodeState(name=name))
             label = name
             if state.duration_ms is not None:

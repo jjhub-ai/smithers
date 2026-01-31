@@ -9,7 +9,6 @@ import os
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from agentd.sandbox.base import ExecResult, SandboxRuntime
 
@@ -52,10 +51,10 @@ class HostRuntime(SandboxRuntime):
         # Check it's within workspace
         try:
             resolved.relative_to(sandbox.workspace_root.resolve())
-        except ValueError:
+        except ValueError as e:
             raise PermissionError(
                 f"Path escape blocked: {path} -> {resolved} (outside {sandbox.workspace_root})"
-            )
+            ) from e
 
         return resolved
 
@@ -77,8 +76,8 @@ class HostRuntime(SandboxRuntime):
         self,
         sandbox_id: str,
         command: list[str],
-        cwd: Optional[Path] = None,
-        env: Optional[dict[str, str]] = None,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
     ) -> ExecResult:
         """Execute command with workspace containment."""
         sandbox = self.sandboxes.get(sandbox_id)

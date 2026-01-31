@@ -9,7 +9,6 @@ import pytest
 
 import smithers.config as config
 
-
 ENV_KEYS = [
     "SMITHERS_MODEL",
     "SMITHERS_MAX_CONCURRENCY",

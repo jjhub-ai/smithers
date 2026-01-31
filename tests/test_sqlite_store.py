@@ -104,9 +104,9 @@ class TestRunManagement:
         graph = build_graph(simple_workflow)
 
         # Create multiple runs
-        run1 = await store.create_run(graph)
+        await store.create_run(graph)
         run2 = await store.create_run(graph)
-        run3 = await store.create_run(graph)
+        await store.create_run(graph)
 
         # Update one to RUNNING
         await store.update_run_status(run2, RunStatus.RUNNING)

@@ -6,8 +6,8 @@ graph state, checkpoints, and tool execution context.
 """
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional
 from datetime import datetime
 
 from agentd.protocol.events import Event, EventType
@@ -20,7 +20,7 @@ class Session:
     id: str
     workspace_root: str
     created_at: datetime = field(default_factory=datetime.now)
-    current_run_id: Optional[str] = None
+    current_run_id: str | None = None
 
     @classmethod
     def create(cls, workspace_root: str) -> "Session":

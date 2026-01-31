@@ -1,6 +1,7 @@
 """Anthropic API adapter using raw anthropic client."""
 
-from typing import Any, AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable
+from typing import Any
 
 from agentd.adapters.base import AgentAdapter, Message, ToolSpec
 from agentd.protocol.events import Event, EventType
@@ -52,19 +53,21 @@ class AnthropicAgentAdapter(AgentAdapter):
             async for event in stream:
                 match event.type:
                     case "content_block_start":
-                        if hasattr(event.content_block, "type"):
-                            if event.content_block.type == "tool_use":
-                                current_tool_use = event.content_block
-                                ev = Event(
-                                    type=EventType.TOOL_START,
-                                    data={
-                                        "tool_use_id": current_tool_use.id,
-                                        "name": current_tool_use.name,
-                                        "input": {},
-                                    },
-                                )
-                                emit(ev)
-                                yield ev
+                        if (
+                            hasattr(event.content_block, "type")
+                            and event.content_block.type == "tool_use"
+                        ):
+                            current_tool_use = event.content_block
+                            ev = Event(
+                                type=EventType.TOOL_START,
+                                data={
+                                    "tool_use_id": current_tool_use.id,
+                                    "name": current_tool_use.name,
+                                    "input": {},
+                                },
+                            )
+                            emit(ev)
+                            yield ev
 
                     case "content_block_delta":
                         if hasattr(event.delta, "text"):

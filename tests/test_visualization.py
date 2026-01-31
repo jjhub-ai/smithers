@@ -377,8 +377,8 @@ class TestTreeVisualization:
         assert "step_a" in output
         # Tree should show step_a as dependency of step_b
         lines = output.split("\n")
-        step_b_line = next((i for i, l in enumerate(lines) if "step_b" in l), -1)
-        step_a_line = next((i for i, l in enumerate(lines) if "step_a" in l), -1)
+        step_b_line = next((i for i, line in enumerate(lines) if "step_b" in line), -1)
+        step_a_line = next((i for i, line in enumerate(lines) if "step_a" in line), -1)
         # step_a should appear after step_b in tree view (as dependency)
         assert step_a_line > step_b_line
 
@@ -858,7 +858,7 @@ class TestCreateProgressCallback:
 
     def test_callback_defaults(self, simple_graph):
         """Test default parameters for progress callback."""
-        viz, callback = create_progress_callback(simple_graph)
+        viz, _callback = create_progress_callback(simple_graph)
         assert viz.format == "summary"
         assert viz.clear_screen is False
 

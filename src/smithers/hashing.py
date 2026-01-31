@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from smithers.workflow import Workflow
 
 
-_CODE_HASH_CACHE: "weakref.WeakKeyDictionary[object, str]" = weakref.WeakKeyDictionary()
+_CODE_HASH_CACHE: weakref.WeakKeyDictionary[object, str] = weakref.WeakKeyDictionary()
 
 # Cache runtime hashes by model name to avoid repeated computation.
 # The runtime hash only depends on the smithers version and model name,

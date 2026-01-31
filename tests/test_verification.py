@@ -614,7 +614,7 @@ class TestVerificationIntegration:
                 await run_graph(graph, cache=cache)
 
                 # Second run (should be cached)
-                result = await run_graph(graph, cache=cache)
+                await run_graph(graph, cache=cache)
 
             # Verify cache integrity
             cache_results = await verify_cache_integrity(cache)

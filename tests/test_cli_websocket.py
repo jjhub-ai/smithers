@@ -133,7 +133,7 @@ class TestWebSocketServeCommand:
         """Test serve command when websockets library is missing."""
         import argparse
 
-        args = argparse.Namespace(
+        argparse.Namespace(
             host="localhost",
             port=8765,
             no_heartbeat=False,
@@ -141,12 +141,12 @@ class TestWebSocketServeCommand:
         )
 
         # Mock the import to fail
-        with patch.dict("sys.modules", {"smithers.websocket": None}):
-            with patch(
-                "builtins.__import__", side_effect=ImportError("No module named 'websockets'")
-            ):
-                # This will actually try to import, we need to test the error handling
-                pass
+        with (
+            patch.dict("sys.modules", {"smithers.websocket": None}),
+            patch("builtins.__import__", side_effect=ImportError("No module named 'websockets'")),
+        ):
+            # This will actually try to import, we need to test the error handling
+            pass
 
         # The actual test should verify the error handling in the function
         # For now, we'll test that the function exists and has the right signature

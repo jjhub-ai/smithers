@@ -244,7 +244,7 @@ def _detect_cycles(graph: WorkflowGraph) -> list[VerificationIssue]:
             elif dep in rec_stack:
                 # Cycle detected - find the cycle
                 cycle_start = path.index(dep)
-                cycle = path[cycle_start:] + [dep]
+                cycle = [*path[cycle_start:], dep]
                 issues.append(
                     VerificationIssue(
                         code=IssueCode.CYCLE_DETECTED,

@@ -277,7 +277,7 @@ class TestRalphLoopWithStore:
         run_id = await store.create_run("test-hash", "test-node")
         initial = RefineOutput(content="draft", quality=0.0)
 
-        result, iterations = await execute_ralph_loop(
+        _result, iterations = await execute_ralph_loop(
             loop, initial, run_id=run_id, node_id="loop_node", store=store
         )
 
@@ -373,7 +373,7 @@ class TestRalphLoopWithGraph:
         assert InitialCode in review_loop.input_types.values()
 
         # Execute manually for testing
-        initial = InitialCode(code="test")
+        InitialCode(code="test")
         # Note: The loop execution would require adapting input types
         # For now we verify the structure is correct
         assert review_loop.inner_workflow is not None

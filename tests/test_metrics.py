@@ -711,7 +711,7 @@ class TestMetricsCollectorServer:
         assert collector._server_thread.is_alive()
 
         # Get the actual port
-        port = server.server_address[1]
+        server.server_address[1]
 
         # Stop server
         collector.stop_server()

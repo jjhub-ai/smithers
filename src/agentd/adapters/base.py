@@ -1,12 +1,13 @@
 """Base class for agent adapters."""
 
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator, Callable, TypeAlias
+from collections.abc import AsyncIterator, Callable
+from typing import Any
 
 from agentd.protocol.events import Event
 
-Message: TypeAlias = dict[str, Any]
-ToolSpec: TypeAlias = dict[str, Any]
+type Message = dict[str, Any]
+type ToolSpec = dict[str, Any]
 
 
 class AgentAdapter(ABC):

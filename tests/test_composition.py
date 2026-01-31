@@ -378,7 +378,7 @@ class TestParallel:
 
         par = parallel(slow1, slow2)
 
-        result = await par()
+        await par()
 
         # Both should start before either ends (parallel execution)
         slow1_start_idx = execution_order.index("slow1_start")

@@ -52,9 +52,8 @@ def assert_graph_is_dag(graph: WorkflowGraph) -> None:
         return False
 
     for node_name in graph.nodes:
-        if node_name not in visited:
-            if _visit(node_name):
-                raise AssertionError(f"Graph contains a cycle involving node: {node_name}")
+        if node_name not in visited and _visit(node_name):
+            raise AssertionError(f"Graph contains a cycle involving node: {node_name}")
 
 
 def assert_graph_has_nodes(graph: WorkflowGraph, *expected_nodes: str) -> None:
@@ -119,7 +118,7 @@ def assert_graph_levels(graph: WorkflowGraph, *expected_levels: list[str]) -> No
             f"Actual levels: {graph.levels}"
         )
 
-    for i, (actual, expected) in enumerate(zip(actual_levels, expected_sets)):
+    for i, (actual, expected) in enumerate(zip(actual_levels, expected_sets, strict=False)):
         if actual != expected:
             raise AssertionError(f"Level {i} mismatch: expected {expected}, got {actual}")
 

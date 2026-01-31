@@ -50,6 +50,7 @@ Client Protocol:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from collections.abc import Callable
@@ -148,10 +149,7 @@ class ClientConnection:
             return False
 
         # Check event type filter
-        if self.event_filter and event.type not in self.event_filter:
-            return False
-
-        return True
+        return not (self.event_filter and event.type not in self.event_filter)
 
     def close(self) -> None:
         """Mark connection as closed."""
@@ -304,10 +302,8 @@ class WebSocketServer:
         # Cancel heartbeat task
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._heartbeat_task
-            except asyncio.CancelledError:
-                pass
             self._heartbeat_task = None
 
         # Unsubscribe from event bus
@@ -552,10 +548,8 @@ class WebSocketServer:
 
         # Call custom handler if provided
         if self._custom_message_handler:
-            try:
+            with contextlib.suppress(Exception):
                 self._custom_message_handler(client, data)
-            except Exception:
-                pass
 
     def _on_event(self, event: Event) -> None:
         """Handle an event from the EventBus (sync entry point)."""
@@ -564,7 +558,9 @@ class WebSocketServer:
 
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(self._broadcast_event(event))
+            task = loop.create_task(self._broadcast_event(event))
+            # Store task reference to prevent it from being garbage collected
+            task.add_done_callback(lambda _: None)
         except RuntimeError:
             # No running loop
             pass

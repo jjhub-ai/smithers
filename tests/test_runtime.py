@@ -339,7 +339,7 @@ class TestExecutorRuntimeIntegration:
         # The run_id is tracked in the store
         runs = await store.list_runs(limit=1)
         assert len(runs) == 1
-        run_id = runs[0].run_id
+        runs[0].run_id
 
         # Note: With fake provider, real LLM calls aren't made, so tracking
         # won't record actual calls. This test verifies the execution works

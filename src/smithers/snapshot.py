@@ -25,6 +25,7 @@ Example:
 
 from __future__ import annotations
 
+import contextlib
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -94,10 +95,8 @@ class NodeSnapshot:
         """Create from a WorkflowNode."""
         node_code_hash = None
         if workflow is not None:
-            try:
+            with contextlib.suppress(Exception):
                 node_code_hash = code_hash(workflow)
-            except Exception:
-                pass
 
         return cls(
             name=node.name,

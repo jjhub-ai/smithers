@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from smithers.errors import ToolError
 from smithers.tools import (
     Bash,
     Edit,
@@ -17,7 +18,6 @@ from smithers.tools import (
     read_web_page,
     web_search,
 )
-from smithers.errors import ToolError
 
 
 class _MockResponse:
