@@ -14,6 +14,36 @@ if TYPE_CHECKING:
 T = TypeVar("T", bound=BaseModel)
 
 
+def _empty_str_list() -> list[str]:
+    """Factory for empty list[str]."""
+    return []
+
+
+def _empty_str_node_dict() -> dict[str, WorkflowNode]:
+    """Factory for empty dict[str, WorkflowNode]."""
+    return {}
+
+
+def _empty_edge_list() -> list[tuple[str, str]]:
+    """Factory for empty list[tuple[str, str]]."""
+    return []
+
+
+def _empty_level_list() -> list[list[str]]:
+    """Factory for empty list[list[str]]."""
+    return []
+
+
+def _empty_workflow_dict() -> dict[str, Workflow]:
+    """Factory for empty dict[str, Workflow]."""
+    return {}
+
+
+def _empty_approval_list() -> list[ApprovalRecord]:
+    """Factory for empty list[ApprovalRecord]."""
+    return []
+
+
 @dataclass(frozen=True)
 class RetryPolicy:
     """
@@ -134,7 +164,7 @@ class WorkflowNode:
 
     name: str
     output_type: type[BaseModel]
-    dependencies: list[str] = field(default_factory=list)
+    dependencies: list[str] = field(default_factory=_empty_str_list)
     requires_approval: bool = False
     approval_message: str | None = None
 
@@ -144,10 +174,10 @@ class WorkflowGraph:
     """A complete workflow execution graph."""
 
     root: str
-    nodes: dict[str, WorkflowNode] = field(default_factory=dict)
-    edges: list[tuple[str, str]] = field(default_factory=list)
-    levels: list[list[str]] = field(default_factory=list)
-    workflows: dict[str, Workflow[Any, Any]] = field(default_factory=dict, repr=False)
+    nodes: dict[str, WorkflowNode] = field(default_factory=_empty_str_node_dict)
+    edges: list[tuple[str, str]] = field(default_factory=_empty_edge_list)
+    levels: list[list[str]] = field(default_factory=_empty_level_list)
+    workflows: dict[str, Workflow] = field(default_factory=_empty_workflow_dict, repr=False)
 
     def mermaid(self) -> str:
         """Generate a Mermaid diagram of the graph."""
@@ -211,7 +241,7 @@ class ExecutionResult:
     outputs: dict[str, Any]
     results: list[WorkflowResult]
     stats: ExecutionStats
-    approvals: list[ApprovalRecord] = field(default_factory=list)
+    approvals: list[ApprovalRecord] = field(default_factory=_empty_approval_list)
 
 
 @dataclass
