@@ -140,8 +140,14 @@ class TerminalSessionManager: ObservableObject {
         guard let app = ghosttyApp.app else { return }
         let tab = tabs[index]
 
+        // Create configuration with working directory
+        var config = Ghostty.SurfaceConfiguration()
+        if let workingDirectory = tab.workingDirectory {
+            config.workingDirectory = workingDirectory.path
+        }
+
         // Create the surface view with working directory
-        let surfaceView = Ghostty.SurfaceView(app, baseConfig: nil)
+        let surfaceView = Ghostty.SurfaceView(app, baseConfig: config)
 
         tabs[index].surfaceView = surfaceView
     }
