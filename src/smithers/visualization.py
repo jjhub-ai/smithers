@@ -1,4 +1,77 @@
-"""Enhanced graph visualization with ASCII art, colors, and execution status."""
+"""Enhanced graph visualization with ASCII art, colors, and execution status.
+
+This module provides multiple visualization formats for workflow graphs and
+their execution status. Visualizations help developers understand graph structure,
+monitor execution progress, and debug workflow issues.
+
+Visualization Formats:
+- ASCII art: Horizontal tree-like view showing execution flow
+- Tree: Vertical dependency tree from root node
+- Table: Status table with columns for node, status, duration, and cache
+- Mermaid: Mermaid diagram syntax with status styling
+- Summary: Brief text summary of graph execution
+
+Features:
+- Automatic terminal capability detection (colors, Unicode)
+- Status icons and colors for different node states
+- Execution timing display
+- Cache hit visualization
+- Real-time progress updates during execution
+
+Example - Basic visualization:
+    from smithers import build_graph
+    from smithers.visualization import visualize_graph, print_graph
+
+    graph = build_graph(my_workflow)
+
+    # Print ASCII visualization
+    print_graph(graph, format="ascii")
+
+    # Get as string
+    output = visualize_graph(graph, format="table")
+
+    # Mermaid diagram for documentation
+    mermaid = visualize_graph(graph, format="mermaid")
+
+Example - With execution results:
+    from smithers import run_graph
+    from smithers.visualization import visualize_graph
+
+    result = await run_graph(graph)
+    output = visualize_graph(
+        graph,
+        format="table",
+        results=result.workflow_results,
+        show_timing=True,
+    )
+    print(output)
+
+Example - Real-time progress:
+    from smithers import run_graph
+    from smithers.visualization import ProgressVisualizer, create_progress_callback
+
+    # Option 1: Using ProgressVisualizer directly
+    viz = ProgressVisualizer(graph, format="table")
+    result = await run_graph(graph, on_progress=viz.update)
+    print(viz.final_report())
+
+    # Option 2: Using helper function
+    viz, callback = create_progress_callback(graph)
+    result = await run_graph(graph, on_progress=callback)
+
+Terminal Support:
+    Color output is automatically disabled when:
+    - NO_COLOR environment variable is set
+    - stdout is not a TTY
+    - TERM is set to "dumb"
+
+    Unicode output is automatically disabled when:
+    - stdout encoding doesn't include "utf"
+    - LANG environment variable doesn't include "utf"
+
+    To force specific settings:
+        visualize_graph(graph, use_colors=False, use_unicode=False)
+"""
 
 from __future__ import annotations
 
