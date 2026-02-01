@@ -137,12 +137,12 @@ See `docs/testing-with-mcp.md` for full MCP testing guide.
 
 ### Tier 0: Foundation (BLOCKING - Do These First)
 
-| Task | Category | Files to Modify | Verification |
-|------|----------|-----------------|--------------|
-| Wire SessionManager → Adapters | 1,3 | `session.py` | Adapter runs, events emit |
-| Add SessionEvent SQLite table | 4 | `store/sqlite.py` | Events persist, load on restart |
-| Build SessionGraph reducer | 4 | New: `src/agentd/reducer.py` | Deterministic: same events → same graph |
-| Connect events → Swift UI | 5 | `AgentClient.swift`, `SessionDetail.swift` | Messages appear in UI |
+| Task | Category | Status | Files | Verification |
+|------|----------|--------|-------|--------------|
+| Wire SessionManager → Adapters | 1,3 | ✅ DONE | `session.py` | Adapter runs, events emit |
+| Add SessionEvent SQLite table | 4 | ✅ DONE | `store/sqlite.py` | Events persist, load on restart |
+| Build SessionGraph reducer | 4 | ✅ DONE | `reducer.py` | Deterministic: same events → same graph |
+| Connect events → Swift UI | 5 | 🚧 TODO | `AgentClient.swift`, `SessionDetail.swift` | Messages appear in UI |
 
 ### Tier 1: Core UX
 
@@ -172,13 +172,16 @@ See `docs/testing-with-mcp.md` for full MCP testing guide.
 - Adapters work (Anthropic streams, Fake replays)
 - Sandbox validates paths
 - AgentClient spawns daemon
-- 1,400+ tests passing
+- **SessionManager wired to adapters** — events emit correctly
+- **session_events table** — events persist to SQLite store
+- **SessionGraph reducer** — events become graph nodes deterministically
+- **Sessions load on restart** — daemon restores from database
+- **Full-text search** — FTS5 indexes for events, checkpoints, todos
+- **Performance validated** — 10k events load under 500ms
+- 1,732+ tests passing (131 session-related tests)
 
 **Critical Gaps:**
-1. `SessionManager._run_agent()` doesn't call adapters
-2. No `session_events` table — sessions not persisted
-3. No reducer — events don't become graph nodes
-4. UI is placeholder — no real message rendering
+1. UI is placeholder — no real message rendering (Swift work)
 
 ---
 
