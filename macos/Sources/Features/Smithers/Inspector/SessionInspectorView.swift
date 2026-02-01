@@ -237,6 +237,23 @@ struct ToolsView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
+
+                Spacer()
+
+                // Copy all input button
+                if let input = node.data["input"]?.value as? [String: Any] {
+                    Button(action: {
+                        copyInputParameters(input)
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "doc.on.doc")
+                            Text("Copy")
+                        }
+                        .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
             }
             .padding()
 
@@ -252,14 +269,14 @@ struct ToolsView: View {
             // Tool input parameters
             if let input = node.data["input"]?.value as? [String: Any], !input.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Input")
+                    Text("Input Parameters")
                         .font(.subheadline)
                         .fontWeight(.semibold)
                         .foregroundColor(.secondary)
 
                     ForEach(Array(input.keys.sorted()), id: \.self) { key in
                         if let value = input[key] {
-                            parameterRow(key: key, value: "\(value)")
+                            copyableParameterRow(key: key, value: "\(value)")
                         }
                     }
                 }
@@ -276,11 +293,11 @@ struct ToolsView: View {
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
 
-                DetailRow(label: "Node ID", value: node.id.uuidString)
+                CopyableDetailRow(label: "Node ID", value: node.id.uuidString)
                 DetailRow(label: "Timestamp", value: formatTimestamp(node.timestamp))
 
                 if let duration = node.data["duration"]?.value as? Double {
-                    DetailRow(label: "Duration", value: String(format: "%.2fs", duration))
+                    DetailRow(label: "Duration", value: String(format: "%.3fs", duration))
                 }
             }
             .padding()
@@ -313,21 +330,40 @@ struct ToolsView: View {
 
             Divider()
 
-            // Output preview
+            // Output preview with copy button
             if let output = node.data["output"]?.value as? String {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Output")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.secondary)
+                    HStack {
+                        Text("Output")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.secondary)
 
-                    Text(output)
-                        .font(.system(size: 12, design: .monospaced))
-                        .padding()
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(nsColor: .textBackgroundColor))
-                        .cornerRadius(8)
-                        .textSelection(.enabled)
+                        Spacer()
+
+                        Button(action: {
+                            copyToClipboard(output)
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "doc.on.doc")
+                                Text("Copy")
+                            }
+                            .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+
+                    ScrollView {
+                        Text(output)
+                            .font(.system(size: 12, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxHeight: 300)
+                    .padding(8)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .cornerRadius(8)
                 }
                 .padding(.horizontal)
             }
@@ -345,6 +381,15 @@ struct ToolsView: View {
                         Text(artifactRef)
                             .font(.system(size: 11, design: .monospaced))
                         Spacer()
+                        Button(action: {
+                            copyToClipboard(artifactRef)
+                        }) {
+                            Image(systemName: "doc.on.doc")
+                        }
+                        .buttonStyle(.plain)
+                        .controlSize(.small)
+                        .help("Copy artifact reference")
+
                         Button(action: {}) {
                             Text("Open")
                                 .font(.caption)
@@ -366,7 +411,7 @@ struct ToolsView: View {
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
 
-                DetailRow(label: "Node ID", value: node.id.uuidString)
+                CopyableDetailRow(label: "Node ID", value: node.id.uuidString)
                 DetailRow(label: "Timestamp", value: formatTimestamp(node.timestamp))
 
                 if let byteCount = node.data["byte_count"]?.value as? Int {
@@ -462,6 +507,48 @@ struct ToolsView: View {
         formatter.countStyle = .file
         return formatter.string(fromByteCount: Int64(bytes))
     }
+
+    // MARK: - Clipboard Functions
+
+    private func copyToClipboard(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
+    private func copyInputParameters(_ input: [String: Any]) {
+        let formatted = input.map { key, value in
+            "\(key): \(value)"
+        }.joined(separator: "\n")
+        copyToClipboard(formatted)
+    }
+
+    // MARK: - Enhanced Parameter View
+
+    private func copyableParameterRow(key: String, value: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(key)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text(value)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled)
+            }
+
+            Spacer()
+
+            Button(action: {
+                copyToClipboard(value)
+            }) {
+                Image(systemName: "doc.on.doc")
+                    .font(.caption)
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.secondary)
+            .help("Copy value")
+        }
+    }
 }
 
 // MARK: - Mock Data Service
@@ -529,6 +616,39 @@ struct DetailRow: View {
             Text(value)
                 .font(.body)
                 .textSelection(.enabled)
+        }
+    }
+}
+
+/// Detail row with copy button
+struct CopyableDetailRow: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(label)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text(value)
+                    .font(.body)
+                    .textSelection(.enabled)
+            }
+
+            Spacer()
+
+            Button(action: {
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setString(value, forType: .string)
+            }) {
+                Image(systemName: "doc.on.doc")
+                    .font(.caption)
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.secondary)
+            .help("Copy \(label.lowercased())")
         }
     }
 }
