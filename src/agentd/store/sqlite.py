@@ -706,19 +706,33 @@ class SessionStore:
         if session is None:
             return {}
 
-        events = await self.get_events(session_id)
+        # Use SQL aggregation for efficient counting
+        async with self._lock, aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
 
-        # Count events by type
-        event_counts: dict[str, int] = {}
-        for event in events:
-            event_counts[event.type] = event_counts.get(event.type, 0) + 1
+            # Get total event count
+            async with db.execute(
+                "SELECT COUNT(*) as total FROM session_events WHERE session_id = ?",
+                (session_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                total_events = row["total"] if row else 0
+
+            # Get event counts by type
+            event_counts: dict[str, int] = {}
+            async with db.execute(
+                "SELECT type, COUNT(*) as count FROM session_events WHERE session_id = ? GROUP BY type",
+                (session_id,),
+            ) as cursor:
+                async for row in cursor:
+                    event_counts[row["type"]] = row["count"]
 
         return {
             "session_id": session.id,
             "workspace_root": session.workspace_root,
             "created_at": session.created_at.isoformat(),
             "last_active_at": session.last_active_at.isoformat(),
-            "total_events": len(events),
+            "total_events": total_events,
             "event_counts": event_counts,
         }
 
