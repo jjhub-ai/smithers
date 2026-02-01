@@ -1,10 +1,18 @@
 import SwiftUI
 
+/// Graph view mode: Canvas (visual) or Outline (accessible list)
+enum GraphViewMode {
+    case canvas
+    case outline
+}
+
 /// Interactive graph view with pan, zoom, and node selection
+/// Supports both canvas rendering and accessible outline list
 struct GraphView: View {
     @ObservedObject var graph: SessionGraph
     @Binding var selectedNodeId: UUID?
 
+    @State private var viewMode: GraphViewMode = .canvas
     @State private var offset = CGSize.zero
     @State private var previousOffset = CGSize.zero
     @State private var scale: CGFloat = 1.0
@@ -14,6 +22,37 @@ struct GraphView: View {
     private let layoutEngine = GraphLayoutEngine()
 
     var body: some View {
+        VStack(spacing: 0) {
+            // Mode toggle
+            HStack {
+                Spacer()
+                Picker("View Mode", selection: $viewMode) {
+                    Label("Canvas", systemImage: "rectangle.split.3x3")
+                        .tag(GraphViewMode.canvas)
+                    Label("Outline", systemImage: "list.bullet.indent")
+                        .tag(GraphViewMode.outline)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 200)
+                .padding(8)
+            }
+            .background(Color(nsColor: .controlBackgroundColor))
+
+            Divider()
+
+            // Content
+            Group {
+                switch viewMode {
+                case .canvas:
+                    canvasView
+                case .outline:
+                    GraphOutlineView(graph: graph, selectedNodeId: $selectedNodeId)
+                }
+            }
+        }
+    }
+
+    private var canvasView: some View {
         GeometryReader { geometry in
             ZStack {
                 // Background
