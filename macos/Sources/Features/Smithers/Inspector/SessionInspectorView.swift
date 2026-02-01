@@ -636,29 +636,388 @@ struct RunDetailsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Run Details")
-                    .font(.headline)
-                    .padding()
+            VStack(alignment: .leading, spacing: 0) {
+                // Header
+                HStack {
+                    Text("Run Details")
+                        .font(.headline)
+                    Spacer()
+                }
+                .padding()
 
-                if selectedNodeId != nil {
-                    VStack(alignment: .leading, spacing: 8) {
-                        DetailRow(label: "Node ID", value: selectedNodeId?.uuidString ?? "")
-                        DetailRow(label: "Status", value: "Completed")
-                        DetailRow(label: "Duration", value: "2.3s")
-                        DetailRow(label: "Tokens", value: "1,234")
-                    }
-                    .padding(.horizontal)
+                Divider()
+
+                if let nodeId = selectedNodeId,
+                   let node = MockDataService.shared.getNode(id: nodeId) {
+                    nodeDetailsView(for: node)
                 } else {
-                    Text("Select a node to see run details")
-                        .font(.subheadline)
+                    emptyStateView
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func nodeDetailsView(for node: GraphNode) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Node type badge
+            HStack(spacing: 12) {
+                Image(systemName: nodeTypeIcon(for: node.type))
+                    .font(.system(size: 32))
+                    .foregroundColor(nodeTypeColor(for: node.type))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(nodeTypeLabel(for: node.type))
+                        .font(.title2)
+                        .fontWeight(.semibold)
+
+                    Text("Node Details")
+                        .font(.caption)
                         .foregroundColor(.secondary)
-                        .padding(.horizontal)
                 }
 
                 Spacer()
+
+                // Status indicator if available
+                if let status = node.data["status"]?.value as? String {
+                    statusBadge(for: status)
+                }
             }
+            .padding()
+
+            Divider()
+
+            // Core Metadata Section
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Core Metadata")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+
+                CopyableDetailRow(label: "Node ID", value: node.id.uuidString)
+                DetailRow(label: "Type", value: node.type.rawValue.capitalized)
+                DetailRow(label: "Timestamp", value: formatFullTimestamp(node.timestamp))
+
+                if let parentId = node.parentId {
+                    CopyableDetailRow(label: "Parent ID", value: parentId.uuidString)
+                }
+            }
+            .padding()
+            .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
+            .cornerRadius(8)
+            .padding(.horizontal)
+
+            // Execution Metadata Section
+            if hasExecutionMetadata(node) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Execution Metrics")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.secondary)
+
+                    if let duration = node.data["duration"]?.value as? Double {
+                        DetailRow(label: "Duration", value: formatDuration(duration))
+                    }
+
+                    if let inputTokens = node.data["input_tokens"]?.value as? Int {
+                        DetailRow(label: "Input Tokens", value: formatNumber(inputTokens))
+                    }
+
+                    if let outputTokens = node.data["output_tokens"]?.value as? Int {
+                        DetailRow(label: "Output Tokens", value: formatNumber(outputTokens))
+                    }
+
+                    if let totalTokens = node.data["total_tokens"]?.value as? Int {
+                        DetailRow(label: "Total Tokens", value: formatNumber(totalTokens))
+                    }
+
+                    if let cost = node.data["cost"]?.value as? Double {
+                        DetailRow(label: "Cost", value: String(format: "$%.4f", cost))
+                    }
+                }
+                .padding()
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
+                .cornerRadius(8)
+                .padding(.horizontal)
+            }
+
+            // Type-Specific Metadata Section
+            typeSpecificMetadata(for: node)
+
+            // Additional Data Section (any extra fields)
+            if hasAdditionalData(node) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Additional Data")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.secondary)
+
+                    ForEach(sortedAdditionalKeys(for: node), id: \.self) { key in
+                        if let value = node.data[key]?.value {
+                            CopyableDetailRow(label: key, value: "\(value)")
+                        }
+                    }
+                }
+                .padding()
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
+                .cornerRadius(8)
+                .padding(.horizontal)
+            }
+
+            Spacer()
         }
+    }
+
+    @ViewBuilder
+    private func typeSpecificMetadata(for node: GraphNode) -> some View {
+        switch node.type {
+        case .message:
+            if let role = node.data["role"]?.value as? String {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Message Details")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.secondary)
+
+                    DetailRow(label: "Role", value: role.capitalized)
+
+                    if let isStreaming = node.data["is_streaming"]?.value as? Bool {
+                        DetailRow(label: "Streaming", value: isStreaming ? "Yes" : "No")
+                    }
+
+                    if let contentLength = node.text?.count {
+                        DetailRow(label: "Content Length", value: "\(contentLength) characters")
+                    }
+                }
+                .padding()
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
+                .cornerRadius(8)
+                .padding(.horizontal)
+            }
+
+        case .toolUse, .toolResult:
+            if let toolName = node.toolName {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Tool Details")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.secondary)
+
+                    DetailRow(label: "Tool Name", value: toolName)
+
+                    if node.type == .toolResult {
+                        if let byteCount = node.data["byte_count"]?.value as? Int {
+                            DetailRow(label: "Output Size", value: formatBytes(byteCount))
+                        }
+
+                        if let lineCount = node.data["line_count"]?.value as? Int {
+                            DetailRow(label: "Output Lines", value: formatNumber(lineCount))
+                        }
+
+                        if let artifactRef = node.artifactRef {
+                            CopyableDetailRow(label: "Artifact Ref", value: artifactRef)
+                        }
+                    }
+                }
+                .padding()
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
+                .cornerRadius(8)
+                .padding(.horizontal)
+            }
+
+        case .checkpoint:
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Checkpoint Details")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+
+                if let checkpointId = node.data["checkpoint_id"]?.value as? String {
+                    CopyableDetailRow(label: "Checkpoint ID", value: checkpointId)
+                }
+
+                if let label = node.data["label"]?.value as? String {
+                    DetailRow(label: "Label", value: label)
+                }
+
+                if let jjCommitId = node.data["jj_commit_id"]?.value as? String {
+                    CopyableDetailRow(label: "JJ Commit ID", value: jjCommitId)
+                }
+
+                if let bookmarkName = node.data["bookmark_name"]?.value as? String {
+                    DetailRow(label: "Bookmark", value: bookmarkName)
+                }
+            }
+            .padding()
+            .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
+            .cornerRadius(8)
+            .padding(.horizontal)
+
+        case .skillRun:
+            if let skillId = node.data["skill_id"]?.value as? String {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Skill Details")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.secondary)
+
+                    DetailRow(label: "Skill ID", value: skillId)
+
+                    if let skillName = node.data["skill_name"]?.value as? String {
+                        DetailRow(label: "Skill Name", value: skillName)
+                    }
+                }
+                .padding()
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
+                .cornerRadius(8)
+                .padding(.horizontal)
+            }
+
+        default:
+            EmptyView()
+        }
+    }
+
+    private var emptyStateView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 48))
+                .foregroundColor(.secondary.opacity(0.5))
+
+            Text("No node selected")
+                .font(.headline)
+                .foregroundColor(.secondary)
+
+            Text("Select a node from the graph or chat to see execution details")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 200)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+
+    // MARK: - Helper Functions
+
+    private func nodeTypeIcon(for type: GraphNodeType) -> String {
+        switch type {
+        case .message: return "bubble.left.and.bubble.right"
+        case .toolUse: return "wrench.and.screwdriver"
+        case .toolResult: return "doc.text"
+        case .checkpoint: return "bookmark.fill"
+        case .subagentRun: return "arrow.triangle.branch"
+        case .skillRun: return "command"
+        case .promptRebase: return "arrow.triangle.merge"
+        case .browserSnapshot: return "safari"
+        }
+    }
+
+    private func nodeTypeColor(for type: GraphNodeType) -> Color {
+        switch type {
+        case .message: return .blue
+        case .toolUse: return .purple
+        case .toolResult: return .green
+        case .checkpoint: return .orange
+        case .subagentRun: return .cyan
+        case .skillRun: return .pink
+        case .promptRebase: return .indigo
+        case .browserSnapshot: return .teal
+        }
+    }
+
+    private func nodeTypeLabel(for type: GraphNodeType) -> String {
+        switch type {
+        case .message: return "Message"
+        case .toolUse: return "Tool Invocation"
+        case .toolResult: return "Tool Result"
+        case .checkpoint: return "Checkpoint"
+        case .subagentRun: return "Subagent Run"
+        case .skillRun: return "Skill Run"
+        case .promptRebase: return "Prompt Rebase"
+        case .browserSnapshot: return "Browser Snapshot"
+        }
+    }
+
+    private func statusBadge(for status: String) -> some View {
+        let color: Color = {
+            switch status {
+            case "running": return .blue
+            case "completed", "success": return .green
+            case "error", "failed": return .red
+            case "pending": return .orange
+            default: return .gray
+            }
+        }()
+
+        return HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+            Text(status.capitalized)
+                .font(.caption)
+                .fontWeight(.medium)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(color.opacity(0.15))
+        .cornerRadius(12)
+    }
+
+    private func formatFullTimestamp(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        return formatter.string(from: date)
+    }
+
+    private func formatDuration(_ seconds: Double) -> String {
+        if seconds < 1.0 {
+            return String(format: "%.0f ms", seconds * 1000)
+        } else if seconds < 60.0 {
+            return String(format: "%.2f s", seconds)
+        } else {
+            let minutes = Int(seconds / 60)
+            let secs = seconds.truncatingRemainder(dividingBy: 60)
+            return String(format: "%d min %.1f s", minutes, secs)
+        }
+    }
+
+    private func formatNumber(_ number: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        return formatter.string(from: NSNumber(value: number)) ?? "\(number)"
+    }
+
+    private func formatBytes(_ bytes: Int) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: Int64(bytes))
+    }
+
+    private func hasExecutionMetadata(_ node: GraphNode) -> Bool {
+        node.data["duration"] != nil ||
+        node.data["input_tokens"] != nil ||
+        node.data["output_tokens"] != nil ||
+        node.data["total_tokens"] != nil ||
+        node.data["cost"] != nil
+    }
+
+    private func hasAdditionalData(_ node: GraphNode) -> Bool {
+        !sortedAdditionalKeys(for: node).isEmpty
+    }
+
+    private func sortedAdditionalKeys(for node: GraphNode) -> [String] {
+        let knownKeys: Set<String> = [
+            "text", "role", "is_streaming", "tool_name", "status", "input", "output",
+            "duration", "input_tokens", "output_tokens", "total_tokens", "cost",
+            "byte_count", "line_count", "artifact_ref", "checkpoint_id", "label",
+            "jj_commit_id", "bookmark_name", "skill_id", "skill_name", "tool_use_id",
+            "success"
+        ]
+
+        return node.data.keys
+            .filter { !knownKeys.contains($0) }
+            .sorted()
     }
 }
 
@@ -775,6 +1134,66 @@ struct CopyableDetailRow: View {
 #Preview("Inspector - Tools Empty") {
     SessionInspectorView(
         selectedTab: .constant(.tools),
+        selectedNodeId: .constant(nil)
+    )
+    .frame(width: 350, height: 600)
+}
+
+#Preview("Inspector - Run Details with Message") {
+    // Create a mock message node with execution metadata
+    let messageNode = GraphNode(
+        id: UUID(),
+        type: .message,
+        parentId: nil,
+        timestamp: Date(),
+        data: [
+            "role": AnyCodable("assistant"),
+            "text": AnyCodable("I'll help you debug the authentication issue. Let me start by reading the auth.py file."),
+            "is_streaming": AnyCodable(false),
+            "input_tokens": AnyCodable(1234),
+            "output_tokens": AnyCodable(567),
+            "total_tokens": AnyCodable(1801),
+            "cost": AnyCodable(0.0125),
+            "duration": AnyCodable(2.345)
+        ]
+    )
+    MockDataService.shared.registerNode(messageNode)
+
+    return SessionInspectorView(
+        selectedTab: .constant(.runDetails),
+        selectedNodeId: .constant(messageNode.id)
+    )
+    .frame(width: 400, height: 700)
+}
+
+#Preview("Inspector - Run Details with Checkpoint") {
+    // Create a mock checkpoint node
+    let checkpointNode = GraphNode(
+        id: UUID(),
+        type: .checkpoint,
+        parentId: UUID(),
+        timestamp: Date(),
+        data: [
+            "checkpoint_id": AnyCodable("checkpoint-abc123"),
+            "label": AnyCodable("Before authentication refactor"),
+            "jj_commit_id": AnyCodable("qpvuntsm"),
+            "bookmark_name": AnyCodable("auth-checkpoint-1"),
+            "status": AnyCodable("completed"),
+            "duration": AnyCodable(0.523)
+        ]
+    )
+    MockDataService.shared.registerNode(checkpointNode)
+
+    return SessionInspectorView(
+        selectedTab: .constant(.runDetails),
+        selectedNodeId: .constant(checkpointNode.id)
+    )
+    .frame(width: 400, height: 700)
+}
+
+#Preview("Inspector - Run Details Empty") {
+    SessionInspectorView(
+        selectedTab: .constant(.runDetails),
         selectedNodeId: .constant(nil)
     )
     .frame(width: 350, height: 600)
