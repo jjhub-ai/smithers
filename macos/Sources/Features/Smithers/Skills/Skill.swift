@@ -49,6 +49,13 @@ struct SkillRegistry {
             mode: .sideAction,
             icon: "list.bullet.clipboard"
         ),
+        Skill(
+            id: "rename_session",
+            name: "Rename Session",
+            description: "Give the session a meaningful name",
+            mode: .sideAction,
+            icon: "pencil"
+        ),
     ]
 
     /// Get a skill by ID

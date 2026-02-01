@@ -11,6 +11,7 @@ import pytest
 
 from agentd.skills.base import Skill, SkillContext, SkillMode, SkillResult
 from agentd.skills.builtin.plan import PlanSkill
+from agentd.skills.builtin.rename_session import RenameSessionSkill
 from agentd.skills.builtin.summarize import SummarizeSkill
 from agentd.skills.registry import SkillRegistry, get_skill_registry
 
@@ -134,14 +135,17 @@ class TestSkillRegistry:
         """Test that global registry has builtin skills."""
         registry = get_skill_registry()
 
-        # Should have summarize and plan skills
+        # Should have all builtin skills
         summarize = registry.get("summarize")
         plan = registry.get("plan")
+        rename = registry.get("rename_session")
 
         assert summarize is not None
         assert isinstance(summarize, SummarizeSkill)
         assert plan is not None
         assert isinstance(plan, PlanSkill)
+        assert rename is not None
+        assert isinstance(rename, RenameSessionSkill)
 
 
 class TestSummarizeSkill:
@@ -397,6 +401,141 @@ class TestPlanSkill:
         assert "2. **Core Implementation**" in result.result
         assert "3. **Testing**" in result.result
         assert "4. **Documentation**" in result.result
+
+
+class TestRenameSessionSkill:
+    """Test the RenameSessionSkill implementation."""
+
+    @pytest.mark.asyncio
+    async def test_properties(self) -> None:
+        """Test skill properties."""
+        skill = RenameSessionSkill()
+
+        assert skill.skill_id == "rename_session"
+        assert skill.name == "Rename Session"
+        assert skill.description == "Give the session a meaningful name"
+        assert skill.mode == SkillMode.SIDE_ACTION
+        assert skill.icon == "pencil"
+
+    @pytest.mark.asyncio
+    async def test_execute_success(self) -> None:
+        """Test renaming a session successfully."""
+        skill = RenameSessionSkill()
+        context = SkillContext(
+            workspace_path="/test/workspace",
+            session_id="test-session",
+        )
+
+        result = await skill.execute(context, args="My New Session Name")
+
+        assert result.success is True
+        assert "Session renamed to: My New Session Name" in result.result
+        assert result.error is None
+
+    @pytest.mark.asyncio
+    async def test_execute_empty_name(self) -> None:
+        """Test that empty name is rejected."""
+        skill = RenameSessionSkill()
+        context = SkillContext(
+            workspace_path="/test/workspace",
+            session_id="test-session",
+        )
+
+        result = await skill.execute(context, args="")
+
+        assert result.success is False
+        assert result.result == ""
+        assert result.error == "Session name cannot be empty"
+
+    @pytest.mark.asyncio
+    async def test_execute_whitespace_only_name(self) -> None:
+        """Test that whitespace-only name is rejected."""
+        skill = RenameSessionSkill()
+        context = SkillContext(
+            workspace_path="/test/workspace",
+            session_id="test-session",
+        )
+
+        result = await skill.execute(context, args="   ")
+
+        assert result.success is False
+        assert result.result == ""
+        assert result.error == "Session name cannot be empty"
+
+    @pytest.mark.asyncio
+    async def test_execute_no_args(self) -> None:
+        """Test that None args is rejected."""
+        skill = RenameSessionSkill()
+        context = SkillContext(
+            workspace_path="/test/workspace",
+            session_id="test-session",
+        )
+
+        result = await skill.execute(context, args=None)
+
+        assert result.success is False
+        assert result.result == ""
+        assert result.error == "Session name cannot be empty"
+
+    @pytest.mark.asyncio
+    async def test_execute_trims_whitespace(self) -> None:
+        """Test that whitespace is trimmed from name."""
+        skill = RenameSessionSkill()
+        context = SkillContext(
+            workspace_path="/test/workspace",
+            session_id="test-session",
+        )
+
+        result = await skill.execute(context, args="  New Name  ")
+
+        assert result.success is True
+        assert "Session renamed to: New Name" in result.result
+
+    @pytest.mark.asyncio
+    async def test_execute_long_name(self) -> None:
+        """Test that overly long names are rejected."""
+        skill = RenameSessionSkill()
+        context = SkillContext(
+            workspace_path="/test/workspace",
+            session_id="test-session",
+        )
+        long_name = "x" * 201  # More than 200 chars
+
+        result = await skill.execute(context, args=long_name)
+
+        assert result.success is False
+        assert result.result == ""
+        assert result.error == "Session name must be 200 characters or less"
+
+    @pytest.mark.asyncio
+    async def test_execute_max_length_name(self) -> None:
+        """Test that 200 character name is accepted."""
+        skill = RenameSessionSkill()
+        context = SkillContext(
+            workspace_path="/test/workspace",
+            session_id="test-session",
+        )
+        max_name = "x" * 200  # Exactly 200 chars
+
+        result = await skill.execute(context, args=max_name)
+
+        assert result.success is True
+        assert f"Session renamed to: {max_name}" in result.result
+
+    @pytest.mark.asyncio
+    async def test_execute_with_special_characters(self) -> None:
+        """Test that special characters in name are allowed."""
+        skill = RenameSessionSkill()
+        context = SkillContext(
+            workspace_path="/test/workspace",
+            session_id="test-session",
+        )
+        special_name = "My Session! @#$% 2024 (v2)"
+
+        result = await skill.execute(context, args=special_name)
+
+        assert result.success is True
+        assert f"Session renamed to: {special_name}" in result.result
 
 
 class TestSkillBase:

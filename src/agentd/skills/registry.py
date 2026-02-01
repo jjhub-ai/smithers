@@ -110,8 +110,10 @@ def _register_builtin_skills(registry: SkillRegistry) -> None:
     """
     # Import here to avoid circular dependencies
     from agentd.skills.builtin.plan import PlanSkill
+    from agentd.skills.builtin.rename_session import RenameSessionSkill
     from agentd.skills.builtin.summarize import SummarizeSkill
 
     # Register factories for lazy instantiation
     registry.register_factory("summarize", SummarizeSkill)
     registry.register_factory("plan", PlanSkill)
+    registry.register_factory("rename_session", RenameSessionSkill)
