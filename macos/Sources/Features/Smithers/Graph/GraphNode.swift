@@ -77,23 +77,87 @@ class SessionGraph: ObservableObject {
         }
     }
 
-    /// Project to chat messages (for Chat Mode)
-    func projectToChat() -> [ChatMessage] {
-        orderedNodes.compactMap { node -> ChatMessage? in
+    /// Project to chat items (for Chat Mode)
+    /// Returns both messages and tools in chronological order
+    func projectToChat() -> [ChatItem] {
+        var items: [ChatItem] = []
+        var toolUseNodes: [UUID: GraphNode] = [:]
+
+        // First pass: collect tool uses
+        for node in orderedNodes where node.type == .toolUse {
+            toolUseNodes[node.id] = node
+        }
+
+        // Second pass: create chat items
+        for node in orderedNodes {
             switch node.type {
             case .message:
                 let role = (node.data["role"]?.value as? String) ?? "assistant"
                 let isStreaming = (node.data["is_streaming"]?.value as? Bool) ?? false
-                return ChatMessage(
+                items.append(.message(ChatMessage(
                     id: node.id,
                     role: role == "user" ? .user : .assistant,
                     content: node.text ?? "",
                     timestamp: node.timestamp,
                     isStreaming: isStreaming
-                )
+                )))
+
+            case .toolUse:
+                // Find corresponding result if it exists
+                let resultNode = orderedNodes.first { result in
+                    result.type == .toolResult &&
+                    (result.data["tool_use_id"]?.value as? String) == node.id.uuidString
+                }
+
+                let result: ToolResult?
+                if let resultNode = resultNode {
+                    let success = (resultNode.data["success"]?.value as? Bool) ?? true
+                    let output = resultNode.text ?? ""
+                    result = ToolResult(success: success, fullOutput: output)
+                } else {
+                    result = nil
+                }
+
+                let isRunning = (node.data["is_running"]?.value as? Bool) ?? false
+                items.append(.tool(ToolMessage(
+                    id: node.id,
+                    name: node.toolName ?? "Unknown",
+                    input: node.text ?? "",
+                    result: result,
+                    timestamp: node.timestamp,
+                    isRunning: isRunning
+                )))
+
             default:
-                return nil
+                // Skip other node types in chat view
+                break
             }
+        }
+
+        return items
+    }
+}
+
+/// A chat item - either a message or a tool
+enum ChatItem: Identifiable {
+    case message(ChatMessage)
+    case tool(ToolMessage)
+
+    var id: UUID {
+        switch self {
+        case .message(let msg):
+            return msg.id
+        case .tool(let tool):
+            return tool.id
+        }
+    }
+
+    var timestamp: Date {
+        switch self {
+        case .message(let msg):
+            return msg.timestamp
+        case .tool(let tool):
+            return tool.timestamp
         }
     }
 }
@@ -110,4 +174,34 @@ struct ChatMessage: Identifiable {
     let content: String
     let timestamp: Date
     var isStreaming: Bool = false
+}
+
+/// Tool message data
+struct ToolMessage: Identifiable {
+    let id: UUID
+    let name: String
+    let input: String
+    let result: ToolResult?
+    let timestamp: Date
+    var isRunning: Bool = false
+}
+
+/// Tool execution result
+struct ToolResult {
+    let success: Bool
+    let fullOutput: String
+    let preview: String
+
+    init(success: Bool, fullOutput: String, previewLines: Int = 20) {
+        self.success = success
+        self.fullOutput = fullOutput
+
+        // Create preview (first N lines)
+        let lines = fullOutput.split(separator: "\n", omittingEmptySubsequences: false)
+        if lines.count > previewLines {
+            self.preview = lines.prefix(previewLines).joined(separator: "\n") + "\n\n... (\(lines.count - previewLines) more lines)"
+        } else {
+            self.preview = fullOutput
+        }
+    }
 }

@@ -2,19 +2,19 @@ import SwiftUI
 
 /// A scrollable list of chat messages with auto-scroll behavior
 struct MessageList: View {
-    let messages: [ChatMessage]
+    let items: [ChatItem]
     @State private var isAtBottom = true
     @State private var scrollProxy: ScrollViewProxy?
-    @State private var lastMessageId: UUID?
+    @State private var lastItemId: UUID?
 
     var body: some View {
         ZStack(alignment: .bottom) {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(messages) { message in
-                            MessageRow(message: message)
-                                .id(message.id)
+                        ForEach(items) { item in
+                            chatItemView(item)
+                                .id(item.id)
                         }
 
                         // Invisible anchor at the bottom
@@ -35,25 +35,25 @@ struct MessageList: View {
                     scrollProxy = proxy
                     scrollToBottom(animated: false)
                 }
-                .onChange(of: messages.count) { _ in
+                .onChange(of: items.count) { _ in
                     // Auto-scroll only if user is at bottom
                     if isAtBottom {
                         scrollToBottom(animated: true)
                     }
                 }
-                .onChange(of: messages.last?.content) { _ in
-                    // Handle streaming updates to last message
-                    if isAtBottom, messages.last?.isStreaming == true {
+                .onChange(of: lastItemContent) { _ in
+                    // Handle streaming updates to last item
+                    if isAtBottom, isLastItemStreaming {
                         scrollToBottom(animated: false)
                     }
                 }
-                .onChange(of: messages.last?.id) { newId in
-                    lastMessageId = newId
+                .onChange(of: items.last?.id) { newId in
+                    lastItemId = newId
                 }
             }
 
             // "Jump to latest" button (shown when not at bottom)
-            if !isAtBottom && messages.count > 0 {
+            if !isAtBottom && items.count > 0 {
                 jumpToBottomButton
                     .padding(.bottom, 16)
             }
@@ -61,6 +61,18 @@ struct MessageList: View {
     }
 
     // MARK: - Subviews
+
+    @ViewBuilder
+    private func chatItemView(_ item: ChatItem) -> some View {
+        switch item {
+        case .message(let message):
+            MessageRow(message: message)
+        case .tool(let tool):
+            ToolCard(tool: tool)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+        }
+    }
 
     private var jumpToBottomButton: some View {
         Button(action: {
@@ -86,6 +98,26 @@ struct MessageList: View {
 
     // MARK: - Helpers
 
+    private var lastItemContent: String? {
+        guard let lastItem = items.last else { return nil }
+        switch lastItem {
+        case .message(let msg):
+            return msg.content
+        case .tool(let tool):
+            return tool.result?.preview
+        }
+    }
+
+    private var isLastItemStreaming: Bool {
+        guard let lastItem = items.last else { return false }
+        switch lastItem {
+        case .message(let msg):
+            return msg.isStreaming
+        case .tool(let tool):
+            return tool.isRunning
+        }
+    }
+
     private func scrollToBottom(animated: Bool) {
         guard let proxy = scrollProxy else { return }
         if animated {
@@ -100,45 +132,75 @@ struct MessageList: View {
 }
 
 #Preview("Empty") {
-    MessageList(messages: [])
+    MessageList(items: [])
         .frame(width: 600, height: 400)
 }
 
-#Preview("Few Messages") {
-    MessageList(messages: [
-        ChatMessage(
+#Preview("Messages and Tools") {
+    MessageList(items: [
+        .message(ChatMessage(
             id: UUID(),
             role: .user,
             content: "Help me fix the authentication bug",
             timestamp: Date().addingTimeInterval(-120)
-        ),
-        ChatMessage(
+        )),
+        .message(ChatMessage(
             id: UUID(),
             role: .assistant,
             content: "I'll help you with that. Let me read the authentication file first.",
-            timestamp: Date().addingTimeInterval(-60)
-        ),
-        ChatMessage(
+            timestamp: Date().addingTimeInterval(-100)
+        )),
+        .tool(ToolMessage(
+            id: UUID(),
+            name: "Read",
+            input: "file_path: src/auth.py",
+            result: ToolResult(
+                success: true,
+                fullOutput: """
+                def authenticate(username, password):
+                    # Validate credentials
+                    if not username or not password:
+                        return False
+                    return True
+                """
+            ),
+            timestamp: Date().addingTimeInterval(-80)
+        )),
+        .message(ChatMessage(
             id: UUID(),
             role: .assistant,
             content: "I found the issue. The token validation is missing expiration checks. Let me fix that now.",
+            timestamp: Date().addingTimeInterval(-60)
+        )),
+        .tool(ToolMessage(
+            id: UUID(),
+            name: "Edit",
+            input: "file_path: src/auth.py\nold_string: return True\nnew_string: return check_expiration(token)",
+            result: nil,
             timestamp: Date(),
-            isStreaming: true
-        ),
+            isRunning: true
+        )),
     ])
     .frame(width: 600, height: 400)
 }
 
-#Preview("Many Messages") {
-    MessageList(messages: (0..<20).map { i in
-        ChatMessage(
-            id: UUID(),
-            role: i % 3 == 0 ? .user : .assistant,
-            content: i % 3 == 0
-                ? "User message \(i / 3 + 1): Can you help with this task?"
-                : "Assistant response \(i): I'm analyzing the request and will help you shortly. This might take a moment while I read the relevant files.",
-            timestamp: Date().addingTimeInterval(Double(-600 + i * 30))
-        )
+#Preview("Many Items") {
+    MessageList(items: (0..<10).flatMap { i -> [ChatItem] in
+        [
+            .message(ChatMessage(
+                id: UUID(),
+                role: .user,
+                content: "User message \(i + 1): Can you help with task \(i)?",
+                timestamp: Date().addingTimeInterval(Double(-300 + i * 30))
+            )),
+            .tool(ToolMessage(
+                id: UUID(),
+                name: ["Read", "Bash", "Grep"][i % 3],
+                input: "Sample input for tool \(i)",
+                result: ToolResult(success: true, fullOutput: "Output \(i)"),
+                timestamp: Date().addingTimeInterval(Double(-290 + i * 30))
+            )),
+        ]
     })
     .frame(width: 600, height: 400)
 }
