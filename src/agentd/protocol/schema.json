@@ -36,6 +36,7 @@
             "skill.end",
             "form.create",
             "form.submit",
+            "search.results",
             "error"
           ]
         },
@@ -537,6 +538,38 @@
         }
       ]
     },
+    "search_results_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "search.results"},
+            "data": {
+              "type": "object",
+              "required": ["query", "results"],
+              "properties": {
+                "query": {"type": "string"},
+                "results": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["file_path", "line_number", "content"],
+                    "properties": {
+                      "file_path": {"type": "string"},
+                      "line_number": {"type": "integer", "minimum": 1},
+                      "content": {"type": "string"},
+                      "context_before": {"type": "string"},
+                      "context_after": {"type": "string"}
+                    }
+                  }
+                },
+                "total_count": {"type": "integer", "minimum": 0}
+              }
+            }
+          }
+        }
+      ]
+    },
     "error_event": {
       "allOf": [
         {"$ref": "#/definitions/event"},
@@ -581,6 +614,7 @@
     {"$ref": "#/definitions/skill_end_event"},
     {"$ref": "#/definitions/form_create_event"},
     {"$ref": "#/definitions/form_submit_event"},
+    {"$ref": "#/definitions/search_results_event"},
     {"$ref": "#/definitions/error_event"}
   ]
 }

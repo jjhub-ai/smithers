@@ -68,6 +68,204 @@ class TestProtocolEvents:
         assert "timestamp" in d
 
 
+class TestProtocolValidation:
+    """Test protocol schema validation."""
+
+    def test_daemon_ready_event_valid(self):
+        from agentd.protocol.events import Event, EventType
+
+        event = Event(
+            type=EventType.DAEMON_READY,
+            data={"version": "1.0.0", "config": {"sandbox_mode": "host"}},
+        )
+        # Should not raise
+        event.validate()
+
+    def test_daemon_ready_event_missing_version(self):
+        from agentd.protocol.events import Event, EventType
+        from agentd.protocol.validation import ValidationError
+
+        event = Event(type=EventType.DAEMON_READY, data={})
+        with pytest.raises(ValidationError):
+            event.validate()
+
+    def test_session_created_event_valid(self):
+        from agentd.protocol.events import Event, EventType
+
+        event = Event(type=EventType.SESSION_CREATED, data={"session_id": "s1"})
+        event.validate()
+
+    def test_run_started_event_valid(self):
+        from agentd.protocol.events import Event, EventType
+
+        event = Event(
+            type=EventType.RUN_STARTED,
+            data={"run_id": "r1", "session_id": "s1"},
+        )
+        event.validate()
+
+    def test_run_started_event_missing_session_id(self):
+        from agentd.protocol.events import Event, EventType
+        from agentd.protocol.validation import ValidationError
+
+        event = Event(type=EventType.RUN_STARTED, data={"run_id": "r1"})
+        with pytest.raises(ValidationError):
+            event.validate()
+
+    def test_assistant_delta_event_valid(self):
+        from agentd.protocol.events import Event, EventType
+
+        event = Event(type=EventType.ASSISTANT_DELTA, data={"text": "Hello"})
+        event.validate()
+
+    def test_assistant_final_event_valid(self):
+        from agentd.protocol.events import Event, EventType
+
+        event = Event(type=EventType.ASSISTANT_FINAL, data={"message_id": "m1"})
+        event.validate()
+
+    def test_tool_start_event_valid(self):
+        from agentd.protocol.events import Event, EventType
+
+        event = Event(
+            type=EventType.TOOL_START,
+            data={"tool_use_id": "t1", "name": "bash", "input": {"command": "ls"}},
+        )
+        event.validate()
+
+    def test_tool_end_event_valid(self):
+        from agentd.protocol.events import Event, EventType
+
+        event = Event(
+            type=EventType.TOOL_END,
+            data={"tool_use_id": "t1", "status": "success"},
+        )
+        event.validate()
+
+    def test_tool_end_event_invalid_status(self):
+        from agentd.protocol.events import Event, EventType
+        from agentd.protocol.validation import ValidationError
+
+        event = Event(
+            type=EventType.TOOL_END,
+            data={"tool_use_id": "t1", "status": "invalid"},
+        )
+        with pytest.raises(ValidationError):
+            event.validate()
+
+    def test_checkpoint_created_event_valid(self):
+        from agentd.protocol.events import Event, EventType
+
+        event = Event(
+            type=EventType.CHECKPOINT_CREATED,
+            data={"checkpoint_id": "c1", "label": "Before refactor"},
+        )
+        event.validate()
+
+    def test_checkpoint_restored_event_valid(self):
+        from agentd.protocol.events import Event, EventType
+
+        event = Event(
+            type=EventType.CHECKPOINT_RESTORED,
+            data={"checkpoint_id": "c1"},
+        )
+        event.validate()
+
+    def test_subagent_start_event_valid(self):
+        from agentd.protocol.events import Event, EventType
+
+        event = Event(
+            type=EventType.SUBAGENT_START,
+            data={"subagent_id": "sub1", "task": "implement feature"},
+        )
+        event.validate()
+
+    def test_subagent_end_event_valid(self):
+        from agentd.protocol.events import Event, EventType
+
+        event = Event(
+            type=EventType.SUBAGENT_END,
+            data={"subagent_id": "sub1", "status": "success"},
+        )
+        event.validate()
+
+    def test_skill_start_event_valid(self):
+        from agentd.protocol.events import Event, EventType
+
+        event = Event(
+            type=EventType.SKILL_START,
+            data={"skill_id": "sk1", "name": "commit", "args": "-m 'fix bug'"},
+        )
+        event.validate()
+
+    def test_skill_end_event_valid(self):
+        from agentd.protocol.events import Event, EventType
+
+        event = Event(
+            type=EventType.SKILL_END,
+            data={"skill_id": "sk1", "status": "success"},
+        )
+        event.validate()
+
+    def test_search_results_event_valid(self):
+        from agentd.protocol.events import Event, EventType
+
+        event = Event(
+            type=EventType.SEARCH_RESULTS,
+            data={
+                "query": "def test",
+                "results": [
+                    {
+                        "file_path": "tests/test_foo.py",
+                        "line_number": 42,
+                        "content": "def test_bar():",
+                    }
+                ],
+                "total_count": 1,
+            },
+        )
+        event.validate()
+
+    def test_search_results_event_missing_required(self):
+        from agentd.protocol.events import Event, EventType
+        from agentd.protocol.validation import ValidationError
+
+        event = Event(type=EventType.SEARCH_RESULTS, data={"query": "test"})
+        with pytest.raises(ValidationError):
+            event.validate()
+
+    def test_error_event_valid(self):
+        from agentd.protocol.events import Event, EventType
+
+        event = Event(
+            type=EventType.ERROR,
+            data={"error": "Something went wrong", "context": {"line": 42}},
+        )
+        event.validate()
+
+    def test_form_create_event_valid(self):
+        from agentd.protocol.events import Event, EventType
+
+        event = Event(
+            type=EventType.FORM_CREATE,
+            data={
+                "form_id": "f1",
+                "schema": {"type": "object", "properties": {"name": {"type": "string"}}},
+                "title": "Enter details",
+            },
+        )
+        event.validate()
+
+    def test_form_submit_event_valid(self):
+        from agentd.protocol.events import Event, EventType
+
+        event = Event(
+            type=EventType.FORM_SUBMIT,
+            data={"form_id": "f1", "values": {"name": "Alice"}},
+        )
+        event.validate()
+
+
 class TestHostRuntime:
     """Test the host sandbox runtime."""
 
