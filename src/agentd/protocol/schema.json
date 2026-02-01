@@ -68,13 +68,63 @@
             "run.cancel",
             "checkpoint.create",
             "checkpoint.restore",
-            "skill.run"
+            "skill.run",
+            "search.events",
+            "search.checkpoints",
+            "search.all"
           ]
         },
         "params": {
           "type": "object"
         }
       }
+    },
+    "response": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Correlates with request ID"
+        },
+        "result": {
+          "type": ["object", "null"],
+          "description": "Success result data"
+        },
+        "error": {
+          "type": ["object", "null"],
+          "description": "Error information",
+          "properties": {
+            "code": {
+              "type": "string",
+              "description": "Error code (e.g., NOT_FOUND, INVALID_PARAMS)"
+            },
+            "message": {
+              "type": "string",
+              "description": "Human-readable error message"
+            },
+            "data": {
+              "type": "object",
+              "description": "Additional error context"
+            }
+          },
+          "required": ["code", "message"]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "result": {"not": {"type": "null"}},
+            "error": {"type": "null"}
+          }
+        },
+        {
+          "properties": {
+            "result": {"type": "null"},
+            "error": {"not": {"type": "null"}}
+          }
+        }
+      ]
     },
     "daemon_ready_event": {
       "allOf": [

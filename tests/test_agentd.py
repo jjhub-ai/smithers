@@ -68,6 +68,43 @@ class TestProtocolEvents:
         assert "timestamp" in d
 
 
+class TestProtocolResponses:
+    """Test protocol response serialization."""
+
+    def test_success_response_serialization(self):
+        from agentd.protocol.responses import Response
+
+        response = Response.success("req-123", {"session_id": "s1"})
+
+        d = response.to_dict()
+        assert d["id"] == "req-123"
+        assert d["result"]["session_id"] == "s1"
+        assert d["error"] is None
+
+    def test_error_response_serialization(self):
+        from agentd.protocol.responses import Response
+
+        response = Response.from_error("req-456", "NOT_FOUND", "Session not found")
+
+        d = response.to_dict()
+        assert d["id"] == "req-456"
+        assert d["result"] is None
+        assert d["error"]["code"] == "NOT_FOUND"
+        assert d["error"]["message"] == "Session not found"
+
+    def test_error_response_with_data(self):
+        from agentd.protocol.responses import Response
+
+        response = Response.from_error(
+            "req-789", "INVALID_PARAMS", "Bad params", {"param": "session_id"}
+        )
+
+        d = response.to_dict()
+        assert d["id"] == "req-789"
+        assert d["error"]["code"] == "INVALID_PARAMS"
+        assert d["error"]["data"]["param"] == "session_id"
+
+
 class TestProtocolValidation:
     """Test protocol schema validation."""
 
@@ -270,6 +307,43 @@ class TestProtocolValidation:
             data={"form_id": "f1", "values": {"name": "Alice"}},
         )
         event.validate()
+
+
+class TestResponseValidation:
+    """Test response schema validation."""
+
+    def test_success_response_valid(self):
+        from agentd.protocol.responses import Response
+
+        response = Response.success("req-123", {"session_id": "s1"})
+        # Should not raise
+        response.validate()
+
+    def test_error_response_valid(self):
+        from agentd.protocol.responses import Response
+
+        response = Response.from_error("req-456", "NOT_FOUND", "Session not found")
+        # Should not raise
+        response.validate()
+
+    def test_error_response_with_data_valid(self):
+        from agentd.protocol.responses import Response
+
+        response = Response.from_error(
+            "req-789",
+            "INVALID_PARAMS",
+            "Missing required parameter",
+            {"param": "session_id"},
+        )
+        # Should not raise
+        response.validate()
+
+    def test_response_missing_result_and_error_invalid(self):
+        from agentd.protocol.responses import Response
+
+        # Should raise during __post_init__
+        with pytest.raises(ValueError, match="must have either result or error"):
+            Response(id="req-999")
 
 
 class TestHostRuntime:

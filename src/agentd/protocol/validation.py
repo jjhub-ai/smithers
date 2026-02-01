@@ -80,6 +80,31 @@ def validate_request(request_dict: dict[str, Any]) -> None:
         raise ValidationError(f"Request validation failed: {e.message}") from e
 
 
+def validate_response(response_dict: dict[str, Any]) -> None:
+    """
+    Validate a response against the protocol schema.
+
+    Args:
+        response_dict: The response dictionary to validate (with id, result, error)
+
+    Raises:
+        ValidationError: If the response is invalid
+    """
+    # Validate against the response definition
+    response_schema = PROTOCOL_SCHEMA["definitions"]["response"]
+    try:
+        validator = Draft7Validator(response_schema)
+        errors = list(validator.iter_errors(response_dict))
+        if errors:
+            error_messages = [f"{err.json_path}: {err.message}" for err in errors]
+            raise ValidationError(
+                f"Response validation failed: {'; '.join(error_messages)}",
+                error_messages,
+            )
+    except jsonschema.ValidationError as e:
+        raise ValidationError(f"Response validation failed: {e.message}") from e
+
+
 def get_protocol_version() -> str:
     """Get the protocol version from the schema."""
     return PROTOCOL_VERSION
