@@ -1570,6 +1570,66 @@ class TestSkillsSystem:
         assert skill_events[2]["data"]["status"] == "success"
 
     @pytest.mark.asyncio
+    async def test_daemon_skill_list_request(self, tmp_path):
+        """Test skill.list request through the daemon."""
+        from io import StringIO
+
+        from agentd.daemon import AgentDaemon, DaemonConfig
+
+        config = DaemonConfig(
+            workspace_root=str(tmp_path),
+            sandbox_mode="host",
+            agent_backend="fake",
+            db_path=str(tmp_path / "test_sessions.db"),
+        )
+
+        input_stream = StringIO()
+        output_stream = StringIO()
+
+        # Create skill.list request
+        request = json.dumps({"id": "req-1", "method": "skill.list", "params": {}})
+
+        daemon = AgentDaemon(config, input_stream, output_stream)
+
+        # Initialize the store
+        await daemon.store.initialize()
+
+        # Process request
+        input_stream.write(request + "\n")
+        input_stream.seek(0)
+
+        line = input_stream.readline()
+        request_obj = json.loads(line.strip())
+        from agentd.protocol.requests import Request
+
+        req = Request.from_dict(request_obj)
+        await daemon.handle_request(req)
+
+        # Parse output events
+        output = output_stream.getvalue()
+        events = [json.loads(line) for line in output.strip().split("\n") if line]
+
+        # Should have emitted skill.list event
+        assert len(events) >= 1
+        skill_list_event = next((e for e in events if e["type"] == "skill.list"), None)
+        assert skill_list_event is not None
+        assert skill_list_event["data"]["request_id"] == "req-1"
+
+        # Should contain all builtin skills
+        skills = skill_list_event["data"]["skills"]
+        assert len(skills) == 3  # summarize, plan, rename_session
+        skill_ids = {s["id"] for s in skills}
+        assert skill_ids == {"summarize", "plan", "rename_session"}
+
+        # Check skill structure
+        for skill in skills:
+            assert "id" in skill
+            assert "name" in skill
+            assert "description" in skill
+            assert "mode" in skill
+            # icon can be None
+
+    @pytest.mark.asyncio
     async def test_session_manager_run_skill_with_exception(self, tmp_path):
         """Test that SessionManager handles skill exceptions gracefully."""
         from agentd.adapters.fake import FakeAgentAdapter

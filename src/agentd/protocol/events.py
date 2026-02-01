@@ -53,6 +53,7 @@ class EventType(str, Enum):
     SUBAGENT_END = "subagent.end"
 
     # Skills
+    SKILL_LIST = "skill.list"
     SKILL_START = "skill.start"
     SKILL_RESULT = "skill.result"
     SKILL_END = "skill.end"

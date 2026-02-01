@@ -8,6 +8,7 @@ class SessionManager: ObservableObject {
     @Published var error: String?
     @Published var searchResults: [SearchResult] = []
     @Published var isSearching: Bool = false
+    @Published var availableSkills: [Skill] = []
 
     private var agentClient: AgentClient?
     private var cancellables = Set<AnyCancellable>()
@@ -55,6 +56,9 @@ class SessionManager: ObservableObject {
             method: "session.list",
             params: ["limit": 100]
         ))
+
+        // Request available skills
+        try client.send(AgentRequest.listSkills())
     }
 
     /// Stop the agent daemon
@@ -482,6 +486,31 @@ class SessionManager: ObservableObject {
         case .subagentEnd:
             // TODO: Update subagent run node with status
             break
+
+        case .skillList:
+            // Handle skill list response
+            if let skillsArray = event.data["skills"]?.value as? [[String: Any]] {
+                var skills: [Skill] = []
+                for skillData in skillsArray {
+                    if let id = skillData["id"] as? String,
+                       let name = skillData["name"] as? String,
+                       let description = skillData["description"] as? String,
+                       let modeStr = skillData["mode"] as? String,
+                       let mode = SkillMode(rawValue: modeStr) {
+                        let icon = skillData["icon"] as? String
+                        let skill = Skill(
+                            id: id,
+                            name: name,
+                            description: description,
+                            mode: mode,
+                            icon: icon
+                        )
+                        skills.append(skill)
+                    }
+                }
+                availableSkills = skills
+                print("Loaded \(skills.count) skills from daemon")
+            }
 
         case .error:
             // Display error

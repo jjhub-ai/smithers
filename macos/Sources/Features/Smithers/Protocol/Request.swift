@@ -31,6 +31,11 @@ struct AgentRequest: Encodable {
         AgentRequest(method: "run.cancel", params: ["run_id": runId])
     }
 
+    /// List all available skills
+    static func listSkills() -> AgentRequest {
+        AgentRequest(method: "skill.list", params: [:])
+    }
+
     /// Run a skill
     static func runSkill(sessionId: String, skillId: String, args: String? = nil) -> AgentRequest {
         var params: [String: Any] = [

@@ -5,6 +5,7 @@ import SwiftUI
 struct SkillsPalette: View {
     @Binding var isPresented: Bool
     let sessionId: String
+    let availableSkills: [Skill]
     let onSelectSkill: (Skill, String?) -> Void
 
     @State private var searchText = ""
@@ -14,10 +15,10 @@ struct SkillsPalette: View {
 
     var filteredSkills: [Skill] {
         if searchText.isEmpty {
-            return SkillRegistry.builtinSkills
+            return availableSkills
         }
         let lowercased = searchText.lowercased()
-        return SkillRegistry.builtinSkills.filter { skill in
+        return availableSkills.filter { skill in
             skill.name.lowercased().contains(lowercased) ||
             skill.description.lowercased().contains(lowercased) ||
             skill.id.lowercased().contains(lowercased)
@@ -175,6 +176,7 @@ private struct SkillRow: View {
     SkillsPalette(
         isPresented: .constant(true),
         sessionId: "test-session",
+        availableSkills: SkillRegistry.builtinSkills,
         onSelectSkill: { skill, args in
             print("Selected skill: \(skill.name), args: \(args ?? "none")")
         }

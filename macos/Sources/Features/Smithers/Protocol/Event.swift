@@ -38,6 +38,7 @@ enum AgentEventType: String, Codable {
     case subagentEnd = "subagent.end"
 
     // Skills
+    case skillList = "skill.list"
     case skillStart = "skill.start"
     case skillResult = "skill.result"
     case skillEnd = "skill.end"

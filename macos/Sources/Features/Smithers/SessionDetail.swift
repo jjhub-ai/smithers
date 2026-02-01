@@ -64,6 +64,7 @@ struct SessionDetail: View {
                 SkillsPalette(
                     isPresented: $showSkillsPalette,
                     sessionId: session.id.uuidString,
+                    availableSkills: sessionManager.availableSkills,
                     onSelectSkill: { skill, args in
                         runSkill(skill: skill, args: args)
                     }

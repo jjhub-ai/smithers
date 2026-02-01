@@ -118,6 +118,30 @@ class AgentDaemon:
                 await self.session_manager.cancel_run(run_id)
                 self.emit_event(Event(type=EventType.RUN_CANCELLED, data={"run_id": run_id}))
 
+            case "skill.list":
+                from agentd.skills.registry import get_skill_registry
+
+                registry = get_skill_registry()
+                skills = registry.list_skills()
+                self.emit_event(
+                    Event(
+                        type=EventType.SKILL_LIST,
+                        data={
+                            "request_id": request.id,
+                            "skills": [
+                                {
+                                    "id": skill.skill_id,
+                                    "name": skill.name,
+                                    "description": skill.description,
+                                    "mode": skill.mode.value,
+                                    "icon": skill.icon,
+                                }
+                                for skill in skills
+                            ],
+                        },
+                    )
+                )
+
             case "skill.run":
                 session_id = request.params["session_id"]
                 skill_id = request.params["skill_id"]
