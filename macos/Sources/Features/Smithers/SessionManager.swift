@@ -50,7 +50,6 @@ class SessionManager: ObservableObject {
 
         // Request list of existing sessions
         try client.send(AgentRequest(
-            id: UUID().uuidString,
             method: "session.list",
             params: ["limit": 100]
         ))
@@ -69,11 +68,7 @@ class SessionManager: ObservableObject {
             throw SessionManagerError.notConnected
         }
 
-        try client.send(AgentRequest(
-            id: UUID().uuidString,
-            method: "session.create",
-            params: ["workspace_root": workspaceRoot]
-        ))
+        try client.send(AgentRequest.createSession(workspaceRoot: workspaceRoot))
     }
 
     /// Send a message to a session
@@ -82,14 +77,10 @@ class SessionManager: ObservableObject {
             throw SessionManagerError.notConnected
         }
 
-        try client.send(AgentRequest(
-            id: UUID().uuidString,
-            method: "session.send",
-            params: [
-                "session_id": sessionId.uuidString,
-                "message": message,
-                "surfaces": surfaces
-            ]
+        try client.send(AgentRequest.sendMessage(
+            sessionId: sessionId.uuidString,
+            message: message,
+            surfaces: surfaces.map { ["type": $0] }
         ))
     }
 
@@ -99,11 +90,7 @@ class SessionManager: ObservableObject {
             throw SessionManagerError.notConnected
         }
 
-        try client.send(AgentRequest(
-            id: UUID().uuidString,
-            method: "run.cancel",
-            params: ["run_id": runId]
-        ))
+        try client.send(AgentRequest.cancelRun(runId: runId))
     }
 
     /// Run a skill in a session
@@ -112,18 +99,10 @@ class SessionManager: ObservableObject {
             throw SessionManagerError.notConnected
         }
 
-        var params: [String: Any] = [
-            "session_id": sessionId.uuidString,
-            "skill_id": skillId
-        ]
-        if let args = args {
-            params["args"] = args
-        }
-
-        try client.send(AgentRequest(
-            id: UUID().uuidString,
-            method: "skill.run",
-            params: params
+        try client.send(AgentRequest.runSkill(
+            sessionId: sessionId.uuidString,
+            skillId: skillId,
+            args: args
         ))
     }
 
@@ -133,18 +112,10 @@ class SessionManager: ObservableObject {
             throw SessionManagerError.notConnected
         }
 
-        var params: [String: Any] = [
-            "session_id": sessionId.uuidString,
-            "message": message
-        ]
-        if let nodeId = sessionNodeId {
-            params["session_node_id"] = nodeId
-        }
-
-        try client.send(AgentRequest(
-            id: UUID().uuidString,
-            method: "checkpoint.create",
-            params: params
+        try client.send(AgentRequest.createCheckpoint(
+            sessionId: sessionId.uuidString,
+            message: message,
+            sessionNodeId: sessionNodeId
         ))
     }
 
@@ -154,13 +125,9 @@ class SessionManager: ObservableObject {
             throw SessionManagerError.notConnected
         }
 
-        try client.send(AgentRequest(
-            id: UUID().uuidString,
-            method: "checkpoint.restore",
-            params: [
-                "session_id": sessionId.uuidString,
-                "checkpoint_id": checkpointId
-            ]
+        try client.send(AgentRequest.restoreCheckpoint(
+            sessionId: sessionId.uuidString,
+            checkpointId: checkpointId
         ))
     }
 
@@ -174,7 +141,7 @@ class SessionManager: ObservableObject {
 
         case .sessionCreated:
             // New session created
-            if let sessionIdStr = event.data["session_id"] as? String,
+            if let sessionIdStr = event.data["session_id"]?.value as? String,
                let sessionId = UUID(uuidString: sessionIdStr) {
                 let session = Session(
                     id: sessionId,
@@ -185,64 +152,46 @@ class SessionManager: ObservableObject {
                 sessions.append(session)
             }
 
-        case .sessionList:
-            // Load sessions from list
-            if let sessionList = event.data["sessions"] as? [[String: Any]] {
-                sessions = sessionList.compactMap { data in
-                    guard let idStr = data["id"] as? String,
-                          let id = UUID(uuidString: idStr),
-                          let createdAtStr = data["created_at"] as? String,
-                          let createdAt = ISO8601DateFormatter().date(from: createdAtStr) else {
-                        return nil
-                    }
-
-                    // TODO: Load graph from events
-                    return Session(
-                        id: id,
-                        title: "Session \(id.uuidString.prefix(8))",
-                        createdAt: createdAt,
-                        isActive: false
-                    )
-                }
-            }
-
-        case .runStarted:
-            // Mark session as active
-            if let sessionIdStr = event.data["session_id"] as? String,
-               let sessionId = UUID(uuidString: sessionIdStr),
-               let index = sessions.firstIndex(where: { $0.id == sessionId }) {
-                sessions[index].isActive = true
-            }
+        case .searchResults:
+            // Handle session list response from search results
+            // TODO: Implement proper session list handling
+            break
 
         case .runFinished, .runCancelled:
             // Mark session as inactive
-            if let sessionIdStr = event.data["session_id"] as? String,
+            if let sessionIdStr = event.data["session_id"]?.value as? String,
                let sessionId = UUID(uuidString: sessionIdStr),
                let index = sessions.firstIndex(where: { $0.id == sessionId }) {
                 sessions[index].isActive = false
             }
 
-        case .userMessage:
-            // Add user message to graph
-            if let currentSessionIndex = currentActiveSessionIndex(),
-               let content = event.data["content"] as? String {
-                let node = GraphNode(
-                    id: UUID(),
-                    type: .message,
-                    parentId: sessions[currentSessionIndex].graph.lastNodeId(),
-                    timestamp: Date(),
-                    data: [
-                        "role": AnyCodable("user"),
-                        "text": AnyCodable(content)
-                    ]
-                )
-                sessions[currentSessionIndex].graph.addNode(node)
+        case .runStarted:
+            // Mark session as active when run starts
+            if let sessionIdStr = event.data["session_id"]?.value as? String,
+               let sessionId = UUID(uuidString: sessionIdStr),
+               let index = sessions.firstIndex(where: { $0.id == sessionId }) {
+                sessions[index].isActive = true
+
+                // If there's a user message in the run, add it to the graph
+                if let content = event.data["message"]?.value as? String {
+                    let node = GraphNode(
+                        id: UUID(),
+                        type: .message,
+                        parentId: sessions[index].graph.lastNodeId(),
+                        timestamp: Date(),
+                        data: [
+                            "role": AnyCodable("user"),
+                            "text": AnyCodable(content)
+                        ]
+                    )
+                    sessions[index].graph.addNode(node)
+                }
             }
 
         case .assistantDelta:
             // Update or create streaming assistant message
             if let currentSessionIndex = currentActiveSessionIndex(),
-               let text = event.data["text"] as? String {
+               let text = event.data["text"]?.value as? String {
                 updateStreamingMessage(sessionIndex: currentSessionIndex, deltaText: text)
             }
 
@@ -255,8 +204,8 @@ class SessionManager: ObservableObject {
         case .toolStart:
             // Add tool use node
             if let currentSessionIndex = currentActiveSessionIndex(),
-               let toolName = event.data["tool_name"] as? String,
-               let toolIdStr = event.data["tool_id"] as? String,
+               let toolName = event.data["tool_name"]?.value as? String,
+               let toolIdStr = event.data["tool_id"]?.value as? String,
                let toolId = UUID(uuidString: toolIdStr) {
                 let node = GraphNode(
                     id: toolId,
@@ -266,7 +215,7 @@ class SessionManager: ObservableObject {
                     data: [
                         "tool_name": AnyCodable(toolName),
                         "status": AnyCodable("running"),
-                        "input": AnyCodable(event.data["input"] ?? [:])
+                        "input": event.data["input"] ?? AnyCodable(":")
                     ]
                 )
                 sessions[currentSessionIndex].graph.addNode(node)
@@ -275,9 +224,9 @@ class SessionManager: ObservableObject {
         case .toolEnd:
             // Add tool result node and update tool use status
             if let currentSessionIndex = currentActiveSessionIndex(),
-               let toolIdStr = event.data["tool_id"] as? String,
+               let toolIdStr = event.data["tool_id"]?.value as? String,
                let toolId = UUID(uuidString: toolIdStr),
-               let status = event.data["status"] as? String {
+               let status = event.data["status"]?.value as? String {
 
                 // Update tool use node status
                 if let toolUseNode = sessions[currentSessionIndex].graph.getNode(id: toolId) {
@@ -301,10 +250,10 @@ class SessionManager: ObservableObject {
                     parentId: toolId,
                     timestamp: Date(),
                     data: [
-                        "tool_name": AnyCodable(event.data["tool_name"] ?? ""),
-                        "output": AnyCodable(event.data["output"] ?? ""),
-                        "byte_count": AnyCodable(event.data["byte_count"] ?? 0),
-                        "artifact_ref": AnyCodable(event.data["artifact_ref"] ?? ""),
+                        "tool_name": event.data["tool_name"] ?? AnyCodable(""),
+                        "output": event.data["output"] ?? AnyCodable(""),
+                        "byte_count": event.data["byte_count"] ?? AnyCodable(0),
+                        "artifact_ref": event.data["artifact_ref"] ?? AnyCodable(""),
                         "success": AnyCodable(success)
                     ]
                 )
@@ -314,8 +263,8 @@ class SessionManager: ObservableObject {
         case .checkpointCreated:
             // Add checkpoint node
             if let currentSessionIndex = currentActiveSessionIndex(),
-               let checkpointId = event.data["checkpoint_id"] as? String,
-               let label = event.data["label"] as? String {
+               let checkpointId = event.data["checkpoint_id"]?.value as? String,
+               let label = event.data["label"]?.value as? String {
                 let node = GraphNode(
                     id: UUID(uuidString: checkpointId) ?? UUID(),
                     type: .checkpoint,
@@ -323,8 +272,8 @@ class SessionManager: ObservableObject {
                     timestamp: Date(),
                     data: [
                         "label": AnyCodable(label),
-                        "jj_commit_id": AnyCodable(event.data["jj_commit_id"] ?? ""),
-                        "bookmark_name": AnyCodable(event.data["bookmark_name"] ?? "")
+                        "jj_commit_id": event.data["jj_commit_id"] ?? AnyCodable(""),
+                        "bookmark_name": event.data["bookmark_name"] ?? AnyCodable("")
                     ]
                 )
                 sessions[currentSessionIndex].graph.addNode(node)
@@ -337,8 +286,8 @@ class SessionManager: ObservableObject {
         case .skillStart:
             // Add skill run node
             if let currentSessionIndex = currentActiveSessionIndex(),
-               let skillId = event.data["skill_id"] as? String,
-               let name = event.data["name"] as? String {
+               let skillId = event.data["skill_id"]?.value as? String,
+               let name = event.data["name"]?.value as? String {
                 let node = GraphNode(
                     id: UUID(),
                     type: .skillRun,
@@ -347,7 +296,7 @@ class SessionManager: ObservableObject {
                     data: [
                         "skill_id": AnyCodable(skillId),
                         "name": AnyCodable(name),
-                        "args": AnyCodable(event.data["args"] ?? ""),
+                        "args": event.data["args"] ?? AnyCodable(""),
                         "status": AnyCodable("running")
                     ]
                 )
@@ -361,9 +310,9 @@ class SessionManager: ObservableObject {
         case .subagentStart:
             // Add subagent run node
             if let currentSessionIndex = currentActiveSessionIndex(),
-               let subagentIdStr = event.data["subagent_id"] as? String,
+               let subagentIdStr = event.data["subagent_id"]?.value as? String,
                let subagentId = UUID(uuidString: subagentIdStr),
-               let subagentType = event.data["subagent_type"] as? String {
+               let subagentType = event.data["subagent_type"]?.value as? String {
                 let node = GraphNode(
                     id: subagentId,
                     type: .subagentRun,
@@ -371,7 +320,7 @@ class SessionManager: ObservableObject {
                     timestamp: Date(),
                     data: [
                         "subagent_type": AnyCodable(subagentType),
-                        "prompt": AnyCodable(event.data["prompt"] ?? ""),
+                        "prompt": event.data["prompt"] ?? AnyCodable(""),
                         "status": AnyCodable("running")
                     ]
                 )
@@ -384,7 +333,7 @@ class SessionManager: ObservableObject {
 
         case .error:
             // Display error
-            if let message = event.data["message"] as? String {
+            if let message = event.data["message"]?.value as? String {
                 error = message
             }
 
