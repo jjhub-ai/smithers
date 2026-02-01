@@ -104,6 +104,30 @@ class TestProtocolResponses:
         assert d["error"]["code"] == "INVALID_PARAMS"
         assert d["error"]["data"]["param"] == "session_id"
 
+    def test_response_cannot_have_both_result_and_error(self):
+        import pytest
+
+        from agentd.protocol.responses import Response
+
+        with pytest.raises(ValueError, match="Cannot have both result and error"):
+            Response(id="req-123", result={"foo": "bar"}, error={"code": "ERROR"})
+
+    def test_response_must_have_either_result_or_error(self):
+        import pytest
+
+        from agentd.protocol.responses import _UNSET, Response
+
+        with pytest.raises(ValueError, match="Response must have either result or error"):
+            Response(id="req-123", result=_UNSET, error=_UNSET)
+
+    def test_success_response_with_none_result(self):
+        from agentd.protocol.responses import Response
+
+        response = Response.success("req-123")
+        d = response.to_dict()
+        assert d["result"] == {}
+        assert d["error"] is None
+
 
 class TestProtocolValidation:
     """Test protocol schema validation."""
