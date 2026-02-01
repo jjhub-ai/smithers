@@ -60,8 +60,17 @@ class CheckpointRecord:
     created_at: datetime
 
 
+# Current schema version
+SCHEMA_VERSION = 1
+
 # SQL schema for session tables
 _SCHEMA = """
+-- schema_version: track database schema version for migrations
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
+
 -- sessions: metadata for each session
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
@@ -236,8 +245,42 @@ class SessionStore:
             # Enable foreign key constraints
             await db.execute("PRAGMA foreign_keys = ON")
             await db.executescript(_SCHEMA)
+
+            # Check and update schema version
+            await self._ensure_schema_version(db)
+
             await db.commit()
         self._initialized = True
+
+    async def _ensure_schema_version(self, db: aiosqlite.Connection) -> None:
+        """Ensure the database schema is at the correct version.
+
+        Args:
+            db: Database connection
+        """
+        # Check current version
+        async with db.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1") as cursor:
+            row = await cursor.fetchone()
+            current_version = row[0] if row else 0
+
+        # If already at current version, nothing to do
+        if current_version == SCHEMA_VERSION:
+            return
+
+        # If no version recorded, record the current version
+        if current_version == 0:
+            now = _timestamp_now()
+            await db.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (SCHEMA_VERSION, now)
+            )
+            return
+
+        # Future: Add migration logic here when schema changes
+        # For now, we only have version 1
+        if current_version < SCHEMA_VERSION:
+            # Apply migrations here
+            pass
 
     async def _ensure_initialized(self) -> None:
         """Ensure the database is initialized."""
@@ -571,6 +614,21 @@ class SessionStore:
             return row[0] if row and row[0] is not None else None
 
     # ==================== Utility Methods ====================
+
+    async def get_schema_version(self) -> int:
+        """Get the current schema version of the database.
+
+        Returns:
+            The schema version number, or 0 if no version is set
+        """
+        await self._ensure_initialized()
+        async with (
+            self._lock,
+            aiosqlite.connect(self.path) as db,
+            db.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1") as cursor,
+        ):
+            row = await cursor.fetchone()
+            return row[0] if row else 0
 
     async def get_session_stats(self, session_id: str) -> dict[str, Any]:
         """Get statistics for a session.

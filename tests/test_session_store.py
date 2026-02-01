@@ -107,6 +107,60 @@ class TestSessionStore:
         assert deleted is False
 
 
+class TestSchemaVersioning:
+    """Test schema versioning and migrations."""
+
+    @pytest.mark.asyncio
+    async def test_schema_version_set_on_initialization(self, tmp_path):
+        """Schema version should be set when database is initialized."""
+        from agentd.store.sqlite import SCHEMA_VERSION
+
+        store = SessionStore(tmp_path / "test.db")
+        await store.initialize()
+
+        version = await store.get_schema_version()
+        assert version == SCHEMA_VERSION
+        assert version == 1  # Current version
+
+    @pytest.mark.asyncio
+    async def test_schema_version_persists_across_reopens(self, tmp_path):
+        """Schema version should persist when database is reopened."""
+        from agentd.store.sqlite import SCHEMA_VERSION
+
+        db_path = tmp_path / "test.db"
+
+        # Create and initialize database
+        store1 = SessionStore(db_path)
+        await store1.initialize()
+        version1 = await store1.get_schema_version()
+
+        # Reopen database
+        store2 = SessionStore(db_path)
+        await store2.initialize()
+        version2 = await store2.get_schema_version()
+
+        assert version1 == version2 == SCHEMA_VERSION
+
+    @pytest.mark.asyncio
+    async def test_multiple_initializations_dont_duplicate_version(self, tmp_path):
+        """Multiple initializations should not create duplicate version records."""
+        import aiosqlite
+
+        store = SessionStore(tmp_path / "test.db")
+        await store.initialize()
+        await store.initialize()  # Second initialization
+        await store.initialize()  # Third initialization
+
+        # Query version table directly
+        async with aiosqlite.connect(tmp_path / "test.db") as db:
+            async with db.execute("SELECT COUNT(*) FROM schema_version") as cursor:
+                row = await cursor.fetchone()
+                count = row[0] if row else 0
+
+        # Should only have one version record
+        assert count == 1
+
+
 class TestSessionEvents:
     """Test session event operations."""
 
