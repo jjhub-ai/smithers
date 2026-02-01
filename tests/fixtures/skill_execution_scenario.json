@@ -1,0 +1,13 @@
+[
+  {"type": "daemon.ready", "data": {"version": "1.0.0", "config": {"sandbox_mode": "host", "agent_backend": "fake"}}, "timestamp": "2024-01-01T00:00:00"},
+  {"type": "session.created", "data": {"session_id": "test-session-6"}, "timestamp": "2024-01-01T00:00:01"},
+  {"type": "skill.start", "data": {"skill_id": "skill-1", "name": "summarize", "args": "--format markdown"}, "timestamp": "2024-01-01T00:00:02"},
+  {"type": "assistant.delta", "data": {"text": "Analyzing the session to create a summary..."}, "timestamp": "2024-01-01T00:00:03"},
+  {"type": "tool.start", "data": {"tool_use_id": "t6", "name": "Read", "input": {"path": "/.smithers/sessions.db"}}, "timestamp": "2024-01-01T00:00:04"},
+  {"type": "tool.output_ref", "data": {"tool_use_id": "t6", "artifact_ref": "sha256:jkl012", "preview": "Session data retrieved..."}, "timestamp": "2024-01-01T00:00:05"},
+  {"type": "tool.end", "data": {"tool_use_id": "t6", "status": "success"}, "timestamp": "2024-01-01T00:00:06"},
+  {"type": "assistant.delta", "data": {"text": "# Session Summary\n\n## Overview\nThis session involved implementing a new authentication system.\n\n## Key Changes\n- Added JWT token validation\n- Implemented refresh token flow\n- Updated user model with new fields"}, "timestamp": "2024-01-01T00:00:07"},
+  {"type": "assistant.final", "data": {"message_id": "msg-8"}, "timestamp": "2024-01-01T00:00:08"},
+  {"type": "skill.result", "data": {"skill_id": "skill-1", "result": "Summary created successfully with 3 key changes identified"}, "timestamp": "2024-01-01T00:00:09"},
+  {"type": "skill.end", "data": {"skill_id": "skill-1", "status": "success"}, "timestamp": "2024-01-01T00:00:10"}
+]

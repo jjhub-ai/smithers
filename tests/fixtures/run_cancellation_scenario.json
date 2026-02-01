@@ -1,0 +1,10 @@
+[
+  {"type": "daemon.ready", "data": {"version": "1.0.0", "config": {"sandbox_mode": "host", "agent_backend": "fake"}}, "timestamp": "2024-01-01T00:00:00"},
+  {"type": "session.created", "data": {"session_id": "test-session-3"}, "timestamp": "2024-01-01T00:00:01"},
+  {"type": "run.started", "data": {"run_id": "run-3", "session_id": "test-session-3"}, "timestamp": "2024-01-01T00:00:02"},
+  {"type": "user.message", "data": {"content": "Analyze all files in the project"}, "timestamp": "2024-01-01T00:00:03"},
+  {"type": "assistant.delta", "data": {"text": "I'll analyze all the files in your project. Let me start by listing them..."}, "timestamp": "2024-01-01T00:00:04"},
+  {"type": "tool.start", "data": {"tool_use_id": "t3", "name": "Bash", "input": {"command": "find . -type f"}}, "timestamp": "2024-01-01T00:00:05"},
+  {"type": "run.cancelled", "data": {"run_id": "run-3", "session_id": "test-session-3", "reason": "User requested cancellation"}, "timestamp": "2024-01-01T00:00:06"},
+  {"type": "tool.end", "data": {"tool_use_id": "t3", "status": "error", "error": "Run was cancelled"}, "timestamp": "2024-01-01T00:00:07"}
+]

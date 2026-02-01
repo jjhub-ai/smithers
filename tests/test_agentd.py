@@ -1492,3 +1492,212 @@ class TestSearchRequests:
 
         assert event["type"] == "search.results"
         assert len(event["data"]["results"]) == 0
+
+
+class TestGoldenFixtures:
+    """Test golden protocol fixtures for schema validation."""
+
+    @pytest.fixture
+    def fixtures_dir(self):
+        import pathlib
+
+        return pathlib.Path(__file__).parent / "fixtures"
+
+    def test_golden_events_basic_scenario(self, fixtures_dir):
+        """Test basic golden events fixture validates correctly."""
+        from agentd.protocol.validation import validate_event
+
+        fixture_path = fixtures_dir / "golden_events.json"
+        with open(fixture_path) as f:
+            events = json.load(f)
+
+        assert len(events) > 0
+
+        for event in events:
+            # Should not raise ValidationError
+            validate_event(event)
+
+        # Verify specific events in the fixture
+        assert events[0]["type"] == "daemon.ready"
+        assert events[1]["type"] == "session.created"
+        assert any(e["type"] == "tool.start" for e in events)
+        assert any(e["type"] == "checkpoint.created" for e in events)
+
+    def test_tool_error_scenario(self, fixtures_dir):
+        """Test tool error scenario fixture validates correctly."""
+        from agentd.protocol.validation import validate_event
+
+        fixture_path = fixtures_dir / "tool_error_scenario.json"
+        with open(fixture_path) as f:
+            events = json.load(f)
+
+        assert len(events) == 11
+
+        for event in events:
+            validate_event(event)
+
+        # Verify the error flow
+        tool_start = next(e for e in events if e["type"] == "tool.start")
+        assert tool_start["data"]["name"] == "Read"
+
+        tool_end = next(e for e in events if e["type"] == "tool.end")
+        assert tool_end["data"]["status"] == "error"
+        assert "FileNotFoundError" in tool_end["data"]["error"]
+
+    def test_run_cancellation_scenario(self, fixtures_dir):
+        """Test run cancellation scenario fixture validates correctly."""
+        from agentd.protocol.validation import validate_event
+
+        fixture_path = fixtures_dir / "run_cancellation_scenario.json"
+        with open(fixture_path) as f:
+            events = json.load(f)
+
+        assert len(events) == 8
+
+        for event in events:
+            validate_event(event)
+
+        # Verify cancellation flow
+        run_cancelled = next(e for e in events if e["type"] == "run.cancelled")
+        assert run_cancelled["data"]["run_id"] == "run-3"
+        assert "reason" in run_cancelled["data"]
+
+        # Tool should end with error after cancellation
+        tool_end = next(e for e in events if e["type"] == "tool.end")
+        assert tool_end["data"]["status"] == "error"
+
+    def test_run_error_scenario(self, fixtures_dir):
+        """Test run error scenario fixture validates correctly."""
+        from agentd.protocol.validation import validate_event
+
+        fixture_path = fixtures_dir / "run_error_scenario.json"
+        with open(fixture_path) as f:
+            events = json.load(f)
+
+        assert len(events) == 10
+
+        for event in events:
+            validate_event(event)
+
+        # Verify error flow
+        run_error = next(e for e in events if e["type"] == "run.error")
+        assert run_error["data"]["run_id"] == "run-4"
+        assert "error" in run_error["data"]
+        assert "traceback" in run_error["data"]
+        assert "KeyError" in run_error["data"]["traceback"]
+
+    def test_subagent_scenario(self, fixtures_dir):
+        """Test subagent scenario fixture validates correctly."""
+        from agentd.protocol.validation import validate_event
+
+        fixture_path = fixtures_dir / "subagent_scenario.json"
+        with open(fixture_path) as f:
+            events = json.load(f)
+
+        assert len(events) == 17
+
+        for event in events:
+            validate_event(event)
+
+        # Verify subagent flow
+        subagent_start = next(e for e in events if e["type"] == "subagent.start")
+        assert subagent_start["data"]["subagent_id"] == "sub-1"
+        assert "task" in subagent_start["data"]
+        assert "parent_run_id" in subagent_start["data"]
+
+        subagent_end = next(e for e in events if e["type"] == "subagent.end")
+        assert subagent_end["data"]["subagent_id"] == "sub-1"
+        assert subagent_end["data"]["status"] == "success"
+
+    def test_skill_execution_scenario(self, fixtures_dir):
+        """Test skill execution scenario fixture validates correctly."""
+        from agentd.protocol.validation import validate_event
+
+        fixture_path = fixtures_dir / "skill_execution_scenario.json"
+        with open(fixture_path) as f:
+            events = json.load(f)
+
+        assert len(events) == 11
+
+        for event in events:
+            validate_event(event)
+
+        # Verify skill flow
+        skill_start = next(e for e in events if e["type"] == "skill.start")
+        assert skill_start["data"]["skill_id"] == "skill-1"
+        assert skill_start["data"]["name"] == "summarize"
+
+        skill_result = next(e for e in events if e["type"] == "skill.result")
+        assert skill_result["data"]["skill_id"] == "skill-1"
+        assert "result" in skill_result["data"]
+
+        skill_end = next(e for e in events if e["type"] == "skill.end")
+        assert skill_end["data"]["status"] == "success"
+
+    def test_all_fixtures_have_valid_timestamps(self, fixtures_dir):
+        """Test all fixtures have valid ISO 8601 timestamps."""
+        from datetime import datetime
+
+        fixture_files = [
+            "golden_events.json",
+            "tool_error_scenario.json",
+            "run_cancellation_scenario.json",
+            "run_error_scenario.json",
+            "subagent_scenario.json",
+            "skill_execution_scenario.json",
+        ]
+
+        for fixture_file in fixture_files:
+            fixture_path = fixtures_dir / fixture_file
+            with open(fixture_path) as f:
+                events = json.load(f)
+
+            for event in events:
+                # Should parse as ISO 8601 timestamp
+                timestamp = event["timestamp"]
+                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                assert dt is not None
+
+    def test_fixtures_cover_all_event_types(self, fixtures_dir):
+        """Test that golden fixtures cover a comprehensive set of event types."""
+        fixture_files = [
+            "golden_events.json",
+            "tool_error_scenario.json",
+            "run_cancellation_scenario.json",
+            "run_error_scenario.json",
+            "subagent_scenario.json",
+            "skill_execution_scenario.json",
+        ]
+
+        all_event_types = set()
+        for fixture_file in fixture_files:
+            fixture_path = fixtures_dir / fixture_file
+            with open(fixture_path) as f:
+                events = json.load(f)
+
+            for event in events:
+                all_event_types.add(event["type"])
+
+        # Verify coverage of core event types
+        expected_types = {
+            "daemon.ready",
+            "session.created",
+            "run.started",
+            "run.finished",
+            "run.cancelled",
+            "run.error",
+            "user.message",
+            "assistant.delta",
+            "assistant.final",
+            "tool.start",
+            "tool.end",
+            "tool.output_ref",
+            "checkpoint.created",
+            "subagent.start",
+            "subagent.end",
+            "skill.start",
+            "skill.result",
+            "skill.end",
+        }
+
+        assert expected_types.issubset(all_event_types), f"Missing event types: {expected_types - all_event_types}"

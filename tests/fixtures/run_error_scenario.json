@@ -1,0 +1,12 @@
+[
+  {"type": "daemon.ready", "data": {"version": "1.0.0", "config": {"sandbox_mode": "host", "agent_backend": "fake"}}, "timestamp": "2024-01-01T00:00:00"},
+  {"type": "session.created", "data": {"session_id": "test-session-4"}, "timestamp": "2024-01-01T00:00:01"},
+  {"type": "run.started", "data": {"run_id": "run-4", "session_id": "test-session-4"}, "timestamp": "2024-01-01T00:00:02"},
+  {"type": "user.message", "data": {"content": "Deploy to production"}, "timestamp": "2024-01-01T00:00:03"},
+  {"type": "assistant.delta", "data": {"text": "I'll deploy the application to production..."}, "timestamp": "2024-01-01T00:00:04"},
+  {"type": "assistant.final", "data": {"message_id": "msg-4"}, "timestamp": "2024-01-01T00:00:05"},
+  {"type": "tool.start", "data": {"tool_use_id": "t4", "name": "Bash", "input": {"command": "make deploy"}}, "timestamp": "2024-01-01T00:00:06"},
+  {"type": "tool.output_ref", "data": {"tool_use_id": "t4", "artifact_ref": "sha256:def456", "preview": "Error: API key not found..."}, "timestamp": "2024-01-01T00:00:07"},
+  {"type": "tool.end", "data": {"tool_use_id": "t4", "status": "error", "error": "Command failed with exit code 1"}, "timestamp": "2024-01-01T00:00:08"},
+  {"type": "run.error", "data": {"run_id": "run-4", "session_id": "test-session-4", "error": "Deployment failed: missing API credentials", "traceback": "Traceback (most recent call last):\n  File \"deploy.py\", line 42, in deploy\n    api_key = os.environ['API_KEY']\nKeyError: 'API_KEY'"}, "timestamp": "2024-01-01T00:00:09"}
+]

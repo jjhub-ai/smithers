@@ -1,0 +1,13 @@
+[
+  {"type": "daemon.ready", "data": {"version": "1.0.0", "config": {"sandbox_mode": "host", "agent_backend": "fake"}}, "timestamp": "2024-01-01T00:00:00"},
+  {"type": "session.created", "data": {"session_id": "test-session-2"}, "timestamp": "2024-01-01T00:00:01"},
+  {"type": "run.started", "data": {"run_id": "run-2", "session_id": "test-session-2"}, "timestamp": "2024-01-01T00:00:02"},
+  {"type": "user.message", "data": {"content": "Read the file /nonexistent.txt"}, "timestamp": "2024-01-01T00:00:03"},
+  {"type": "assistant.delta", "data": {"text": "I'll read that file for you."}, "timestamp": "2024-01-01T00:00:04"},
+  {"type": "assistant.final", "data": {"message_id": "msg-2"}, "timestamp": "2024-01-01T00:00:05"},
+  {"type": "tool.start", "data": {"tool_use_id": "t2", "name": "Read", "input": {"path": "/nonexistent.txt"}}, "timestamp": "2024-01-01T00:00:06"},
+  {"type": "tool.end", "data": {"tool_use_id": "t2", "status": "error", "error": "FileNotFoundError: [Errno 2] No such file or directory: '/nonexistent.txt'"}, "timestamp": "2024-01-01T00:00:07"},
+  {"type": "assistant.delta", "data": {"text": "I apologize, but I encountered an error: the file /nonexistent.txt does not exist."}, "timestamp": "2024-01-01T00:00:08"},
+  {"type": "assistant.final", "data": {"message_id": "msg-3"}, "timestamp": "2024-01-01T00:00:09"},
+  {"type": "run.finished", "data": {"run_id": "run-2", "session_id": "test-session-2"}, "timestamp": "2024-01-01T00:00:10"}
+]

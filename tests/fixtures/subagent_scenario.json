@@ -1,0 +1,19 @@
+[
+  {"type": "daemon.ready", "data": {"version": "1.0.0", "config": {"sandbox_mode": "host", "agent_backend": "fake"}}, "timestamp": "2024-01-01T00:00:00"},
+  {"type": "session.created", "data": {"session_id": "test-session-5"}, "timestamp": "2024-01-01T00:00:01"},
+  {"type": "run.started", "data": {"run_id": "run-5", "session_id": "test-session-5"}, "timestamp": "2024-01-01T00:00:02"},
+  {"type": "user.message", "data": {"content": "Research the best practices for API design"}, "timestamp": "2024-01-01T00:00:03"},
+  {"type": "assistant.delta", "data": {"text": "I'll research API design best practices for you. Let me spawn a research subagent..."}, "timestamp": "2024-01-01T00:00:04"},
+  {"type": "assistant.final", "data": {"message_id": "msg-5"}, "timestamp": "2024-01-01T00:00:05"},
+  {"type": "subagent.start", "data": {"subagent_id": "sub-1", "task": "Research API design best practices", "parent_run_id": "run-5"}, "timestamp": "2024-01-01T00:00:06"},
+  {"type": "assistant.delta", "data": {"text": "[Subagent] Searching for REST API patterns..."}, "timestamp": "2024-01-01T00:00:07"},
+  {"type": "tool.start", "data": {"tool_use_id": "t5", "name": "WebSearch", "input": {"query": "REST API design best practices 2024"}}, "timestamp": "2024-01-01T00:00:08"},
+  {"type": "tool.output_ref", "data": {"tool_use_id": "t5", "artifact_ref": "sha256:ghi789", "preview": "Found 10 results about API design patterns..."}, "timestamp": "2024-01-01T00:00:09"},
+  {"type": "tool.end", "data": {"tool_use_id": "t5", "status": "success"}, "timestamp": "2024-01-01T00:00:10"},
+  {"type": "assistant.delta", "data": {"text": "[Subagent] Based on my research, here are the key principles:\n1. Use consistent naming conventions\n2. Version your APIs\n3. Implement proper error handling"}, "timestamp": "2024-01-01T00:00:11"},
+  {"type": "assistant.final", "data": {"message_id": "msg-6"}, "timestamp": "2024-01-01T00:00:12"},
+  {"type": "subagent.end", "data": {"subagent_id": "sub-1", "status": "success"}, "timestamp": "2024-01-01T00:00:13"},
+  {"type": "assistant.delta", "data": {"text": "The subagent completed its research. Here's a summary of the findings..."}, "timestamp": "2024-01-01T00:00:14"},
+  {"type": "assistant.final", "data": {"message_id": "msg-7"}, "timestamp": "2024-01-01T00:00:15"},
+  {"type": "run.finished", "data": {"run_id": "run-5", "session_id": "test-session-5"}, "timestamp": "2024-01-01T00:00:16"}
+]
