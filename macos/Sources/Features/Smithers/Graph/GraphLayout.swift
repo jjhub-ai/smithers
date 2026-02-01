@@ -46,7 +46,7 @@ class GraphLayoutEngine {
         var padding: CGFloat = 40
     }
 
-    private let config: Config
+    let config: Config
 
     init(config: Config = Config()) {
         self.config = config
