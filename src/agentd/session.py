@@ -125,6 +125,11 @@ class SessionManager:
             Event(type=EventType.RUN_STARTED, data={"run_id": run_id, "session_id": session_id})
         )
 
+        # Emit user message event
+        emit_with_persistence(
+            Event(type=EventType.USER_MESSAGE, data={"content": message})
+        )
+
         # Add user message to history
         session.message_history.append({"role": "user", "content": message})
 

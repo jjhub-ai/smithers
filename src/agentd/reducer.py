@@ -226,6 +226,19 @@ def reduce_events(events: list[dict[str, Any]]) -> SessionGraph:
             graph._current_message_id = None
             graph._current_message_text = ""
 
+        elif event_type == "user.message" or event_type == "USER_MESSAGE":
+            # User message
+            content = data.get("content", "")
+            node_id = next_node_id()
+            node = GraphNode(
+                id=node_id,
+                type=GraphNodeType.MESSAGE,
+                parent_id=None,
+                timestamp=ts,
+                data={"role": "user", "text": content, "streaming": False},
+            )
+            graph.add_node(node)
+
         elif event_type == "ASSISTANT_DELTA":
             # Streaming text delta
             text = data.get("text", "")

@@ -489,6 +489,60 @@ class TestReducer:
         assert len(chat) == 2
         assert all(msg.role == "assistant" for msg in chat)
 
+    def test_user_message_event(self):
+        """Test that USER_MESSAGE events create user message nodes."""
+        events = [
+            {
+                "type": "RUN_STARTED",
+                "data": {"run_id": "run-1"},
+                "timestamp": "2024-01-01T00:00:00Z",
+            },
+            {
+                "type": "USER_MESSAGE",
+                "data": {"content": "Hello, agent!"},
+                "timestamp": "2024-01-01T00:00:01Z",
+            },
+            {
+                "type": "ASSISTANT_DELTA",
+                "data": {"text": "Hello! "},
+                "timestamp": "2024-01-01T00:00:02Z",
+            },
+            {
+                "type": "ASSISTANT_FINAL",
+                "data": {"text": "Hello! How can I help?"},
+                "timestamp": "2024-01-01T00:00:03Z",
+            },
+            {
+                "type": "RUN_FINISHED",
+                "data": {"run_id": "run-1"},
+                "timestamp": "2024-01-01T00:00:04Z",
+            },
+        ]
+
+        graph = reduce_events(events)
+
+        # Should have two message nodes (user + assistant)
+        messages = [n for n in graph.nodes.values() if n.type == GraphNodeType.MESSAGE]
+        assert len(messages) == 2
+
+        # Check user message
+        user_msgs = [m for m in messages if m.role == "user"]
+        assert len(user_msgs) == 1
+        assert user_msgs[0].text == "Hello, agent!"
+
+        # Check assistant message
+        assistant_msgs = [m for m in messages if m.role == "assistant"]
+        assert len(assistant_msgs) == 1
+        assert assistant_msgs[0].text == "Hello! How can I help?"
+
+        # Check chat projection includes both messages
+        chat = graph.project_to_chat()
+        assert len(chat) == 2
+        assert chat[0].role == "user"
+        assert chat[0].content == "Hello, agent!"
+        assert chat[1].role == "assistant"
+        assert chat[1].content == "Hello! How can I help?"
+
 
 class TestReducerEdgeCases:
     """Tests for edge cases in the reducer."""

@@ -20,6 +20,7 @@
             "run.finished",
             "run.cancelled",
             "run.error",
+            "user.message",
             "assistant.delta",
             "assistant.final",
             "tool.start",
@@ -219,6 +220,23 @@
                 "session_id": {"type": "string"},
                 "error": {"type": "string"},
                 "traceback": {"type": "string"}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "user_message_event": {
+      "allOf": [
+        {"$ref": "#/definitions/event"},
+        {
+          "properties": {
+            "type": {"const": "user.message"},
+            "data": {
+              "type": "object",
+              "required": ["content"],
+              "properties": {
+                "content": {"type": "string"}
               }
             }
           }
@@ -598,6 +616,7 @@
     {"$ref": "#/definitions/run_finished_event"},
     {"$ref": "#/definitions/run_cancelled_event"},
     {"$ref": "#/definitions/run_error_event"},
+    {"$ref": "#/definitions/user_message_event"},
     {"$ref": "#/definitions/assistant_delta_event"},
     {"$ref": "#/definitions/assistant_final_event"},
     {"$ref": "#/definitions/tool_start_event"},

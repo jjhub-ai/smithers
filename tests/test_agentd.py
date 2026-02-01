@@ -112,6 +112,12 @@ class TestProtocolValidation:
         with pytest.raises(ValidationError):
             event.validate()
 
+    def test_user_message_event_valid(self):
+        from agentd.protocol.events import Event, EventType
+
+        event = Event(type=EventType.USER_MESSAGE, data={"content": "Hello, agent!"})
+        event.validate()
+
     def test_assistant_delta_event_valid(self):
         from agentd.protocol.events import Event, EventType
 
@@ -357,11 +363,17 @@ class TestSessionManager:
         # Verify events were emitted
         event_types = [e.type for e in events]
 
-        # Should have: RUN_STARTED, ASSISTANT_DELTA (x2), ASSISTANT_FINAL, RUN_FINISHED
+        # Should have: RUN_STARTED, USER_MESSAGE, ASSISTANT_DELTA (x2), ASSISTANT_FINAL, RUN_FINISHED
         assert EventType.RUN_STARTED in event_types
+        assert EventType.USER_MESSAGE in event_types
         assert EventType.ASSISTANT_DELTA in event_types
         assert EventType.ASSISTANT_FINAL in event_types
         assert EventType.RUN_FINISHED in event_types
+
+        # Verify user message content
+        user_events = [e for e in events if e.type == EventType.USER_MESSAGE]
+        assert len(user_events) == 1
+        assert user_events[0].data["content"] == "Hello, agent!"
 
         # Verify we got the expected assistant deltas
         delta_events = [e for e in events if e.type == EventType.ASSISTANT_DELTA]

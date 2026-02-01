@@ -27,6 +27,9 @@ class EventType(str, Enum):
     RUN_CANCELLED = "run.cancelled"
     RUN_ERROR = "run.error"
 
+    # Messages
+    USER_MESSAGE = "user.message"
+
     # Streaming
     ASSISTANT_DELTA = "assistant.delta"
     ASSISTANT_FINAL = "assistant.final"
