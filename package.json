@@ -27,9 +27,11 @@
     "@ai-sdk/anthropic": "^3.0.36",
     "@types/react": "^19.2.10",
     "ai": "^6.0.69",
+    "diff": "^5.2.0",
     "drizzle-orm": "^0.45.1",
     "drizzle-zod": "^0.8.3",
     "react": "^19.2.4",
+    "react-reconciler": "^0.31.0",
     "zod": "^4.3.6"
   }
 }
