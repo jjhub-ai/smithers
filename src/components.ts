@@ -7,10 +7,6 @@ import type {
   BranchProps,
   RalphProps,
 } from "./types";
-import { getCurrentIteration } from "./runtime/iteration";
-
-let parallelCounter = 0;
-
 export function Workflow(props: WorkflowProps) {
   return React.createElement("smithers:workflow", props, props.children);
 }
@@ -26,9 +22,7 @@ export function Sequence(props: SequenceProps) {
 
 export function Parallel(props: ParallelProps) {
   if (props.skipIf) return null;
-  const id = `parallel-${parallelCounter++}`;
-  const nextProps = { ...props, __parallelId: id } as any;
-  return React.createElement("smithers:parallel", nextProps, props.children);
+  return React.createElement("smithers:parallel", props, props.children);
 }
 
 export function Branch(props: BranchProps) {
@@ -39,7 +33,5 @@ export function Branch(props: BranchProps) {
 
 export function Ralph(props: RalphProps) {
   if (props.skipIf) return null;
-  const iteration = getCurrentIteration();
-  const nextProps = { ...props, __iteration: iteration } as any;
-  return React.createElement("smithers:ralph", nextProps, props.children);
+  return React.createElement("smithers:ralph", props, props.children);
 }
