@@ -76,9 +76,26 @@ const hostConfig: any = {
     if (oldProps === newProps) return null;
     return newProps;
   },
-  commitUpdate(instance: HostElement, _type: string, _oldProps: any, newProps: any) {
-    if (!newProps || typeof newProps !== "object") return;
-    const next = createElement(instance.tag, newProps);
+  commitUpdate(instance: HostElement, ...args: any[]) {
+    let nextProps: any | null = null;
+    const first = args[0];
+    const second = args[1];
+    if (typeof second === "string" && first && typeof first === "object") {
+      // (instance, updatePayload, type, oldProps, newProps, ...)
+      nextProps = first;
+    } else if (typeof first === "string") {
+      // (instance, type, oldProps, newProps, ...)
+      const maybeNewProps = args[2];
+      if (maybeNewProps && typeof maybeNewProps === "object") {
+        nextProps = maybeNewProps;
+      }
+    } else if (first && typeof first === "object") {
+      // fallback: assume updatePayload
+      nextProps = first;
+    }
+
+    if (!nextProps || typeof nextProps !== "object") return;
+    const next = createElement(instance.tag, nextProps);
     instance.props = next.props;
     instance.rawProps = next.rawProps;
   },
