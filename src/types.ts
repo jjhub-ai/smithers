@@ -226,6 +226,7 @@ export type WorkflowProps = {
 };
 
 export type TaskProps<Row> = {
+  key?: string;
   id: string;
   output: Table;
   agent?: AgentLike;
