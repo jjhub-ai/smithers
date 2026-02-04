@@ -1,5 +1,6 @@
 import type { XmlNode, XmlElement, TaskDescriptor } from "../types";
 import { getTableName } from "drizzle-orm";
+import { resolveStableId } from "../utils/tree-ids";
 
 export type HostNode = HostElement | HostText;
 
@@ -22,6 +23,11 @@ export type ExtractResult = {
   mountedTaskIds: string[];
 };
 
+export type ExtractOptions = {
+  ralphIterations?: Map<string, number> | Record<string, number>;
+  defaultIteration?: number;
+};
+
 function toXmlNode(node: HostNode): XmlNode {
   if (node.kind === "text") {
     return { kind: "text", text: node.text };
@@ -35,7 +41,18 @@ function toXmlNode(node: HostNode): XmlNode {
   return element;
 }
 
-export function extractFromHost(root: HostNode | null): ExtractResult {
+function getRalphIteration(opts: ExtractOptions | undefined, id: string): number {
+  const map = opts?.ralphIterations;
+  const fallback = typeof opts?.defaultIteration === "number" ? opts.defaultIteration : 0;
+  if (!map) return fallback;
+  if (map instanceof Map) {
+    return map.get(id) ?? fallback;
+  }
+  const value = (map as Record<string, number>)[id];
+  return typeof value === "number" ? value : fallback;
+}
+
+export function extractFromHost(root: HostNode | null, opts?: ExtractOptions): ExtractResult {
   if (!root) {
     return { xml: null, tasks: [], mountedTaskIds: [] };
   }
@@ -43,25 +60,33 @@ export function extractFromHost(root: HostNode | null): ExtractResult {
   const tasks: TaskDescriptor[] = [];
   const mountedTaskIds: string[] = [];
   const seen = new Set<string>();
+  const seenRalph = new Set<string>();
   let ordinal = 0;
 
-  function walk(node: HostNode, ctx: { iteration: number; parallelStack: { id: string; max?: number }[] }) {
+  function walk(node: HostNode, ctx: { path: number[]; iteration: number; ralphId?: string; parallelStack: { id: string; max?: number }[] }) {
     if (node.kind === "text") return;
 
     let iteration = ctx.iteration;
     const parallelStack = ctx.parallelStack;
+    let ralphId = ctx.ralphId;
 
     if (node.tag === "smithers:ralph") {
-      const rawIteration = node.rawProps?.__iteration;
-      if (typeof rawIteration === "number") {
-        iteration = rawIteration;
+      if (ralphId) {
+        throw new Error("Nested <Ralph> is not supported.");
       }
+      const id = resolveStableId(node.rawProps?.id, "ralph", ctx.path);
+      if (seenRalph.has(id)) {
+        throw new Error(`Duplicate Ralph id detected: ${id}`);
+      }
+      seenRalph.add(id);
+      ralphId = id;
+      iteration = getRalphIteration(opts, id);
     }
 
     let nextParallelStack = parallelStack;
     if (node.tag === "smithers:parallel") {
       const max = typeof node.rawProps?.maxConcurrency === "number" ? node.rawProps.maxConcurrency : undefined;
-      const id = node.rawProps?.__parallelId ?? `parallel-${parallelStack.length}`;
+      const id = resolveStableId(node.rawProps?.id, "parallel", ctx.path);
       nextParallelStack = [...parallelStack, { id, max }];
     }
 
@@ -98,6 +123,7 @@ export function extractFromHost(root: HostNode | null): ExtractResult {
         nodeId,
         ordinal: ordinal++,
         iteration,
+        ralphId,
         outputTable,
         outputTableName,
         needsApproval,
@@ -117,12 +143,14 @@ export function extractFromHost(root: HostNode | null): ExtractResult {
       mountedTaskIds.push(nodeId);
     }
 
+    let elementIndex = 0;
     for (const child of node.children) {
-      walk(child, { iteration, parallelStack: nextParallelStack });
+      const nextPath = child.kind === "element" ? [...ctx.path, elementIndex++] : ctx.path;
+      walk(child, { path: nextPath, iteration, ralphId, parallelStack: nextParallelStack });
     }
   }
 
-  walk(root, { iteration: 0, parallelStack: [] });
+  walk(root, { path: [], iteration: 0, parallelStack: [] });
 
   return { xml: toXmlNode(root), tasks, mountedTaskIds };
 }
