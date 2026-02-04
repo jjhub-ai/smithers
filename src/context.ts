@@ -9,10 +9,11 @@ export type OutputSnapshot = {
 export function buildContext<Schema>(opts: {
   runId: string;
   iteration: number;
+  iterations?: Record<string, number>;
   input: any;
   outputs: OutputSnapshot;
 }): SmithersCtx<Schema> {
-  const { runId, iteration, input, outputs } = opts;
+  const { runId, iteration, iterations, input, outputs } = opts;
 
   const outputsFn: any = (table: any) => {
     const name = getTableName(table);
@@ -31,13 +32,14 @@ export function buildContext<Schema>(opts: {
     return rows.find((row) => {
       if (row.nodeId !== key.nodeId) return false;
       if (!hasIteration) return true;
-      return (row.iteration ?? 0) === (key.iteration ?? 0);
+      return (row.iteration ?? 0) === (key.iteration ?? iteration);
     });
   }
 
   return {
     runId,
     iteration,
+    iterations,
     input,
     outputs: outputsFn,
     output<T extends keyof Schema>(table: Schema[T], key: OutputKey): InferRow<Schema[T]> {
