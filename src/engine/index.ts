@@ -5,21 +5,51 @@ import { loadInput, loadOutputs } from "../db/snapshot";
 import { ensureSmithersTables } from "../db/ensure";
 import { SmithersDb } from "../db/adapter";
 import { selectOutputRow, upsertOutputRow, validateOutput, validateExistingOutput } from "../db/output";
+import { validateInput } from "../db/input";
 import { schemaSignature } from "../db/schema-signature";
 import { canonicalizeXml } from "../utils/xml";
 import { sha256Hex } from "../utils/hash";
 import { nowMs } from "../utils/time";
 import { newRunId } from "../utils/ids";
-import { errorToJson } from "../utils/errors";
+import { errorToJson, SmithersError } from "../utils/errors";
 import { buildPlanTree, scheduleTasks, buildStateKey, type TaskState, type TaskStateMap, type RalphStateMap } from "./scheduler";
 import { runWithToolContext } from "../tools/context";
 import { EventBus } from "../events";
 import { getJjPointer } from "../vcs/jj";
 import { eq, getTableName } from "drizzle-orm";
 import { getTableColumns } from "drizzle-orm/utils";
+import { dirname, resolve } from "node:path";
 
 const DEFAULT_MAX_CONCURRENCY = 4;
 const STALE_ATTEMPT_MS = 15 * 60 * 1000;
+const DEFAULT_TOOL_TIMEOUT_MS = 60_000;
+const DEFAULT_MAX_OUTPUT_BYTES = 200_000;
+
+function coercePositiveInt(value: unknown, fallback: number): number {
+  const num = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(num) || num <= 0) return fallback;
+  return Math.floor(num);
+}
+
+function resolveRootDir(opts: RunOptions, workflowPath?: string | null): string {
+  if (opts.rootDir) return resolve(opts.rootDir);
+  if (workflowPath) return resolve(dirname(workflowPath));
+  return resolve(process.cwd());
+}
+
+function resolveLogDir(rootDir: string, runId: string, logDir?: string | null): string | undefined {
+  if (logDir === null) return undefined;
+  if (typeof logDir === "string") {
+    return resolve(rootDir, logDir);
+  }
+  return resolve(rootDir, ".smithers", "executions", runId, "logs");
+}
+
+function assertInputObject(input: unknown) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new SmithersError("INVALID_INPUT", "Run input must be a JSON object");
+  }
+}
 
 function resolveSchema(db: any): Record<string, any> {
   const candidates = [db?._?.fullSchema, db?._?.schema, db?.schema];
@@ -371,7 +401,7 @@ async function executeTask(
   runId: string,
   desc: TaskDescriptor,
   eventBus: EventBus,
-  rootDir: string,
+  toolConfig: { rootDir: string; allowNetwork: boolean; maxOutputBytes: number; toolTimeoutMs: number },
   workflowName: string,
   cacheEnabled: boolean,
 ) {
@@ -389,7 +419,15 @@ async function executeTask(
     errorJson: null,
     jjPointer: null,
     cached: false,
-    metaJson: null,
+    metaJson: JSON.stringify({
+      prompt: desc.prompt ?? null,
+      staticPayload: desc.staticPayload ?? null,
+      label: desc.label ?? null,
+      outputTable: desc.outputTableName,
+      needsApproval: desc.needsApproval,
+      retries: desc.retries,
+      timeoutMs: desc.timeoutMs,
+    }),
   });
   await adapter.insertNode({
     runId,
@@ -451,10 +489,10 @@ async function executeTask(
             nodeId: desc.nodeId,
             iteration: desc.iteration,
             attempt: attemptNo,
-            rootDir,
-            allowNetwork: false,
-            maxOutputBytes: 200_000,
-            timeoutMs: desc.timeoutMs ?? 60_000,
+            rootDir: toolConfig.rootDir,
+            allowNetwork: toolConfig.allowNetwork,
+            maxOutputBytes: toolConfig.maxOutputBytes,
+            timeoutMs: desc.timeoutMs ?? toolConfig.toolTimeoutMs,
             seq: 0,
           },
           async () =>
@@ -699,11 +737,19 @@ export async function runWorkflow<Schema>(workflow: SmithersWorkflow<Schema>, op
   const schema = resolveSchema(db);
   const inputTable = schema.input;
   if (!inputTable) {
-    throw new Error("Schema must include input table");
+    throw new SmithersError("MISSING_INPUT_TABLE", "Schema must include input table");
   }
 
+  const resolvedWorkflowPath = opts.workflowPath ? resolve(opts.workflowPath) : null;
+  const rootDir = resolveRootDir(opts, resolvedWorkflowPath);
+  const logDir = resolveLogDir(rootDir, runId, opts.logDir);
+  const maxConcurrency = coercePositiveInt(opts.maxConcurrency, DEFAULT_MAX_CONCURRENCY);
+  const maxOutputBytes = coercePositiveInt(opts.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES);
+  const toolTimeoutMs = coercePositiveInt(opts.toolTimeoutMs, DEFAULT_TOOL_TIMEOUT_MS);
+  const allowNetwork = Boolean(opts.allowNetwork);
+
   const lastSeq = await adapter.getLastEventSeq(runId);
-  const eventBus = new EventBus({ db: adapter, logDir: `.smithers/executions/${runId}/logs`, startSeq: (lastSeq ?? -1) + 1 });
+  const eventBus = new EventBus({ db: adapter, logDir, startSeq: (lastSeq ?? -1) + 1 });
   if (opts.onProgress) {
     eventBus.on("event", (e: SmithersEvent) => opts.onProgress?.(e));
   }
@@ -711,12 +757,27 @@ export async function runWorkflow<Schema>(workflow: SmithersWorkflow<Schema>, op
   try {
     const existingRun = await adapter.getRun(runId);
     if (!opts.resume) {
+      assertInputObject(opts.input);
+      if ("runId" in opts.input && (opts.input as any).runId !== runId) {
+        throw new SmithersError("INVALID_INPUT", "Input runId does not match provided runId");
+      }
       const inputRow = { runId, ...opts.input };
+      const validation = validateInput(inputTable as any, inputRow);
+      if (!validation.ok) {
+        throw new SmithersError("INVALID_INPUT", "Input does not match schema", {
+          issues: validation.error?.issues,
+        });
+      }
       const insertQuery = db.insert(inputTable).values(inputRow);
       if (typeof insertQuery.onConflictDoNothing === "function") {
         await insertQuery.onConflictDoNothing();
       } else {
         await insertQuery;
+      }
+    } else {
+      const existingInput = await loadInput(db, inputTable, runId);
+      if (!existingInput) {
+        throw new SmithersError("MISSING_INPUT", "Cannot resume without an existing input row");
       }
     }
 
@@ -724,19 +785,25 @@ export async function runWorkflow<Schema>(workflow: SmithersWorkflow<Schema>, op
       await adapter.insertRun({
         runId,
         workflowName: "workflow",
-        workflowPath: opts.workflowPath ?? null,
+        workflowPath: resolvedWorkflowPath ?? opts.workflowPath ?? null,
         status: "running",
         createdAtMs: nowMs(),
         startedAtMs: nowMs(),
         finishedAtMs: null,
         errorJson: null,
-        configJson: JSON.stringify({ maxConcurrency: opts.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY }),
+        configJson: JSON.stringify({
+          maxConcurrency,
+          rootDir,
+          allowNetwork,
+          maxOutputBytes,
+          toolTimeoutMs,
+        }),
       });
     } else {
       await adapter.updateRun(runId, {
         status: "running",
         startedAtMs: existingRun.startedAtMs ?? nowMs(),
-        workflowPath: opts.workflowPath ?? existingRun.workflowPath ?? null,
+        workflowPath: resolvedWorkflowPath ?? opts.workflowPath ?? existingRun.workflowPath ?? null,
       });
     }
 
@@ -832,7 +899,6 @@ export async function runWorkflow<Schema>(workflow: SmithersWorkflow<Schema>, op
       const descriptorMap = buildDescriptorMap(tasks);
       const schedule = scheduleTasks(plan, stateMap, descriptorMap, ralphState);
 
-      const maxConcurrency = opts.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
       const runnable = applyConcurrencyLimits(schedule.runnable, stateMap, maxConcurrency, tasks);
 
       if (runnable.length === 0) {
@@ -912,9 +978,15 @@ export async function runWorkflow<Schema>(workflow: SmithersWorkflow<Schema>, op
         return { runId, status: "finished", output };
       }
 
+      const toolConfig = {
+        rootDir,
+        allowNetwork,
+        maxOutputBytes,
+        toolTimeoutMs,
+      };
       await Promise.all(
         runnable.map((task) =>
-          executeTask(adapter, db, runId, task, eventBus, process.cwd(), workflowName, cacheEnabled),
+          executeTask(adapter, db, runId, task, eventBus, toolConfig, workflowName, cacheEnabled),
         ),
       );
     }

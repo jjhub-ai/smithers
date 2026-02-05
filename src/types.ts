@@ -66,6 +66,11 @@ export type RunOptions = {
   signal?: AbortSignal;
   resume?: boolean;
   workflowPath?: string;
+  rootDir?: string;
+  logDir?: string | null;
+  allowNetwork?: boolean;
+  maxOutputBytes?: number;
+  toolTimeoutMs?: number;
 };
 
 export type RunResult = {
