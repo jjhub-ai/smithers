@@ -4,6 +4,10 @@ Define AI workflow graphs with JSX. Deterministic execution with durable state i
 
 ## Installation
 
+**Requirements**
+
+- Bun >= 1.3 (Smithers uses Bun SQLite and Bun runtime APIs)
+
 ```bash
 bun add smithers ai @ai-sdk/anthropic drizzle-orm drizzle-zod
 ```
@@ -480,6 +484,15 @@ smithers approve workflow.tsx --run-id abc123 --node-id analyze
 smithers deny workflow.tsx --run-id abc123 --node-id review
 ```
 
+Run options:
+
+- `--root PATH` sets the tool sandbox root (defaults to the workflow directory).
+- `--log-dir PATH` sets the event log output directory (relative to root).
+- `--no-log` disables event log file output.
+- `--allow-network` permits network access for the `bash` tool.
+- `--max-output-bytes N` caps tool output size.
+- `--tool-timeout-ms N` sets the tool timeout.
+
 ### Programmatic
 
 ```tsx
@@ -498,6 +511,27 @@ const snapshot = await renderFrame(workflow, {
   outputs: {},
 });
 ```
+
+### Server
+
+You can run Smithers as an HTTP server with optional auth and request limits:
+
+```ts
+import { startServer } from "smithers/server";
+
+startServer({
+  port: 7331,
+  rootDir: process.cwd(), // constrain workflow paths + tool sandbox
+  authToken: process.env.SMITHERS_API_KEY, // optional (or set SMITHERS_API_KEY)
+  maxBodyBytes: 1_048_576, // optional
+});
+```
+
+### Production Notes
+
+- Set `authToken` (or `SMITHERS_API_KEY`) in server mode.
+- Provide a `db` option to enable `/v1/runs` listing and a central run registry.
+- Review `docs/production.md` for limits, security, and operational guidance.
 
 ---
 
