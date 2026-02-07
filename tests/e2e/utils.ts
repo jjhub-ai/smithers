@@ -11,7 +11,7 @@ export async function waitForAppReady(page: Page) {
     const select = document.querySelector("#session-select") as HTMLSelectElement | null;
     return Boolean(select && select.options.length > 0);
   });
-  await page.waitForSelector("chat-panel");
+  await page.waitForSelector(".chat-panel");
 }
 
 export async function openMenu(page: Page, menuKey: string) {
@@ -55,9 +55,7 @@ export async function startFreshSession(page: Page) {
     previous,
   );
   await page.waitForFunction(() => {
-    const panel = document.querySelector("chat-panel") as HTMLElement | null;
-    const root = panel?.shadowRoot;
-    const textarea = root?.querySelector("textarea") as HTMLTextAreaElement | null;
+    const textarea = document.querySelector(".chat-panel textarea") as HTMLTextAreaElement | null;
     return Boolean(textarea && !textarea.disabled);
   });
 }
@@ -98,5 +96,6 @@ export async function runWorkflowViaDialog(
 }
 
 export async function waitForRunStatus(page: Page, prefix: string, status: string, timeout = 30_000) {
+  await page.click("#tab-runs");
   await expect(page.locator(`.run-row.status-${status}`, { hasText: prefix })).toBeVisible({ timeout });
 }

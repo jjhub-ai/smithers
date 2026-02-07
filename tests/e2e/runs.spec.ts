@@ -23,10 +23,18 @@ test.describe("Run Inspector", () => {
     await page.locator(".run-tab[data-tab='graph']").click();
     await expect(page.locator(".graph-canvas svg")).toBeVisible();
 
-    const transformBefore = await page.locator(".graph-canvas").evaluate((el) => el.style.transform);
+    const transformBaseline = await page.locator(".graph-canvas").evaluate((el) => el.style.transform);
     await page.locator("[data-graph-action='zoom-in']").click();
-    const transformAfter = await page.locator(".graph-canvas").evaluate((el) => el.style.transform);
-    expect(transformAfter).not.toEqual(transformBefore);
+    const transformZoomedIn = await page.locator(".graph-canvas").evaluate((el) => el.style.transform);
+    expect(transformZoomedIn).not.toEqual(transformBaseline);
+
+    await page.locator("[data-graph-action='zoom-out']").click();
+    const transformZoomedOut = await page.locator(".graph-canvas").evaluate((el) => el.style.transform);
+    expect(transformZoomedOut).not.toEqual(transformZoomedIn);
+
+    await page.locator("[data-graph-action='fit']").click();
+    const transformReset = await page.locator(".graph-canvas").evaluate((el) => el.style.transform);
+    expect(transformReset).toEqual(transformBaseline);
 
     // Open node drawer
     await page.locator("[data-node-id='hello']").first().click();
@@ -58,6 +66,22 @@ test.describe("Run Inspector", () => {
     await page.click("#logs-export");
     const download = await downloadPromise;
     expect(download.suggestedFilename()).toContain("logs.jsonl");
+
+    // Re-enable run filter before copy so logs have content
+    await page.locator(".logs-filter", { hasText: "Run" }).click();
+    await expect(page.locator(".logs")).toContainText("RunStarted");
+
+    // Copy logs
+    await page.evaluate(() => {
+      (window as any).__copiedLogs = "";
+      (navigator as any).clipboard = {
+        writeText: (t: string) => { (window as any).__copiedLogs = t; return Promise.resolve(); },
+      };
+    });
+    await page.click("#logs-copy");
+    await expect(page.locator(".toast.toast-info")).toContainText("Logs copied");
+    const copiedLogs = await page.evaluate(() => (window as any).__copiedLogs as string);
+    expect(copiedLogs).toContain("RunStarted");
 
     // Attempts tab
     await page.locator(".run-tab[data-tab='attempts']").click();
