@@ -20,6 +20,14 @@ export type AgentSecrets = {
 export type CustomToolHandler = (args: any) => Promise<ToolOutput>;
 export type CustomToolRegistry = Map<string, CustomToolHandler>;
 
+export type AppCapabilities = {
+  listWorkflows: () => Promise<Array<{ path: string; name?: string; description?: string }>>;
+  runWorkflow: (params: { workflowPath: string; input: any; attachToSessionId?: string }) => Promise<string>;
+  getSettings: () => any;
+  setSettings: (patch: any) => any;
+  listRuns: (status?: string) => Promise<any[]>;
+};
+
 export type AgentRunOptions = {
   text: string;
   attachments?: AttachmentDTO[];
@@ -28,6 +36,7 @@ export type AgentRunOptions = {
   settings?: AgentSettings;
   secrets?: AgentSecrets;
   customTools?: CustomToolRegistry;
+  appCapabilities?: AppCapabilities;
   signal?: AbortSignal;
 };
 
@@ -53,6 +62,200 @@ type LlmConfig = {
   maxTokens?: number;
   systemPrompt?: string;
 };
+
+type ToolDef = {
+  name: string;
+  description: string;
+  inputSchema: Record<string, any>;
+};
+
+type LlmToolCall = {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+};
+
+const MAX_TOOL_ROUNDS = 20;
+
+function buildToolDefs(hasAppCapabilities: boolean): ToolDef[] {
+  const defs: ToolDef[] = [
+    {
+      name: "read_file",
+      description: "Read the contents of a file at the given path",
+      inputSchema: {
+        type: "object",
+        properties: { path: { type: "string", description: "File path to read" } },
+        required: ["path"],
+      },
+    },
+    {
+      name: "write_file",
+      description: "Create or overwrite a file with the given content",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "File path to write" },
+          content: { type: "string", description: "File content" },
+        },
+        required: ["path", "content"],
+      },
+    },
+    {
+      name: "edit_file",
+      description: "Apply a unified diff patch to an existing file",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "File path to edit" },
+          patch: { type: "string", description: "Unified diff patch to apply" },
+        },
+        required: ["path", "patch"],
+      },
+    },
+    {
+      name: "bash",
+      description: "Run a shell command and return stdout/stderr",
+      inputSchema: {
+        type: "object",
+        properties: { command: { type: "string", description: "Shell command to execute" } },
+        required: ["command"],
+      },
+    },
+    {
+      name: "create_workflow",
+      description: "Create a new Smithers workflow template in the workflows/ directory. Uses a standard scaffold and picks a non-conflicting filename.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Workflow name (e.g. hello-world). Defaults to new-workflow." },
+        },
+      },
+    },
+  ];
+
+  if (hasAppCapabilities) {
+    defs.push(
+      {
+        name: "list_workflows",
+        description: "List all available Smithers workflows in the workspace",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "run_workflow",
+        description: "Run a Smithers workflow with the given input",
+        inputSchema: {
+          type: "object",
+          properties: {
+            workflowPath: { type: "string", description: "Path to the workflow .tsx file" },
+            input: { type: "object", description: "JSON input for the workflow" },
+          },
+          required: ["workflowPath", "input"],
+        },
+      },
+      {
+        name: "get_settings",
+        description: "Get the current Smithers app settings (provider, model, temperature, etc.)",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "update_settings",
+        description: "Update Smithers app settings",
+        inputSchema: {
+          type: "object",
+          properties: {
+            provider: { type: "string", enum: ["openai", "anthropic"], description: "AI provider" },
+            model: { type: "string", description: "Model name" },
+            temperature: { type: "number", description: "Temperature (0-2)" },
+            maxTokens: { type: "number", description: "Max tokens" },
+            allowNetwork: { type: "boolean", description: "Allow network access for bash" },
+          },
+        },
+      },
+      {
+        name: "list_runs",
+        description: "List Smithers workflow runs",
+        inputSchema: {
+          type: "object",
+          properties: {
+            status: { type: "string", enum: ["active", "finished", "failed", "all"], description: "Filter by status" },
+          },
+        },
+      },
+    );
+  }
+
+  return defs;
+}
+
+async function executeAgentTool(
+  name: string,
+  args: Record<string, any>,
+  toolRunner: ToolRunner,
+  appCapabilities?: AppCapabilities,
+  customTools?: CustomToolRegistry,
+): Promise<ToolOutput> {
+  switch (name) {
+    case "read_file":
+      return toolRunner.read(args.path);
+    case "write_file":
+      return toolRunner.write(args.path, args.content);
+    case "edit_file":
+      return toolRunner.edit(args.path, args.patch);
+    case "bash":
+      return toolRunner.bash(args.command);
+    case "list_workflows": {
+      if (!appCapabilities) throw new Error("App capabilities not available");
+      const workflows = await appCapabilities.listWorkflows();
+      return { output: JSON.stringify(workflows, null, 2) };
+    }
+    case "run_workflow": {
+      if (!appCapabilities) throw new Error("App capabilities not available");
+      const runId = await appCapabilities.runWorkflow({
+        workflowPath: args.workflowPath,
+        input: args.input ?? {},
+      });
+      return { output: `Workflow started. Run ID: ${runId}` };
+    }
+    case "get_settings": {
+      if (!appCapabilities) throw new Error("App capabilities not available");
+      const settings = appCapabilities.getSettings();
+      return { output: JSON.stringify(settings, null, 2) };
+    }
+    case "update_settings": {
+      if (!appCapabilities) throw new Error("App capabilities not available");
+      const patch: any = {};
+      if (args.provider || args.model || args.temperature !== undefined || args.maxTokens !== undefined) {
+        patch.agent = {} as any;
+        if (args.provider) patch.agent.provider = args.provider;
+        if (args.model) patch.agent.model = args.model;
+        if (args.temperature !== undefined) patch.agent.temperature = args.temperature;
+        if (args.maxTokens !== undefined) patch.agent.maxTokens = args.maxTokens;
+      }
+      if (args.allowNetwork !== undefined) {
+        patch.smithers = { allowNetwork: args.allowNetwork };
+      }
+      const updated = appCapabilities.setSettings(patch);
+      return { output: JSON.stringify(updated, null, 2) };
+    }
+    case "list_runs": {
+      if (!appCapabilities) throw new Error("App capabilities not available");
+      const runs = await appCapabilities.listRuns(args.status);
+      return { output: JSON.stringify(runs, null, 2) };
+    }
+    case "create_workflow": {
+      const name = sanitizeName(String(args.name ?? "new-workflow"));
+      const filePath = await resolveWorkflowTemplatePath(toolRunner, name);
+      const source = buildWorkflowTemplateSource(name);
+      await toolRunner.write(filePath, source);
+      return { output: JSON.stringify({ ok: true, path: filePath, name }, null, 2) };
+    }
+    default: {
+      const handler = customTools?.get(name);
+      if (handler) return handler(args);
+      throw new Error(`Unknown tool: ${name}`);
+    }
+  }
+}
 
 export async function* runAgentTurn(opts: AgentRunOptions): AsyncIterable<AgentEvent> {
   const now = Date.now();
@@ -141,8 +344,8 @@ export async function* runAgentTurn(opts: AgentRunOptions): AsyncIterable<AgentE
     const workflowSource = buildWorkflowTemplateSource(workflowTemplate.name);
     await opts.toolRunner.write(filePath, workflowSource);
     const assistantText =
-      `Created workflow at ${filePath}.\\n` +
-      `Run it via @workflow(${filePath}) input={\"name\":\"Ada\"} or the Run Workflow button.`;
+      `Created workflow at ${filePath}.\n` +
+      `Run it via @workflow(${filePath}) input={"name":"Ada"} or the Run Workflow button.`;
     const { finalMessage, events } = streamAssistantMessage(assistantText, {
       provider: "local",
       model: "smithers-local",
@@ -174,98 +377,232 @@ export async function* runAgentTurn(opts: AgentRunOptions): AsyncIterable<AgentE
     return;
   }
 
-  const modelMessages = buildProviderMessages(messages, config.systemPrompt);
-  const partial = createAssistantMessage([{ type: "text", text: "" }], {
-    provider: config.provider,
-    model: config.model,
-    stopReason: "stop",
-  });
+  const toolDefs = buildToolDefs(Boolean(opts.appCapabilities));
+  const llmMessages = buildProviderMessages(messages, config.systemPrompt);
 
-  yield { type: "message_start", message: partial };
-  yield {
-    type: "message_update",
-    message: partial,
-    assistantMessageEvent: { type: "text_start", contentIndex: 0, partial },
-  };
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    if (opts.signal?.aborted) break;
 
-  let fullText = "";
-  let usage: LlmUsage | null = null;
-  let stopReason: AssistantMessage["stopReason"] = "stop";
+    const partial = createAssistantMessage([{ type: "text", text: "" }], {
+      provider: config.provider,
+      model: config.model,
+      stopReason: "stop",
+    });
 
-  try {
-    const { stream, getUsage, getStopReason } = streamLlmResponse(config, modelMessages, opts.signal);
-    for await (const delta of stream) {
-      if (opts.signal?.aborted) {
-        stopReason = "aborted" as AssistantMessage["stopReason"];
-        break;
+    yield { type: "message_start", message: partial };
+    yield {
+      type: "message_update",
+      message: partial,
+      assistantMessageEvent: { type: "text_start", contentIndex: 0, partial },
+    };
+
+    let fullText = "";
+    let usage: LlmUsage | null = null;
+    let stopReason: AssistantMessage["stopReason"] = "stop";
+    let toolCalls: LlmToolCall[] = [];
+
+    try {
+      const result = streamLlmResponse(config, llmMessages, toolDefs, opts.signal);
+      for await (const delta of result.stream) {
+        if (opts.signal?.aborted) {
+          stopReason = "aborted" as AssistantMessage["stopReason"];
+          break;
+        }
+        if (!delta) continue;
+        fullText += delta;
+        const content = partial.content[0] as TextContent;
+        content.text = fullText;
+        yield {
+          type: "message_update",
+          message: { ...partial, content: [...partial.content] },
+          assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta, partial },
+        };
       }
-      if (!delta) continue;
-      fullText += delta;
-      const content = partial.content[0] as TextContent;
-      content.text = fullText;
-      yield {
-        type: "message_update",
-        message: { ...partial, content: [...partial.content] },
-        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta, partial },
-      };
-    }
-    usage = getUsage();
-    stopReason = mapStopReason(getStopReason()) ?? stopReason;
-  } catch (err) {
-    if (opts.signal?.aborted) {
-      const abortedMessage = createAssistantMessage([{ type: "text", text: fullText }], {
+      usage = result.getUsage();
+      stopReason = mapStopReason(result.getStopReason()) ?? stopReason;
+      toolCalls = result.getToolCalls();
+    } catch (err) {
+      if (opts.signal?.aborted) {
+        const abortedMessage = createAssistantMessage([{ type: "text", text: fullText }], {
+          provider: config.provider,
+          model: config.model,
+          stopReason: "aborted" as AssistantMessage["stopReason"],
+          usage: buildUsage(usage),
+        });
+        yield {
+          type: "message_update",
+          message: abortedMessage,
+          assistantMessageEvent: { type: "text_end", contentIndex: 0, content: fullText, partial: abortedMessage },
+        };
+        yield { type: "message_end", message: abortedMessage };
+        messages.push(abortedMessage);
+        yield { type: "turn_end", message: abortedMessage, toolResults: [] };
+        yield { type: "agent_end", messages };
+        return;
+      }
+      const errorText = `LLM error: ${String(err)}`;
+      const errorMessage = createAssistantMessage([{ type: "text", text: errorText }], {
         provider: config.provider,
         model: config.model,
-        stopReason: "aborted" as AssistantMessage["stopReason"],
-        usage: buildUsage(usage),
+        stopReason: "error",
+        errorMessage: String(err),
       });
       yield {
         type: "message_update",
-        message: abortedMessage,
-        assistantMessageEvent: { type: "text_end", contentIndex: 0, content: fullText, partial: abortedMessage },
+        message: errorMessage,
+        assistantMessageEvent: { type: "text_end", contentIndex: 0, content: errorText, partial: errorMessage },
       };
-      yield { type: "message_end", message: abortedMessage };
-      messages.push(abortedMessage);
-      yield { type: "turn_end", message: abortedMessage, toolResults: [] };
+      yield { type: "message_end", message: errorMessage };
+      messages.push(errorMessage);
+      yield { type: "turn_end", message: errorMessage, toolResults: [] };
       yield { type: "agent_end", messages };
       return;
     }
-    const errorText = `LLM error: ${String(err)}`;
-    const errorMessage = createAssistantMessage([{ type: "text", text: errorText }], {
+
+    if (stopReason === "toolUse" && toolCalls.length > 0) {
+      const finalUsage = buildUsage(usage);
+      const assistantContent: AssistantMessage["content"] = [];
+      if (fullText) {
+        assistantContent.push({ type: "text", text: fullText });
+      }
+      for (const tc of toolCalls) {
+        assistantContent.push({
+          type: "toolCall",
+          id: tc.id,
+          name: tc.name,
+          arguments: tc.arguments,
+        });
+      }
+      const assistantMessage = createAssistantMessage(assistantContent, {
+        provider: config.provider,
+        model: config.model,
+        stopReason: "toolUse",
+        usage: finalUsage,
+      });
+
+      yield {
+        type: "message_update",
+        message: assistantMessage,
+        assistantMessageEvent: { type: "text_end", contentIndex: 0, content: fullText, partial: assistantMessage },
+      };
+      yield { type: "message_end", message: assistantMessage };
+      messages.push(assistantMessage);
+
+      if (config.provider === "openai") {
+        llmMessages.push({
+          role: "assistant",
+          content: fullText || null,
+          tool_calls: toolCalls.map((tc) => ({
+            id: tc.id,
+            type: "function",
+            function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+          })),
+        });
+      } else {
+        const anthropicContent: any[] = [];
+        if (fullText) anthropicContent.push({ type: "text", text: fullText });
+        for (const tc of toolCalls) {
+          anthropicContent.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.arguments });
+        }
+        llmMessages.push({ role: "assistant", content: anthropicContent });
+      }
+
+      const toolResults: ToolResultMessage[] = [];
+      const anthropicToolResults: any[] = [];
+
+      for (const tc of toolCalls) {
+        yield {
+          type: "tool_execution_start",
+          toolCallId: tc.id,
+          toolName: tc.name,
+          args: tc.arguments,
+        };
+
+        let output: ToolOutput;
+        let isError = false;
+        try {
+          output = await executeAgentTool(tc.name, tc.arguments, opts.toolRunner, opts.appCapabilities, opts.customTools);
+        } catch (err) {
+          output = { output: String(err) };
+          isError = true;
+        }
+
+        const toolResult: ToolResultMessage = {
+          role: "toolResult",
+          toolCallId: tc.id,
+          toolName: tc.name,
+          content: [{ type: "text", text: output.output }],
+          details: output.details,
+          isError,
+          timestamp: Date.now(),
+        };
+
+        yield {
+          type: "tool_execution_end",
+          toolCallId: tc.id,
+          toolName: tc.name,
+          result: toolResult as any,
+          isError,
+        };
+
+        messages.push(toolResult);
+        yield { type: "message_start", message: toolResult };
+        yield { type: "message_end", message: toolResult };
+
+        toolResults.push(toolResult);
+
+        if (config.provider === "openai") {
+          llmMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: output.output,
+          });
+        } else {
+          anthropicToolResults.push({
+            type: "tool_result",
+            tool_use_id: tc.id,
+            content: output.output,
+            is_error: isError,
+          });
+        }
+      }
+
+      if (config.provider === "anthropic" && anthropicToolResults.length > 0) {
+        llmMessages.push({ role: "user", content: anthropicToolResults });
+      }
+
+      continue;
+    }
+
+    const finalUsage = buildUsage(usage);
+    const finalMessage = createAssistantMessage([{ type: "text", text: fullText }], {
       provider: config.provider,
       model: config.model,
-      stopReason: "error",
-      errorMessage: String(err),
+      stopReason,
+      usage: finalUsage,
     });
+
     yield {
       type: "message_update",
-      message: errorMessage,
-      assistantMessageEvent: { type: "text_end", contentIndex: 0, content: errorText, partial: errorMessage },
+      message: finalMessage,
+      assistantMessageEvent: { type: "text_end", contentIndex: 0, content: fullText, partial: finalMessage },
     };
-    yield { type: "message_end", message: errorMessage };
-    messages.push(errorMessage);
-    yield { type: "turn_end", message: errorMessage, toolResults: [] };
+    yield { type: "message_end", message: finalMessage };
+
+    messages.push(finalMessage);
+    yield { type: "turn_end", message: finalMessage, toolResults: [] };
     yield { type: "agent_end", messages };
     return;
   }
 
-  const finalUsage = buildUsage(usage);
-  const finalMessage = createAssistantMessage([{ type: "text", text: fullText }], {
-    provider: config.provider,
-    model: config.model,
-    stopReason,
-    usage: finalUsage,
-  });
-
-  yield {
-    type: "message_update",
-    message: finalMessage,
-    assistantMessageEvent: { type: "text_end", contentIndex: 0, content: fullText, partial: finalMessage },
-  };
-  yield { type: "message_end", message: finalMessage };
-
-  messages.push(finalMessage);
-  yield { type: "turn_end", message: finalMessage, toolResults: [] };
+  const limitMessage = createAssistantMessage(
+    [{ type: "text", text: "Reached maximum tool use rounds. Stopping." }],
+    { provider: config.provider, model: config.model, stopReason: "stop" },
+  );
+  yield { type: "message_start", message: limitMessage };
+  yield { type: "message_end", message: limitMessage };
+  messages.push(limitMessage);
+  yield { type: "turn_end", message: limitMessage, toolResults: [] };
   yield { type: "agent_end", messages };
 }
 
@@ -477,8 +814,8 @@ function resolveAgentConfig(settings?: AgentSettings, secrets?: AgentSecrets): L
   };
 }
 
-function buildProviderMessages(messages: Message[], systemPrompt?: string): Array<{ role: string; content: string }> {
-  const modelMessages: Array<{ role: string; content: string }> = [];
+function buildProviderMessages(messages: Message[], systemPrompt?: string): Array<Record<string, any>> {
+  const modelMessages: Array<Record<string, any>> = [];
   if (systemPrompt && systemPrompt.trim()) {
     modelMessages.push({ role: "system", content: systemPrompt.trim() });
   }
@@ -532,44 +869,70 @@ function extractAssistantText(message: AssistantMessage): string {
     .join("\n");
 }
 
+function tryParseJson(text: string): any {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 function streamLlmResponse(
   config: LlmConfig,
-  messages: Array<{ role: string; content: string }>,
+  messages: Array<Record<string, any>>,
+  toolDefs?: ToolDef[],
   signal?: AbortSignal,
 ): {
   stream: AsyncIterable<string>;
   getUsage: () => LlmUsage | null;
   getStopReason: () => string | null;
+  getToolCalls: () => LlmToolCall[];
 } {
   if (config.provider === "anthropic") {
-    return streamAnthropic(config, messages, signal);
+    return streamAnthropic(config, messages, toolDefs, signal);
   }
-  return streamOpenAI(config, messages, signal);
+  return streamOpenAI(config, messages, toolDefs, signal);
 }
 
 function streamOpenAI(
   config: LlmConfig,
-  messages: Array<{ role: string; content: string }>,
+  messages: Array<Record<string, any>>,
+  toolDefs?: ToolDef[],
   signal?: AbortSignal,
 ) {
   let usage: LlmUsage | null = null;
   let stopReason: string | null = null;
+  const toolCallsByIndex = new Map<number, { id?: string; name?: string; args: string }>();
+  let toolCalls: LlmToolCall[] = [];
+
+  const openaiTools = toolDefs?.length
+    ? toolDefs.map((t) => ({
+        type: "function",
+        function: { name: t.name, description: t.description, parameters: t.inputSchema },
+      }))
+    : undefined;
 
   const stream = (async function* () {
+    const body: Record<string, any> = {
+      model: config.model,
+      messages,
+      temperature: config.temperature,
+      max_tokens: config.maxTokens,
+      stream: true,
+      stream_options: { include_usage: true },
+    };
+    if (openaiTools) {
+      body.tools = openaiTools;
+      body.tool_choice = "auto";
+    }
+
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify({
-        model: config.model,
-        messages,
-        temperature: config.temperature,
-        max_tokens: config.maxTokens,
-        stream: true,
-        stream_options: { include_usage: true },
-      }),
+      body: JSON.stringify(body),
       signal,
     });
 
@@ -594,12 +957,32 @@ function streamOpenAI(
         const data = line.slice(5).trim();
         if (!data) continue;
         if (data === "[DONE]") {
+          toolCalls = [...toolCallsByIndex.entries()]
+            .sort(([a], [b]) => a - b)
+            .map(([, tc]) => ({
+              id: tc.id ?? randomUUID(),
+              name: tc.name ?? "unknown",
+              arguments: tryParseJson(tc.args) ?? {},
+            }));
           return;
         }
         const payload = JSON.parse(data) as any;
         const delta = payload?.choices?.[0]?.delta?.content;
         if (delta) {
           yield delta as string;
+        }
+        const deltaToolCalls = payload?.choices?.[0]?.delta?.tool_calls;
+        if (Array.isArray(deltaToolCalls)) {
+          for (const tc of deltaToolCalls) {
+            const idx = Number(tc.index ?? 0);
+            const acc = toolCallsByIndex.get(idx) ?? { args: "" };
+            if (tc.id) acc.id = tc.id;
+            if (tc?.function?.name) acc.name = tc.function.name;
+            if (typeof tc?.function?.arguments === "string") {
+              acc.args += tc.function.arguments;
+            }
+            toolCallsByIndex.set(idx, acc);
+          }
         }
         const finish = payload?.choices?.[0]?.finish_reason;
         if (finish) stopReason = finish;
@@ -612,24 +995,59 @@ function streamOpenAI(
         }
       }
     }
+
+    toolCalls = [...toolCallsByIndex.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, tc]) => ({
+        id: tc.id ?? randomUUID(),
+        name: tc.name ?? "unknown",
+        arguments: tryParseJson(tc.args) ?? {},
+      }));
   })();
 
   return {
     stream,
     getUsage: () => usage,
     getStopReason: () => stopReason,
+    getToolCalls: () => toolCalls,
   };
 }
 
 function streamAnthropic(
   config: LlmConfig,
-  messages: Array<{ role: string; content: string }>,
+  messages: Array<Record<string, any>>,
+  toolDefs?: ToolDef[],
   signal?: AbortSignal,
 ) {
   let usage: LlmUsage | null = null;
   let stopReason: string | null = null;
+  const toolCallsByIndex = new Map<number, { id: string; name: string; json: string }>();
+  let toolCalls: LlmToolCall[] = [];
+
+  const anthropicTools = toolDefs?.length
+    ? toolDefs.map((t) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: t.inputSchema,
+      }))
+    : undefined;
 
   const stream = (async function* () {
+    const body: Record<string, any> = {
+      model: config.model,
+      system: config.systemPrompt,
+      messages: messages
+        .filter((msg) => msg.role !== "system")
+        .map((msg) => ({ role: msg.role, content: msg.content })),
+      max_tokens: config.maxTokens ?? 1024,
+      temperature: config.temperature,
+      stream: true,
+    };
+    if (anthropicTools) {
+      body.tools = anthropicTools;
+      body.tool_choice = { type: "auto" };
+    }
+
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -637,16 +1055,7 @@ function streamAnthropic(
         "x-api-key": config.apiKey,
         "anthropic-version": "2023-06-01",
       },
-      body: JSON.stringify({
-        model: config.model,
-        system: config.systemPrompt,
-        messages: messages
-          .filter((msg) => msg.role !== "system")
-          .map((msg) => ({ role: msg.role, content: msg.content })),
-        max_tokens: config.maxTokens ?? 1024,
-        temperature: config.temperature,
-        stream: true,
-      }),
+      body: JSON.stringify(body),
       signal,
     });
 
@@ -680,7 +1089,16 @@ function streamAnthropic(
         if (!line.startsWith("data:")) continue;
         const data = line.slice(5).trim();
         if (!data) continue;
-        if (data === "[DONE]") return;
+        if (data === "[DONE]") {
+          toolCalls = [...toolCallsByIndex.entries()]
+            .sort(([a], [b]) => a - b)
+            .map(([, tc]) => ({
+              id: tc.id,
+              name: tc.name,
+              arguments: tryParseJson(tc.json) ?? {},
+            }));
+          return;
+        }
         const payload = JSON.parse(data) as any;
         if (eventType === "message_start" && payload?.message?.usage) {
           usage = {
@@ -691,10 +1109,29 @@ function streamAnthropic(
               Number(payload.message.usage.output_tokens ?? 0),
           };
         }
+        if (eventType === "content_block_start") {
+          const idx = Number(payload?.index ?? 0);
+          const block = payload?.content_block;
+          if (block?.type === "tool_use") {
+            toolCallsByIndex.set(idx, {
+              id: String(block.id),
+              name: String(block.name),
+              json: "",
+            });
+          }
+        }
         if (eventType === "content_block_delta") {
-          const textDelta = payload?.delta?.text;
+          const delta = payload?.delta;
+          const textDelta = delta?.text;
           if (textDelta) {
             yield textDelta as string;
+          }
+          if (delta?.type === "input_json_delta" && typeof delta.partial_json === "string") {
+            const idx = Number(payload?.index ?? 0);
+            const acc = toolCallsByIndex.get(idx);
+            if (acc) {
+              acc.json += delta.partial_json;
+            }
           }
         }
         if (eventType === "message_delta") {
@@ -709,16 +1146,32 @@ function streamAnthropic(
           }
         }
         if (eventType === "message_stop") {
+          toolCalls = [...toolCallsByIndex.entries()]
+            .sort(([a], [b]) => a - b)
+            .map(([, tc]) => ({
+              id: tc.id,
+              name: tc.name,
+              arguments: tryParseJson(tc.json) ?? {},
+            }));
           return;
         }
       }
     }
+
+    toolCalls = [...toolCallsByIndex.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, tc]) => ({
+        id: tc.id,
+        name: tc.name,
+        arguments: tryParseJson(tc.json) ?? {},
+      }));
   })();
 
   return {
     stream,
     getUsage: () => usage,
     getStopReason: () => stopReason,
+    getToolCalls: () => toolCalls,
   };
 }
 

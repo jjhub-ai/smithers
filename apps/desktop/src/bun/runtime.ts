@@ -121,6 +121,8 @@ export function createAppRuntime(options: { dbPath?: string; workspaceRoot?: str
     smithers: {
       runWorkflow: (params) => smithersService.runWorkflow(params),
     },
+    listWorkflows: () => workspaceService.listWorkflows(),
+    listRuns: (status) => Promise.resolve(smithersService.listRuns(status as any)),
   });
 
   plugins.register(

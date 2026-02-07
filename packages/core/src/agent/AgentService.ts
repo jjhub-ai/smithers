@@ -4,7 +4,7 @@ import type { AgentSettings, AgentStreamEventDTO, AttachmentDTO } from "@smither
 import { AppDb } from "../db";
 import { ToolRunner } from "../tools";
 import { SecretStore } from "../secrets";
-import { runAgentTurn, type CustomToolRegistry } from "./runner";
+import { runAgentTurn, type CustomToolRegistry, type AppCapabilities } from "./runner";
 
 export type AgentServiceOptions = {
   db: AppDb;
@@ -15,6 +15,8 @@ export type AgentServiceOptions = {
   smithers?: {
     runWorkflow: (params: { workflowPath: string; input: any; attachToSessionId?: string }) => Promise<string>;
   };
+  listWorkflows?: () => Promise<Array<{ path: string; name?: string; description?: string }>>;
+  listRuns?: (status?: string) => Promise<any[]>;
 };
 
 export class AgentService {
@@ -24,6 +26,8 @@ export class AgentService {
   private smithers?: AgentServiceOptions["smithers"];
   private secretStore?: SecretStore;
   private toolRegistry?: CustomToolRegistry;
+  private listWorkflowsFn?: AgentServiceOptions["listWorkflows"];
+  private listRunsFn?: AgentServiceOptions["listRuns"];
   private runs = new Map<string, AbortController>();
 
   constructor(opts: AgentServiceOptions) {
@@ -33,6 +37,8 @@ export class AgentService {
     this.smithers = opts.smithers;
     this.secretStore = opts.secretStore;
     this.toolRegistry = opts.toolRegistry;
+    this.listWorkflowsFn = opts.listWorkflows;
+    this.listRunsFn = opts.listRuns;
   }
 
   listChatSessions() {
@@ -77,6 +83,17 @@ export class AgentService {
       // ignore workflow trigger errors so chat can continue
     }
 
+    const appCapabilities: AppCapabilities | undefined =
+      this.smithers
+        ? {
+            listWorkflows: this.listWorkflowsFn ?? (async () => []),
+            runWorkflow: (p) => this.smithers!.runWorkflow(p),
+            getSettings: () => this.db.getSettings(),
+            setSettings: (patch) => this.db.setSettings(patch),
+            listRuns: this.listRunsFn ?? (async () => []),
+          }
+        : undefined;
+
     const generator = runAgentTurn({
       text: params.text,
       attachments: params.attachments ?? [],
@@ -88,6 +105,7 @@ export class AgentService {
         anthropicApiKey: anthropicKey ?? process.env.ANTHROPIC_API_KEY ?? null,
       },
       customTools: this.toolRegistry,
+      appCapabilities,
       signal: abort.signal,
     });
 

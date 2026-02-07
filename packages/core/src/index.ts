@@ -8,4 +8,4 @@ export { ToolRunner, type ToolOutput, type ToolRunnerOptions } from "./tools/ind
 export { PluginRegistry } from "./plugins/registry.js";
 export { createSmithersPlugin } from "./plugins/smithersPlugin.js";
 export type { BunPlugin, ToolRegistryContext, RpcRegistryContext, MigrationContext, UiContributionContext } from "./plugins/types.js";
-export { runAgentTurn, type AgentRunOptions, type AgentSecrets, type CustomToolHandler, type CustomToolRegistry } from "./agent/runner.js";
+export { runAgentTurn, type AgentRunOptions, type AgentSecrets, type CustomToolHandler, type CustomToolRegistry, type AppCapabilities } from "./agent/runner.js";
