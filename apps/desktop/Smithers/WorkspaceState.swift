@@ -94,6 +94,7 @@ class WorkspaceState: ObservableObject {
             if wasModified != nowModified {
                 updateWindowTitle()
             }
+            scheduleAutoSaveIfNeeded(for: selectedFileURL)
         }
     }
     @Published var currentLanguage: SupportedLanguage?
@@ -109,6 +110,27 @@ class WorkspaceState: ObservableObject {
     @Published var isTurnInProgress: Bool = false
     @Published var isCommandPalettePresented: Bool = false
     @Published var isNvimModeEnabled: Bool = false
+    @Published var isAutoSaveEnabled: Bool = UserDefaults.standard.bool(
+        forKey: Self.autoSaveEnabledKey
+    ) {
+        didSet {
+            UserDefaults.standard.set(isAutoSaveEnabled, forKey: Self.autoSaveEnabledKey)
+            if !isAutoSaveEnabled {
+                autoSaveTask?.cancel()
+                autoSaveTask = nil
+            }
+            showToast(isAutoSaveEnabled ? "Auto Save On" : "Auto Save Off")
+        }
+    }
+    @Published var autoSaveInterval: TimeInterval = {
+        let value = UserDefaults.standard.double(forKey: Self.autoSaveIntervalKey)
+        return value > 0 ? value : Self.defaultAutoSaveInterval
+    }() {
+        didSet {
+            UserDefaults.standard.set(autoSaveInterval, forKey: Self.autoSaveIntervalKey)
+            showToast("Auto Save Interval: \(Self.formatInterval(autoSaveInterval))")
+        }
+    }
     @Published var fileSearchQuery: String = "" {
         didSet {
             scheduleSearch()
@@ -129,6 +151,8 @@ class WorkspaceState: ObservableObject {
     private var windowHiddenForNvim = false
     private var toastTask: Task<Void, Never>?
     private var toastToken: Int = 0
+    private var autoSaveTask: Task<Void, Never>?
+    private var autoSaveToken: Int = 0
     private var turnDiffs: [String: String] = [:]
     private var turnDiffOrder: [String] = []
     private var streamingTurnDiffs: [String: String] = [:]
@@ -137,6 +161,10 @@ class WorkspaceState: ObservableObject {
     private static let openFileScheme = "smithers-open-file"
     private static let diffScheme = "smithers-diff"
     private static let lastWorkspaceKey = "smithers.lastWorkspacePath"
+    private static let autoSaveEnabledKey = "smithers.autoSaveEnabled"
+    private static let autoSaveIntervalKey = "smithers.autoSaveInterval"
+    private static let defaultAutoSaveInterval: TimeInterval = 5
+    private static let autoSaveIntervals: [TimeInterval] = [5, 10, 30]
     private var terminalCounter = 0
     private let ghosttyApp = GhosttyApp.shared
     private var nvimController: NvimController?
@@ -1161,6 +1189,39 @@ class WorkspaceState: ObservableObject {
         NSApp.windows.first(where: { $0.isKeyWindow || $0.isMainWindow }) ?? NSApp.windows.first
     }
 
+    private func scheduleAutoSaveIfNeeded(for url: URL) {
+        guard isAutoSaveEnabled else { return }
+        guard !isNvimModeEnabled, isRegularFileURL(url) else { return }
+        autoSaveToken += 1
+        let token = autoSaveToken
+        let targetURL = url.standardizedFileURL
+        let interval = autoSaveInterval
+        autoSaveTask?.cancel()
+        autoSaveTask = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+            await MainActor.run {
+                guard token == self.autoSaveToken else { return }
+                guard self.selectedFileURL?.standardizedFileURL == targetURL else { return }
+                guard self.isNativeFileModified(targetURL) else { return }
+                self.saveNativeFile(targetURL, showToast: false)
+            }
+        }
+    }
+
+    private func toggleAutoSave() {
+        isAutoSaveEnabled.toggle()
+    }
+
+    private func setAutoSaveInterval(_ interval: TimeInterval) {
+        autoSaveInterval = interval
+    }
+
+    private static func formatInterval(_ interval: TimeInterval) -> String {
+        let seconds = Int(interval.rounded())
+        return "\(seconds)s"
+    }
+
     func showToast(_ message: String, duration: TimeInterval = 2.0) {
         toastToken += 1
         let token = toastToken
@@ -1234,11 +1295,51 @@ class WorkspaceState: ObservableObject {
                 }
             ),
             PaletteCommand(
-                id: "save-all",
-                title: "Save All",
+                id: "save",
+                title: "Save",
                 icon: "square.and.arrow.down",
                 action: { [weak self] in
+                    self?.saveCurrentFile()
+                }
+            ),
+            PaletteCommand(
+                id: "save-all",
+                title: "Save All",
+                icon: "square.and.arrow.down.on.square",
+                action: { [weak self] in
                     self?.saveAllFiles()
+                }
+            ),
+            PaletteCommand(
+                id: "toggle-auto-save",
+                title: isAutoSaveEnabled ? "Auto Save: On" : "Auto Save: Off",
+                icon: "clock.arrow.circlepath",
+                action: { [weak self] in
+                    self?.toggleAutoSave()
+                }
+            ),
+            PaletteCommand(
+                id: "auto-save-5",
+                title: "Auto Save Interval: 5s",
+                icon: "clock",
+                action: { [weak self] in
+                    self?.setAutoSaveInterval(5)
+                }
+            ),
+            PaletteCommand(
+                id: "auto-save-10",
+                title: "Auto Save Interval: 10s",
+                icon: "clock",
+                action: { [weak self] in
+                    self?.setAutoSaveInterval(10)
+                }
+            ),
+            PaletteCommand(
+                id: "auto-save-30",
+                title: "Auto Save Interval: 30s",
+                icon: "clock",
+                action: { [weak self] in
+                    self?.setAutoSaveInterval(30)
                 }
             ),
             PaletteCommand(
