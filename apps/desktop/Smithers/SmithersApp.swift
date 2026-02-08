@@ -3,7 +3,9 @@ import SwiftUI
 @main
 struct SmithersApp: App {
     @StateObject private var workspace = WorkspaceState()
+    @NSApplicationDelegateAdaptor(SmithersAppDelegate.self) private var appDelegate
     @State private var tmuxKeyHandler: TmuxKeyHandler?
+    @State private var windowCloseDelegate = WindowCloseDelegate()
 
     var body: some Scene {
         WindowGroup {
@@ -16,6 +18,8 @@ struct SmithersApp: App {
                 })
                 .onAppear {
                     handleLaunchArguments()
+                    appDelegate.workspace = workspace
+                    windowCloseDelegate.workspace = workspace
                     setInitialWindowSize()
                     configureWindowChrome()
                     let handler = TmuxKeyHandler(workspace: workspace)
@@ -73,6 +77,7 @@ struct SmithersApp: App {
             window.isMovableByWindowBackground = true
             window.styleMask.insert(.fullSizeContentView)
             window.title = ""
+            window.delegate = windowCloseDelegate
         }
     }
 
