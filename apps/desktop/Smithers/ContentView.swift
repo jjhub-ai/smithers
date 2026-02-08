@@ -192,12 +192,13 @@ struct ContentView: View {
                     .zIndex(1)
             }
 
+            // Hidden accessibility element for test observability of nvim active file.
+            // Uses .accessibilityHidden(false) to ensure XCUITest can find it despite zero size.
             if workspace.isNvimModeEnabled {
                 Text(workspace.nvimCurrentFilePath ?? "(none)")
                     .frame(width: 0, height: 0)
                     .clipped()
                     .accessibilityIdentifier("NvimCurrentFilePath")
-                    .accessibilityLabel(workspace.nvimCurrentFilePath ?? "(none)")
                     .accessibilityHidden(false)
             }
         }
