@@ -4,3 +4,12 @@
 [submodule "codex"]
 	path = codex
 	url = https://github.com/openai/codex.git
+[submodule "references/zonvie"]
+	path = references/zonvie
+	url = https://github.com/akiyosi/zonvie.git
+[submodule "references/vimr"]
+	path = references/vimr
+	url = https://github.com/qvacua/vimr.git
+[submodule "references/neovide"]
+	path = references/neovide
+	url = https://github.com/neovide/neovide.git
