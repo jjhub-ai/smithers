@@ -416,20 +416,34 @@ final class NvimRPC: @unchecked Sendable {
     }
 
     func connect(to socketPath: String) async throws {
+        // Cancel any previous connection attempt
+        self.connection?.cancel()
+        self.connection = nil
+
         let endpoint = NWEndpoint.unix(path: socketPath)
         let parameters = NWParameters.tcp
         let connection = NWConnection(to: endpoint, using: parameters)
         self.connection = connection
-        try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            var resumed = false
             connection.stateUpdateHandler = { state in
+                guard !resumed else { return }
                 switch state {
                 case .ready:
+                    resumed = true
                     connection.stateUpdateHandler = nil
                     continuation.resume()
                 case .failed(let error):
+                    resumed = true
+                    connection.stateUpdateHandler = nil
+                    continuation.resume(throwing: error)
+                case .waiting(let error):
+                    resumed = true
+                    connection.cancel()
                     connection.stateUpdateHandler = nil
                     continuation.resume(throwing: error)
                 case .cancelled:
+                    resumed = true
                     connection.stateUpdateHandler = nil
                     continuation.resume(throwing: NvimRPCError.disconnected)
                 default:
@@ -444,9 +458,11 @@ final class NvimRPC: @unchecked Sendable {
     }
 
     func request(_ method: String, params: [MsgPackValue]) async throws -> MsgPackValue {
-        try await withCheckedThrowingContinuation { continuation in
+        NvimController.log("[NvimRPC] request: %@", method)
+        let result = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<MsgPackValue, Error>) in
             queue.async { [weak self] in
                 guard let self, let connection = self.connection else {
+                    NvimController.log("[NvimRPC] request %@ - disconnected", method)
                     continuation.resume(throwing: NvimRPCError.disconnected)
                     return
                 }
@@ -460,14 +476,20 @@ final class NvimRPC: @unchecked Sendable {
                     .array(params),
                 ])
                 let data = MsgPackEncoder.encode(message)
+                NvimController.log("[NvimRPC] sending msgid=%lld method=%@", msgid, method)
                 connection.send(content: data, completion: .contentProcessed { error in
                     if let error {
+                        NvimController.log("[NvimRPC] send error msgid=%lld: %@", msgid, error.localizedDescription)
                         self.pending.removeValue(forKey: msgid)
                         continuation.resume(throwing: error)
+                    } else {
+                        NvimController.log("[NvimRPC] sent msgid=%lld successfully", msgid)
                     }
                 })
             }
         }
+        NvimController.log("[NvimRPC] request %@ completed: %@", method, String(result.description.prefix(100)))
+        return result
     }
 
     func notify(_ method: String, params: [MsgPackValue]) throws {
@@ -498,16 +520,22 @@ final class NvimRPC: @unchecked Sendable {
         connection?.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             if let data, !data.isEmpty {
+                NvimController.log("[NvimRPC] received %d bytes, buffer was %d bytes", data.count, self.buffer.count)
                 self.buffer.append(data)
+                NvimController.log("[NvimRPC] buffer now %d bytes, startIndex=%d", self.buffer.count, self.buffer.startIndex)
                 while let message = self.decoder.decodeNext(from: &self.buffer) {
+                    NvimController.log("[NvimRPC] decoded message: %@", String(message.description.prefix(200)))
                     self.handleMessage(message)
                 }
+                NvimController.log("[NvimRPC] decode loop done, %d bytes remaining in buffer", self.buffer.count)
             }
             if let error {
+                NvimController.log("[NvimRPC] receive error: %@", error.localizedDescription)
                 self.failAllPending(error)
                 return
             }
             if isComplete {
+                NvimController.log("[NvimRPC] receive complete (disconnected)")
                 self.failAllPending(NvimRPCError.disconnected)
                 return
             }
