@@ -567,11 +567,16 @@ class WorkspaceState: ObservableObject {
 
     private func isNativeFileModified(_ url: URL) -> Bool {
         let normalized = url.standardizedFileURL
-        let saved = savedFileContents[normalized] ?? savedFileContents[url]
-        guard let saved else { return false }
-        let current = openFileContents[normalized] ?? openFileContents[url]
-            ?? (selectedFileURL == normalized ? editorText : saved)
-        return current != saved
+        guard let saved = savedFileContents[normalized] ?? savedFileContents[url] else {
+            return false
+        }
+        if let current = openFileContents[normalized] ?? openFileContents[url] {
+            return current != saved
+        }
+        if selectedFileURL == normalized {
+            return editorText != saved
+        }
+        return false
     }
 
     private func updateModifiedEntry(_ entry: NvimModifiedBuffer, modified: Bool) {
