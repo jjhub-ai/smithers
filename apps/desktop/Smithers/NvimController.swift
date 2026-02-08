@@ -1,4 +1,12 @@
 import Foundation
+import AppKit
+
+struct NvimModifiedBuffer: Hashable {
+    let buffer: Int64
+    let name: String
+    let listed: Bool
+    let url: URL?
+}
 
 @MainActor
 final class NvimController {
@@ -28,6 +36,24 @@ final class NvimController {
     private var isReady = false
     private var bufferByURL: [URL: Int64] = [:]
     private var urlByBuffer: [Int64: URL] = [:]
+    private static let highlightGroups: [String] = [
+        "Normal",
+        "TabLine",
+        "TabLineSel",
+        "TabLineFill",
+        "StatusLine",
+        "StatusLineNC",
+        "WinSeparator",
+        "VertSplit",
+        "NormalFloat",
+        "FloatBorder",
+        "Pmenu",
+        "PmenuSel",
+        "Visual",
+        "CursorLine",
+        "LineNr",
+        "CursorLineNr",
+    ]
 
     init(workspace: WorkspaceState, ghosttyApp: GhosttyApp, workingDirectory: String, nvimPath: String) {
         self.workspace = workspace
@@ -127,12 +153,12 @@ final class NvimController {
         _ = try await rpc.request("nvim_exec_lua", params: [.string(script), .array(params)])
     }
 
-    func closeFile(_ url: URL) async {
+    func closeFile(_ url: URL, force: Bool = false) async {
         let normalizedURL = url.standardizedFileURL
         let path = normalizedURL.path
         let buf = bufferByURL[normalizedURL] ?? 0
         let script = """
-        local path, buf = ...
+        local path, buf, force = ...
         if buf == 0 then
           buf = vim.fn.bufnr(path)
         end
@@ -157,19 +183,38 @@ final class NvimController {
         if tab_to_close ~= nil and #tabs > 1 then
           local current = vim.api.nvim_get_current_tabpage()
           vim.api.nvim_set_current_tabpage(tab_to_close)
-          pcall(vim.cmd, "tabclose")
+          local cmd = force and "tabclose!" or "tabclose"
+          pcall(vim.cmd, cmd)
           if current ~= tab_to_close and vim.api.nvim_tabpage_is_valid(current) then
             pcall(vim.api.nvim_set_current_tabpage, current)
           end
         end
 
-        pcall(vim.api.nvim_buf_delete, buf, { force = false })
+        pcall(vim.api.nvim_buf_delete, buf, { force = force })
         """
         let params: [MsgPackValue] = [
             .string(path),
             .int(buf),
+            .bool(force),
         ]
         _ = try? await rpc.request("nvim_exec_lua", params: [.string(script), .array(params)])
+    }
+
+    func listModifiedBuffers() async throws -> [NvimModifiedBuffer] {
+        await waitUntilReady()
+        let script = """
+        local out = {}
+        for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+          if vim.api.nvim_buf_is_loaded(buf) and vim.bo[buf].modified then
+            local name = vim.api.nvim_buf_get_name(buf)
+            local listed = vim.bo[buf].buflisted
+            table.insert(out, { buf = buf, name = name, listed = listed })
+          end
+        end
+        return out
+        """
+        let response = try await rpc.request("nvim_exec_lua", params: [.string(script), .array([])])
+        return parseModifiedBuffers(response)
     }
 
     private func connectWithRetry() async throws {
@@ -230,6 +275,7 @@ final class NvimController {
             } catch {
                 WorkspaceState.debugLog("[NvimController] syncInitialBuffers error: \(error)")
             }
+            await self.refreshColorscheme(reason: "initial")
             WorkspaceState.debugLog("[NvimController] setting isReady = true")
             self.isReady = true
         }
@@ -275,6 +321,14 @@ final class NvimController {
             emit("write", args.buf)
           end,
         })
+
+        vim.api.nvim_create_autocmd({ "ColorScheme" }, {
+          group = group,
+          callback = function()
+            local name = vim.g.colors_name or ""
+            vim.rpcnotify(chan, "smithers/colorscheme", { name = name })
+          end,
+        })
         """
 
         _ = try await rpc.request(
@@ -295,6 +349,10 @@ final class NvimController {
     }
 
     private func handleNotification(method: String, params: [MsgPackValue]) async {
+        if method == "smithers/colorscheme" {
+            await refreshColorscheme(reason: "colorscheme")
+            return
+        }
         guard method == "smithers/buf" else { return }
         guard let payload = params.first?.mapValue else {
             WorkspaceState.debugLog("[NvimController] notification \(method): no map payload, raw: \(params)")
@@ -386,6 +444,100 @@ final class NvimController {
             return URL(fileURLWithPath: expanded, relativeTo: root).standardizedFileURL
         }
         return URL(fileURLWithPath: expanded).standardizedFileURL
+    }
+
+    private func refreshColorscheme(reason: String) async {
+        guard isRunning else { return }
+        do {
+            let highlights = try await fetchHighlightGroups()
+            guard !highlights.isEmpty else { return }
+            workspace?.applyNvimHighlights(highlights)
+            WorkspaceState.debugLog("[NvimController] applied colorscheme (\(reason))")
+        } catch {
+            WorkspaceState.debugLog("[NvimController] refreshColorscheme error: \(error)")
+        }
+    }
+
+    private func fetchHighlightGroups() async throws -> [String: NvimHighlightColors] {
+        let script = """
+        local names = ...
+        local function to_hex(value)
+          if value == nil or value == vim.NIL then
+            return nil
+          end
+          return string.format("#%06x", value)
+        end
+
+        local function get_hl(name)
+          local ok, hl
+          if vim.api.nvim_get_hl then
+            ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = name, link = false })
+            if ok and hl then
+              return { fg = to_hex(hl.fg), bg = to_hex(hl.bg), sp = to_hex(hl.sp) }
+            end
+          end
+          ok, hl = pcall(vim.api.nvim_get_hl_by_name, name, true)
+          if ok and hl then
+            return { fg = to_hex(hl.foreground), bg = to_hex(hl.background), sp = to_hex(hl.special) }
+          end
+          return {}
+        end
+
+        local out = {}
+        if type(names) ~= "table" then
+          return out
+        end
+        for _, name in ipairs(names) do
+          out[name] = get_hl(name)
+        end
+        return out
+        """
+        let namesParam = MsgPackValue.array(Self.highlightGroups.map { .string($0) })
+        let params: [MsgPackValue] = [namesParam]
+        let response = try await rpc.request(
+            "nvim_exec_lua",
+            params: [.string(script), .array(params)]
+        )
+        return parseHighlightMap(response)
+    }
+
+    private func parseModifiedBuffers(_ value: MsgPackValue) -> [NvimModifiedBuffer] {
+        guard case let .array(values) = value else { return [] }
+        var buffers: [NvimModifiedBuffer] = []
+        buffers.reserveCapacity(values.count)
+        for entry in values {
+            guard case let .map(map) = entry else { continue }
+            let buf = map["buf"]?.intValue ?? 0
+            let name = map["name"]?.stringValue ?? ""
+            let listed = parseBool(map["listed"]) ?? false
+            let url = urlFromBufferName(name)
+            buffers.append(NvimModifiedBuffer(buffer: buf, name: name, listed: listed, url: url))
+        }
+        return buffers
+    }
+
+    private func parseBool(_ value: MsgPackValue?) -> Bool? {
+        if let boolValue = value?.boolValue {
+            return boolValue
+        }
+        if let intValue = value?.intValue {
+            return intValue != 0
+        }
+        return nil
+    }
+
+    private func parseHighlightMap(_ value: MsgPackValue) -> [String: NvimHighlightColors] {
+        guard case let .map(map) = value else { return [:] }
+        var result: [String: NvimHighlightColors] = [:]
+        result.reserveCapacity(map.count)
+        for (name, entry) in map {
+            guard case let .map(colorMap) = entry else { continue }
+            let fg = colorMap["fg"]?.stringValue.flatMap(NSColor.fromHex)
+            let bg = colorMap["bg"]?.stringValue.flatMap(NSColor.fromHex)
+            let sp = colorMap["sp"]?.stringValue.flatMap(NSColor.fromHex)
+            result[name] = NvimHighlightColors(fg: fg, bg: bg, sp: sp)
+        }
+        return result
     }
 
     static func locateNvimPath() -> String? {
