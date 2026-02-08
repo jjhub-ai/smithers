@@ -8,7 +8,8 @@ struct SmithersApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(workspace: workspace)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(workspace.theme.colorScheme)
+                .tint(workspace.theme.accentColor)
                 .frame(minWidth: 700, minHeight: 400)
                 .environment(\.openURL, OpenURLAction { url in
                     workspace.handleOpenURL(url) ? .handled : .systemAction

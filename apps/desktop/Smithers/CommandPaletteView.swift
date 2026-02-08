@@ -40,16 +40,18 @@ private struct CommandPalettePanel: View {
     var searchFocused: FocusState<Bool>.Binding
 
     var body: some View {
+        let theme = workspace.theme
         let content = VStack(spacing: 0) {
             header
             Divider()
+                .background(theme.dividerColor)
             paletteContent
         }
 
         let sized = AnyView(
             content
                 .frame(width: 560, height: 360)
-                .background(Color(nsColor: NSColor(red: 0.12, green: 0.13, blue: 0.15, alpha: 1)))
+                .background(theme.panelBackgroundColor)
         )
 
         let decorated = AnyView(
@@ -57,7 +59,7 @@ private struct CommandPalettePanel: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.08))
+                        .strokeBorder(theme.panelBorderColor)
                 )
                 .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 8)
         )
@@ -155,6 +157,7 @@ private struct CommandPalettePanel: View {
                 }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
             .accessibilityIdentifier("CommandPaletteResults")
         }
     }
@@ -188,6 +191,7 @@ private struct CommandPalettePanel: View {
                 }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
             .accessibilityIdentifier("CommandPaletteResults")
         }
     }

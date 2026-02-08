@@ -4,6 +4,7 @@ struct FileTreeSidebar: View {
     @ObservedObject var workspace: WorkspaceState
 
     var body: some View {
+        let theme = workspace.theme
         Group {
             if workspace.fileTree.isEmpty {
                 VStack(spacing: 16) {
@@ -27,6 +28,7 @@ struct FileTreeSidebar: View {
                         .foregroundStyle(.tertiary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(theme.secondaryBackgroundColor)
             } else {
                 List(selection: $workspace.selectedFileURL) {
                     Section(workspace.rootDirectory?.lastPathComponent.uppercased() ?? "FILES") {
@@ -36,6 +38,8 @@ struct FileTreeSidebar: View {
                     }
                 }
                 .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
+                .background(theme.secondaryBackgroundColor)
                 .accessibilityIdentifier("FileTreeList")
                 .onChange(of: workspace.selectedFileURL) { _, newValue in
                     if let url = newValue {

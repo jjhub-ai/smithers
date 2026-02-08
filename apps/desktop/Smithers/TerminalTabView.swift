@@ -14,6 +14,7 @@ struct TerminalTabView: NSViewRepresentable {
 struct TerminalTabBarItem: View {
     @ObservedObject var view: GhosttyTerminalView
     let isSelected: Bool
+    let theme: AppTheme
     let onSelect: () -> Void
     let onClose: () -> Void
 
@@ -25,6 +26,7 @@ struct TerminalTabBarItem: View {
             subtitle: subtitle,
             icon: "terminal",
             isSelected: isSelected,
+            theme: theme,
             onSelect: onSelect,
             onClose: onClose
         )
