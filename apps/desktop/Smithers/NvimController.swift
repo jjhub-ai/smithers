@@ -25,6 +25,7 @@ final class NvimController {
     private(set) var terminalView: GhosttyTerminalView
     private var notificationsTask: Task<Void, Never>?
     private var isRunning = false
+    private var isReady = false
     private var bufferByURL: [URL: Int64] = [:]
     private var urlByBuffer: [Int64: URL] = [:]
 
@@ -49,12 +50,23 @@ final class NvimController {
 
     func start() async throws {
         guard !isRunning else { return }
+        NvimController.log("[NvimController] connecting to socket: %@", socketPath)
         try await connectWithRetry()
+        NvimController.log("[NvimController] connected, fetching channel ID")
         let channelId = try await fetchChannelId()
-        try await installAutocmds(channelId: channelId)
+        NvimController.log("[NvimController] channel ID: %lld, installing autocmds", channelId)
+        NvimController.log("[NvimController] calling installAutocmds now...")
+        do {
+            try await installAutocmds(channelId: channelId)
+            NvimController.log("[NvimController] autocmds installed OK")
+        } catch {
+            NvimController.log("[NvimController] installAutocmds FAILED: %@", error.localizedDescription)
+            throw error
+        }
+        NvimController.log("[NvimController] starting notification loop")
         startNotificationLoop()
-        try await syncInitialBuffers()
         isRunning = true
+        scheduleInitialSync()
     }
 
     func stop() {
@@ -64,65 +76,184 @@ final class NvimController {
         bufferByURL.removeAll()
         urlByBuffer.removeAll()
         isRunning = false
+        isReady = false
         terminalView.shutdown()
         try? FileManager.default.removeItem(atPath: socketPath)
     }
 
     func openFile(_ url: URL, line: Int? = nil, column: Int? = nil) async throws {
+        NvimController.log("[NvimController] openFile called for: %@, isReady: %@", url.path, isReady ? "true" : "false")
+        await waitUntilReady()
+        NvimController.log("[NvimController] waitUntilReady completed, isReady: %@", isReady ? "true" : "false")
         let normalizedURL = url.standardizedFileURL
-        if let buf = bufferByURL[normalizedURL] {
-            _ = try await rpc.request("nvim_set_current_buf", params: [.int(buf)])
-            if let line {
-                try await setCursor(line: line, column: column)
-            }
-            return
-        }
-
         let path = normalizedURL.path
-        do {
-            let cmd: [String: MsgPackValue] = [
-                "cmd": .string("edit"),
-                "args": .array([.string(path)])
-            ]
-            _ = try await rpc.request("nvim_cmd", params: [.map(cmd), .map([:])])
-        } catch {
-            let escapedValue = try await rpc.request(
-                "nvim_call_function",
-                params: [.string("fnameescape"), .array([.string(path)])]
-            )
-            let escapedPath = escapedValue.stringValue ?? path
-            _ = try await rpc.request("nvim_command", params: [.string("edit " + escapedPath)])
-        }
+        let script = """
+        local path, line, col = ...
+        local esc = vim.fn.fnameescape(path)
 
-        if let line {
-            try await setCursor(line: line, column: column)
-        }
+        -- Check if the file is already open in some window/tab.
+        local buf = vim.fn.bufnr(path, false)
+        local found = false
+        if buf > 0 then
+          for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
+            for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+              if vim.api.nvim_win_get_buf(win) == buf then
+                vim.api.nvim_set_current_tabpage(tab)
+                vim.api.nvim_set_current_win(win)
+                found = true
+                break
+              end
+            end
+            if found then break end
+          end
+        end
 
-        if let currentBuf = (try? await rpc.request("nvim_get_current_buf", params: []))?.intValue {
-            bufferByURL[normalizedURL] = currentBuf
-            urlByBuffer[currentBuf] = normalizedURL
-        }
+        if not found then
+          -- If the current buffer is empty/unlisted (e.g. dashboard), replace it;
+          -- otherwise open a new tab.
+          local cur = vim.api.nvim_get_current_buf()
+          local cur_name = vim.api.nvim_buf_get_name(cur)
+          local cur_listed = vim.bo[cur].buflisted
+          local cur_modified = vim.bo[cur].modified
+          if cur_name == "" and not cur_listed and not cur_modified then
+            vim.cmd("edit " .. esc)
+          elseif not cur_listed and not cur_modified then
+            vim.cmd("edit " .. esc)
+          else
+            vim.cmd("tabedit " .. esc)
+          end
+        end
+
+        if line ~= nil then
+          local l = math.max(1, line)
+          local c = math.max(1, (col or 1)) - 1
+          pcall(vim.api.nvim_win_set_cursor, 0, { l, c })
+        end
+        """
+        let params: [MsgPackValue] = [
+            .string(path),
+            line.map { .int(Int64($0)) } ?? .null,
+            column.map { .int(Int64($0)) } ?? .null,
+        ]
+        NvimController.log("[NvimController] sending nvim_exec_lua for openFile path: %@", path)
+        let result = try await rpc.request("nvim_exec_lua", params: [.string(script), .array(params)])
+        NvimController.log("[NvimController] nvim_exec_lua returned: %@", result.description)
     }
 
     func closeFile(_ url: URL) async {
         let normalizedURL = url.standardizedFileURL
-        guard let buf = bufferByURL[normalizedURL] else { return }
-        let opts: [String: MsgPackValue] = ["force": .bool(false)]
-        _ = try? await rpc.request("nvim_buf_delete", params: [.int(buf), .map(opts)])
+        let path = normalizedURL.path
+        let buf = bufferByURL[normalizedURL] ?? 0
+        let script = """
+        local path, buf = ...
+        if buf == 0 then
+          buf = vim.fn.bufnr(path)
+        end
+        if buf == 0 then
+          return
+        end
+
+        local tabs = vim.api.nvim_list_tabpages()
+        local tab_to_close = nil
+        for _, tab in ipairs(tabs) do
+          for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+            if vim.api.nvim_win_get_buf(win) == buf then
+              tab_to_close = tab
+              break
+            end
+          end
+          if tab_to_close then
+            break
+          end
+        end
+
+        if tab_to_close ~= nil and #tabs > 1 then
+          local current = vim.api.nvim_get_current_tabpage()
+          vim.api.nvim_set_current_tabpage(tab_to_close)
+          pcall(vim.cmd, "tabclose")
+          if current ~= tab_to_close and vim.api.nvim_tabpage_is_valid(current) then
+            pcall(vim.api.nvim_set_current_tabpage, current)
+          end
+        end
+
+        pcall(vim.api.nvim_buf_delete, buf, { force = false })
+        """
+        let params: [MsgPackValue] = [
+            .string(path),
+            .int(buf),
+        ]
+        _ = try? await rpc.request("nvim_exec_lua", params: [.string(script), .array(params)])
     }
 
     private func connectWithRetry() async throws {
         var lastError: Error?
-        for _ in 0..<20 {
+        for attempt in 0..<200 {
+            let exists = FileManager.default.fileExists(atPath: socketPath)
+            if attempt % 20 == 0 {
+                NvimController.log("[NvimController] connect attempt %d, socket exists: %@, path: %@",
+                    attempt, exists ? "true" : "false", socketPath)
+            }
             do {
                 try await rpc.connect(to: socketPath)
+                NvimController.log("[NvimController] connected on attempt %d", attempt)
                 return
             } catch {
                 lastError = error
+                if attempt % 20 == 0 {
+                    NvimController.log("[NvimController] connect attempt %d failed: %@", attempt, error.localizedDescription)
+                }
                 try await Task.sleep(nanoseconds: 100_000_000)
             }
         }
+        NvimController.log("[NvimController] connect TIMED OUT after 200 attempts, last error: %@",
+            lastError?.localizedDescription ?? "none")
         throw lastError ?? ControllerError.connectTimeout
+    }
+
+    private func waitForVimEnter() async throws {
+        if isReady { return }
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+            if let didEnter = try? await getVimDidEnter(), didEnter {
+                return
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+
+    private func waitUntilReady(timeout: TimeInterval = 20) async {
+        if isReady { return }
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if isReady { return }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+
+    private func getVimDidEnter() async throws -> Bool {
+        let value = try await rpc.request("nvim_get_vvar", params: [.string("vim_did_enter")])
+        if let intValue = value.intValue {
+            return intValue != 0
+        }
+        if let boolValue = value.boolValue {
+            return boolValue
+        }
+        return false
+    }
+
+    private func scheduleInitialSync() {
+        if isReady { return }
+        Task { [weak self] in
+            guard let self else { return }
+            NvimController.log("[NvimController] scheduleInitialSync: waiting for VimEnter")
+            _ = try? await self.waitForVimEnter()
+            NvimController.log("[NvimController] scheduleInitialSync: VimEnter done, sleeping 1.5s for plugins")
+            try? await Task.sleep(nanoseconds: 1_500_000_000)  // wait for lazy.nvim plugins
+            NvimController.log("[NvimController] scheduleInitialSync: syncing initial buffers")
+            try? await self.syncInitialBuffers()
+            NvimController.log("[NvimController] scheduleInitialSync: setting isReady = true")
+            self.isReady = true
+        }
     }
 
     private func fetchChannelId() async throws -> Int64 {
@@ -178,16 +309,31 @@ final class NvimController {
     }
 
     private func handleNotification(method: String, params: [MsgPackValue]) async {
+        NvimController.log("[NvimController] notification: %@ params: %@", method, params.map(\.description).joined(separator: ", "))
         guard method == "smithers/buf" else { return }
-        guard let payload = params.first?.mapValue else { return }
-        guard let event = payload["event"]?.stringValue else { return }
+        guard let payload = params.first?.mapValue else {
+            NvimController.log("[NvimController] notification has no map payload")
+            return
+        }
+        guard let event = payload["event"]?.stringValue else {
+            NvimController.log("[NvimController] notification has no event field")
+            return
+        }
         let buf = payload["buf"]?.intValue
 
         switch event {
         case "delete":
             handleBufferDelete(buf: buf)
         default:
-            let listed = payload["listed"]?.boolValue ?? false
+            let listedValue = payload["listed"]
+            let listed: Bool
+            if let b = listedValue?.boolValue {
+                listed = b
+            } else if let i = listedValue?.intValue {
+                listed = i != 0
+            } else {
+                listed = false
+            }
             guard listed else { return }
             guard let name = payload["name"]?.stringValue else { return }
             handleBufferEnter(buf: buf, name: name, select: true)
@@ -233,13 +379,6 @@ final class NvimController {
         }
     }
 
-    private func setCursor(line: Int, column: Int?) async throws {
-        let lineValue = max(1, line)
-        let colValue = max(1, column ?? 1) - 1
-        let pos: [MsgPackValue] = [.int(Int64(lineValue)), .int(Int64(colValue))]
-        _ = try await rpc.request("nvim_win_set_cursor", params: [.int(0), .array(pos)])
-    }
-
     private func urlFromBufferName(_ name: String) -> URL? {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -280,5 +419,18 @@ final class NvimController {
         if value.isEmpty { return "''" }
         let escaped = value.replacingOccurrences(of: "'", with: "'\\''")
         return "'\(escaped)'"
+    }
+
+    nonisolated static func log(_ format: String, _ args: CVarArg...) {
+        let message = String(format: format, arguments: args)
+        let line = "[\(Date())] \(message)\n"
+        let path = "/tmp/smithers-nvim-debug.log"
+        if let handle = FileHandle(forWritingAtPath: path) {
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+            handle.closeFile()
+        } else {
+            FileManager.default.createFile(atPath: path, contents: Data(line.utf8))
+        }
     }
 }
