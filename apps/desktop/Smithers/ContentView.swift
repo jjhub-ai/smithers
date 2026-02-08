@@ -93,13 +93,12 @@ struct ContentView: View {
                 emptyEditor
             }
         }
-        .navigationTitle(workspace.rootDirectory?.lastPathComponent ?? "Smithers")
+        .navigationTitle("")
         .toolbar {
-            ToolbarItem(placement: .automatic) {
-                if let fileName = workspace.selectedFileURL?.lastPathComponent {
-                    Text(fileName)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+            ToolbarItem(placement: .principal) {
+                if !workspace.openFiles.isEmpty {
+                    TabBar(workspace: workspace)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
@@ -116,5 +115,93 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: NSColor(red: 0.11, green: 0.12, blue: 0.14, alpha: 1)))
+    }
+}
+
+struct TabBar: View {
+    @ObservedObject var workspace: WorkspaceState
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(workspace.openFiles, id: \.self) { url in
+                    TabBarItem(
+                        title: url.lastPathComponent,
+                        subtitle: workspace.displayPath(for: url),
+                        icon: iconForFile(url.lastPathComponent),
+                        isSelected: url == workspace.selectedFileURL,
+                        onSelect: {
+                            workspace.selectFile(url)
+                        },
+                        onClose: {
+                            workspace.closeFile(url)
+                        }
+                    )
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+        }
+        .accessibilityIdentifier("EditorTabBar")
+    }
+}
+
+struct TabBarItem: View {
+    let title: String
+    let subtitle: String
+    let icon: String
+    let isSelected: Bool
+    let onSelect: () -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .padding(4)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close \(title)")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(isSelected ? Color.white.opacity(0.10) : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(Color.white.opacity(isSelected ? 0.12 : 0.05))
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .onTapGesture(perform: onSelect)
+        .help(subtitle)
+    }
+}
+
+private func iconForFile(_ name: String) -> String {
+    let ext = (name as NSString).pathExtension.lowercased()
+    switch ext {
+    case "swift": return "swift"
+    case "py": return "text.page"
+    case "js", "ts", "jsx", "tsx": return "curlybraces"
+    case "json": return "curlybraces.square"
+    case "md", "txt", "readme": return "doc.plaintext"
+    case "yml", "yaml", "toml": return "gearshape"
+    case "png", "jpg", "jpeg", "gif", "svg", "webp", "ico": return "photo"
+    case "html", "css": return "globe"
+    case "sh", "zsh", "bash": return "terminal"
+    case "zip", "tar", "gz": return "doc.zipper"
+    case "resolved": return "lock"
+    default: return "doc.text"
     }
 }

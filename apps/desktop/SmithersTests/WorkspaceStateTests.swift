@@ -103,4 +103,43 @@ final class WorkspaceStateTests: XCTestCase {
         XCTAssertEqual(finalL2.children?.count, 1)
         XCTAssertEqual(finalL2.children?.first?.name, "deep.txt")
     }
+
+    // MARK: - Tabs
+
+    func testSelectFileAddsOpenTab() throws {
+        let tmpDir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let file = tmpDir.appendingPathComponent("a.txt")
+        try "hello".write(to: file, atomically: true, encoding: .utf8)
+
+        let ws = WorkspaceState()
+        ws.openDirectory(tmpDir)
+        ws.selectFile(file)
+
+        XCTAssertEqual(ws.openFiles.count, 1)
+        XCTAssertEqual(ws.openFiles[0], file)
+        XCTAssertEqual(ws.selectedFileURL, file)
+    }
+
+    func testCloseFileSelectsNeighbor() throws {
+        let tmpDir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+        let fileA = tmpDir.appendingPathComponent("a.txt")
+        let fileB = tmpDir.appendingPathComponent("b.txt")
+        try "a".write(to: fileA, atomically: true, encoding: .utf8)
+        try "b".write(to: fileB, atomically: true, encoding: .utf8)
+
+        let ws = WorkspaceState()
+        ws.openDirectory(tmpDir)
+        ws.selectFile(fileA)
+        ws.selectFile(fileB)
+
+        ws.closeFile(fileB)
+
+        XCTAssertEqual(ws.openFiles.count, 1)
+        XCTAssertEqual(ws.openFiles[0], fileA)
+        XCTAssertEqual(ws.selectedFileURL, fileA)
+    }
 }
