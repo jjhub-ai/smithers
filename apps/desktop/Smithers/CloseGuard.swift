@@ -23,7 +23,6 @@ final class WindowCloseDelegate: NSObject, NSWindowDelegate {
         }
         return false
     }
-
 }
 
 @MainActor
