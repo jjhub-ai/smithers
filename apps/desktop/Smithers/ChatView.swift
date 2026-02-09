@@ -1,5 +1,7 @@
 import SwiftUI
 import Dispatch
+import AppKit
+import UniformTypeIdentifiers
 
 struct ChatMessage: Identifiable, Hashable {
     enum Role: Hashable {
@@ -18,15 +20,26 @@ struct ChatMessage: Identifiable, Hashable {
     let id: UUID
     let role: Role
     var kind: Kind
+    var images: [ChatImage]
     var isStreaming: Bool
     var turnId: String?
+    let timestamp: Date
 
-    init(role: Role, kind: Kind, isStreaming: Bool = false, turnId: String? = nil) {
+    init(
+        role: Role,
+        kind: Kind,
+        images: [ChatImage] = [],
+        isStreaming: Bool = false,
+        turnId: String? = nil,
+        timestamp: Date = Date()
+    ) {
         self.id = UUID()
         self.role = role
         self.kind = kind
+        self.images = images
         self.isStreaming = isStreaming
         self.turnId = turnId
+        self.timestamp = timestamp
     }
 
     var commandItemId: String? {
@@ -54,6 +67,123 @@ struct ChatMessage: Identifiable, Hashable {
         info.exitCode = exitCode
         info.status = .completed
         kind = .command(info)
+    }
+}
+
+struct ChatImage: Identifiable, Hashable {
+    static let payloadMaxDimension: CGFloat = 2048
+    static let thumbnailMaxDimension: CGFloat = 180
+
+    let id: UUID
+    let data: Data
+    let thumbnail: NSImage
+    let originalSize: CGSize
+
+    init(id: UUID = UUID(), data: Data, thumbnail: NSImage, originalSize: CGSize) {
+        self.id = id
+        self.data = data
+        self.thumbnail = thumbnail
+        self.originalSize = originalSize
+    }
+
+    static func == (lhs: ChatImage, rhs: ChatImage) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+
+    var fullImage: NSImage? {
+        NSImage(data: data)
+    }
+
+    func payloadData(maxDimension: CGFloat = ChatImage.payloadMaxDimension) -> Data {
+        guard let image = fullImage else { return data }
+        let resized = ChatImage.scaled(image: image, maxDimension: maxDimension)
+        return resized.pngData() ?? data
+    }
+
+    func payloadDataURL(maxDimension: CGFloat = ChatImage.payloadMaxDimension) -> String {
+        let payload = payloadData(maxDimension: maxDimension)
+        let base64 = payload.base64EncodedString()
+        return "data:image/png;base64,\(base64)"
+    }
+
+    static func fromImage(_ image: NSImage) -> ChatImage? {
+        let normalized = image.normalizedForEncoding()
+        let originalSize = normalized.pixelSize
+        guard let data = normalized.pngData() else { return nil }
+        let thumb = scaled(image: normalized, maxDimension: thumbnailMaxDimension)
+        return ChatImage(id: UUID(), data: data, thumbnail: thumb, originalSize: originalSize)
+    }
+
+    static func fromData(_ data: Data) -> ChatImage? {
+        guard let image = NSImage(data: data) else { return nil }
+        return fromImage(image)
+    }
+
+    static func fromFileURL(_ url: URL) -> ChatImage? {
+        guard let image = NSImage(contentsOf: url) else { return nil }
+        return fromImage(image)
+    }
+
+    static func fromDataURL(_ url: String) -> ChatImage? {
+        guard url.hasPrefix("data:"), let commaIndex = url.firstIndex(of: ",") else { return nil }
+        let metadata = url[..<commaIndex]
+        guard metadata.contains(";base64") else { return nil }
+        let dataPart = String(url[url.index(after: commaIndex)...])
+        guard let data = Data(base64Encoded: dataPart) else { return nil }
+        return fromData(data)
+    }
+
+    private static func scaled(image: NSImage, maxDimension: CGFloat) -> NSImage {
+        let size = image.pixelSize
+        guard size.width > 0, size.height > 0 else { return image }
+        let maxSide = max(size.width, size.height)
+        guard maxSide > maxDimension else { return image }
+        let ratio = maxDimension / maxSide
+        let newSize = CGSize(width: size.width * ratio, height: size.height * ratio)
+        return image.resized(to: newSize)
+    }
+}
+
+private extension NSImage {
+    var pixelSize: CGSize {
+        if let cgImage = cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            return CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
+        }
+        return size
+    }
+
+    func resized(to targetSize: CGSize) -> NSImage {
+        let newImage = NSImage(size: targetSize)
+        newImage.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        draw(in: NSRect(origin: .zero, size: targetSize),
+             from: NSRect(origin: .zero, size: size),
+             operation: .copy,
+             fraction: 1)
+        newImage.unlockFocus()
+        return newImage
+    }
+
+    func normalizedForEncoding() -> NSImage {
+        if let cgImage = cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            return NSImage(cgImage: cgImage, size: CGSize(width: cgImage.width, height: cgImage.height))
+        }
+        return self
+    }
+
+    func pngData() -> Data? {
+        if let cgImage = cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            let rep = NSBitmapImageRep(cgImage: cgImage)
+            return rep.representation(using: .png, properties: [:])
+        }
+        guard let tiff = tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff)
+        else { return nil }
+        return rep.representation(using: .png, properties: [:])
     }
 }
 
@@ -341,7 +471,7 @@ struct ChatView: View {
                     workspace.sendChatMessage()
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                .controlSize(.regular)
             }
             .padding(12)
             .background(theme.secondaryBackgroundColor)
@@ -383,15 +513,32 @@ struct ChatBubble: View {
     @ObservedObject var workspace: WorkspaceState
     @State private var isHovered = false
     @State private var showActions = false
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "h:mm a"
+        return formatter
+    }()
+    private static let dateTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d, h:mm a"
+        return formatter
+    }()
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
 
     var body: some View {
-        HStack {
+        HStack(alignment: .top, spacing: 6) {
             if message.role == .assistant {
+                roleBadge
                 bubble
                 Spacer(minLength: 24)
             } else {
                 Spacer(minLength: 24)
                 bubble
+                roleBadge
             }
         }
         .onHover { hovering in
@@ -407,7 +554,13 @@ struct ChatBubble: View {
     }
 
     private var bubble: some View {
-        bubbleContent
+        VStack(alignment: message.role == .assistant ? .leading : .trailing, spacing: 4) {
+            bubbleContent
+            Text(timestampText)
+                .font(.system(size: 10, weight: .regular))
+                .foregroundStyle(.secondary)
+                .opacity(isHovered ? 0.9 : 0.6)
+        }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(
@@ -422,6 +575,21 @@ struct ChatBubble: View {
                         .padding(.trailing, -4)
                 }
             }
+    }
+
+    private var timestampText: String {
+        let now = Date()
+        let interval = now.timeIntervalSince(message.timestamp)
+        if interval < 60 {
+            return "just now"
+        }
+        if interval < 3600 {
+            return Self.relativeFormatter.localizedString(for: message.timestamp, relativeTo: now)
+        }
+        if Calendar.current.isDateInToday(message.timestamp) {
+            return Self.timeFormatter.string(from: message.timestamp)
+        }
+        return Self.dateTimeFormatter.string(from: message.timestamp)
     }
 
     private var bubbleColor: Color {
@@ -443,6 +611,27 @@ struct ChatBubble: View {
                 return theme.chatUserBubbleColor
             }
         }
+    }
+
+    private var roleBadge: some View {
+        let theme = workspace.theme
+        let icon = message.role == .assistant ? "sparkles" : "person.fill"
+        let tint = message.role == .assistant
+            ? theme.accentColor
+            : theme.foregroundColor.opacity(0.75)
+        return Image(systemName: icon)
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(tint)
+            .frame(width: 18, height: 18)
+            .background(
+                Circle()
+                    .fill(theme.panelBackgroundColor)
+            )
+            .overlay(
+                Circle()
+                    .strokeBorder(theme.panelBorderColor)
+            )
+            .accessibilityHidden(true)
     }
 
     @ViewBuilder

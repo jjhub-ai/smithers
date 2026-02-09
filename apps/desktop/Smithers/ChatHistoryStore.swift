@@ -2,7 +2,7 @@ import Foundation
 import CryptoKit
 
 enum ChatHistoryStore {
-    private static let currentVersion = 1
+    private static let currentVersion = 2
 
     static func loadHistory(for rootDirectory: URL) -> [ChatMessage]? {
         guard let url = historyURL(for: rootDirectory) else { return nil }
@@ -70,21 +70,53 @@ private struct ChatHistoryMessage: Codable {
     let role: ChatHistoryRole
     let kind: ChatHistoryKind
     let turnId: String?
+    let timestamp: Date
 
-    init(role: ChatHistoryRole, kind: ChatHistoryKind, turnId: String?) {
+    init(role: ChatHistoryRole, kind: ChatHistoryKind, turnId: String?, timestamp: Date) {
         self.role = role
         self.kind = kind
         self.turnId = turnId
+        self.timestamp = timestamp
     }
 
     init(_ message: ChatMessage) {
         role = ChatHistoryRole(message.role)
         kind = ChatHistoryKind(message.kind)
         turnId = message.turnId
+        timestamp = message.timestamp
     }
 
     func asChatMessage() -> ChatMessage {
-        ChatMessage(role: role.asChatRole(), kind: kind.asChatKind(), isStreaming: false, turnId: turnId)
+        ChatMessage(
+            role: role.asChatRole(),
+            kind: kind.asChatKind(),
+            isStreaming: false,
+            turnId: turnId,
+            timestamp: timestamp
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case role
+        case kind
+        case turnId
+        case timestamp
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        role = (try? container.decode(ChatHistoryRole.self, forKey: .role)) ?? .assistant
+        kind = (try? container.decode(ChatHistoryKind.self, forKey: .kind)) ?? .text("")
+        turnId = try? container.decode(String.self, forKey: .turnId)
+        timestamp = (try? container.decode(Date.self, forKey: .timestamp)) ?? Date()
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(role, forKey: .role)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(turnId, forKey: .turnId)
+        try container.encode(timestamp, forKey: .timestamp)
     }
 }
 
