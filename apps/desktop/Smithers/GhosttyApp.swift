@@ -43,7 +43,8 @@ final class GhosttyApp {
         }
 
         if let app {
-            ghostty_app_set_focus(app, NSApp.isActive)
+            let isActive = NSApp?.isActive ?? false
+            ghostty_app_set_focus(app, isActive)
         }
 
         NotificationCenter.default.addObserver(

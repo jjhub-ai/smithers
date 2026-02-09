@@ -15,7 +15,9 @@ final class InputMethodSwitcher {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.handleInputSourceChange()
+            Task { @MainActor [weak self] in
+                self?.handleInputSourceChange()
+            }
         }
         captureCurrentInputSource()
     }
@@ -104,8 +106,8 @@ final class InputMethodSwitcher {
         return value as? String
     }
 
-    private func inputSourceCategory(_ source: TISInputSource) -> String? {
-        guard let ptr = TISGetInputSourceProperty(source, kTISPropertyInputSourceCategory) else { return nil }
+    private func inputSourceType(_ source: TISInputSource) -> String? {
+        guard let ptr = TISGetInputSourceProperty(source, kTISPropertyInputSourceType) else { return nil }
         let value = Unmanaged<CFTypeRef>.fromOpaque(ptr).takeUnretainedValue()
         return value as? String
     }
@@ -123,9 +125,12 @@ final class InputMethodSwitcher {
     }
 
     private func isInputMethod(_ source: TISInputSource) -> Bool {
-        if let category = inputSourceCategory(source),
-           category == (kTISCategoryKeyboardInputMethod as String) {
-            return true
+        if let type = inputSourceType(source) {
+            if type == (kTISTypeKeyboardInputMethodWithoutModes as String)
+                || type == (kTISTypeKeyboardInputMethodModeEnabled as String)
+                || type == (kTISTypeKeyboardInputMode as String) {
+                return true
+            }
         }
         if let asciiCapable = inputSourceIsASCIICapable(source) {
             return !asciiCapable
@@ -143,6 +148,8 @@ final class InputMethodSwitcher {
         guard let list = TISCreateInputSourceList(props, false) else { return nil }
         let array = list.takeRetainedValue() as NSArray
         guard let first = array.firstObject else { return nil }
-        return first as! TISInputSource
+        let value = first as CFTypeRef
+        guard CFGetTypeID(value) == TISInputSourceGetTypeID() else { return nil }
+        return (value as! TISInputSource)
     }
 }

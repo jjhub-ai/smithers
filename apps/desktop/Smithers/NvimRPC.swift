@@ -474,25 +474,37 @@ final class NvimRPC: @unchecked Sendable {
         let connection = NWConnection(to: endpoint, using: parameters)
         self.connection = connection
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            var resumed = false
+            final class ResumeGate {
+                private let lock = NSLock()
+                private var isResumed = false
+
+                func tryResume() -> Bool {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    guard !isResumed else { return false }
+                    isResumed = true
+                    return true
+                }
+            }
+
+            let gate = ResumeGate()
             connection.stateUpdateHandler = { state in
-                guard !resumed else { return }
                 switch state {
                 case .ready:
-                    resumed = true
+                    guard gate.tryResume() else { return }
                     connection.stateUpdateHandler = nil
                     continuation.resume()
                 case .failed(let error):
-                    resumed = true
+                    guard gate.tryResume() else { return }
                     connection.stateUpdateHandler = nil
                     continuation.resume(throwing: error)
                 case .waiting(let error):
-                    resumed = true
+                    guard gate.tryResume() else { return }
                     connection.cancel()
                     connection.stateUpdateHandler = nil
                     continuation.resume(throwing: error)
                 case .cancelled:
-                    resumed = true
+                    guard gate.tryResume() else { return }
                     connection.stateUpdateHandler = nil
                     continuation.resume(throwing: NvimRPCError.disconnected)
                 default:

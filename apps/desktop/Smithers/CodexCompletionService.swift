@@ -48,10 +48,10 @@ final class CodexCompletionService {
     func start(cwd: String) async throws {
         guard !service.isRunning else { return }
         _ = try await service.start(cwd: cwd, resumeThreadId: nil)
-        eventsTask = Task { [weak self] in
+        eventsTask = Task { @MainActor [weak self] in
             guard let self else { return }
             for await event in service.events {
-                await self.handle(event)
+                self.handle(event)
             }
         }
     }

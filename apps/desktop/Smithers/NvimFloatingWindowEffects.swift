@@ -131,7 +131,7 @@ final class NvimFloatingWindowOverlayView: NSView {
             let x = origin.x + CGFloat(window.col) * cellSize.width
             let y = origin.y + (totalRows - CGFloat(window.row) - CGFloat(window.height)) * cellSize.height
             view.frame = NSRect(x: x, y: y, width: width, height: height)
-            view.layer?.zPosition = Float(window.zIndex) + Float(index) * 0.001
+            view.layer?.zPosition = CGFloat(window.zIndex) + CGFloat(index) * 0.001
             view.isHidden = !effects.isActive
         }
     }
