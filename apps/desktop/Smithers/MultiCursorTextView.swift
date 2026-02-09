@@ -7,6 +7,8 @@ final class MultiCursorTextView: STTextView {
         let length: Int
     }
 
+    var commandHandler: ((Selector) -> Bool)?
+
     override func mouseDown(with event: NSEvent) {
         if inputContext?.handleEvent(event) == true {
             return
@@ -40,6 +42,13 @@ final class MultiCursorTextView: STTextView {
             return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    override func doCommand(by selector: Selector) {
+        if commandHandler?(selector) == true {
+            return
+        }
+        super.doCommand(by: selector)
     }
 
     override func insertText(_ string: Any, replacementRange: NSRange) {
@@ -520,7 +529,9 @@ final class MultiCursorTextView: STTextView {
 
         groupedUndoIfNeeded {
             let sorted = replacements.sorted { lhs, rhs in
-                textLayoutManager.compare(lhs.0.location, to: rhs.0.location) == .orderedDescending
+                let lhsRange = NSRange(lhs.0, in: textContentManager)
+                let rhsRange = NSRange(rhs.0, in: textContentManager)
+                return lhsRange.location > rhsRange.location
             }
             for (textRange, payload) in sorted {
                 replaceCharacters(in: textRange, with: payload)
