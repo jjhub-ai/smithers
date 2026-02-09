@@ -508,35 +508,36 @@ struct ChatView: View {
     @ViewBuilder
     private func chatMessagesSection(theme: AppTheme) -> some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(workspace.chatMessages) { message in
-                        ChatBubble(
-                            message: message,
-                            workspace: workspace,
-                            onSelectImage: { selectedImage = $0 }
-                        )
-                            .id(message.id)
-                            .transition(.asymmetric(
-                                insertion: .opacity,
-                                removal: .opacity
-                            ))
+            GeometryReader { geometry in
+                ScrollView {
+                    LazyVStack(alignment: .center, spacing: 8) {
+                        ForEach(workspace.chatMessages) { message in
+                            ChatBubble(
+                                message: message,
+                                workspace: workspace,
+                                containerWidth: geometry.size.width,
+                                onSelectImage: { selectedImage = $0 }
+                            )
+                                .id(message.id)
+                                .transition(.asymmetric(
+                                    insertion: .opacity,
+                                    removal: .opacity
+                                ))
+                        }
+                        if workspace.isTurnInProgress {
+                            ThinkingRow(theme: theme)
+                        }
                     }
-                    if workspace.isTurnInProgress {
-                        ThinkingRow()
-                    }
+                    .animation(.easeInOut(duration: 0.2), value: workspace.chatMessages.count)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
                 }
-                .animation(.easeInOut(duration: 0.2), value: workspace.chatMessages.count)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .frame(maxWidth: 720, alignment: .leading)
-                .frame(maxWidth: .infinity)
-            }
-            .background(theme.backgroundColor)
-            .onChange(of: workspace.chatMessages.count) { _, _ in
-                guard let last = workspace.chatMessages.last else { return }
-                withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(last.id, anchor: .bottom)
+                .background(theme.backgroundColor)
+                .onChange(of: workspace.chatMessages.count) { _, _ in
+                    guard let last = workspace.chatMessages.last else { return }
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(last.id, anchor: .bottom)
+                    }
                 }
             }
         }
@@ -636,9 +637,14 @@ struct ChatView: View {
 struct ChatBubble: View {
     let message: ChatMessage
     @ObservedObject var workspace: WorkspaceState
+    let containerWidth: CGFloat
     let onSelectImage: (ChatImage) -> Void
     @State private var isHovered = false
     @State private var showActions = false
+
+    private let bubbleRadius: CGFloat = 12
+    private let tailRadius: CGFloat = 4
+
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "h:mm a"
@@ -655,28 +661,69 @@ struct ChatBubble: View {
         return formatter
     }()
 
+    private var isUser: Bool { message.role == .user }
+
+    private var maxBubbleWidth: CGFloat {
+        let fraction: CGFloat
+        switch message.kind {
+        case .text, .status, .starterPrompt:
+            fraction = 0.80
+        case .command, .diffPreview:
+            fraction = 0.90
+        }
+        return max(200, containerWidth * fraction)
+    }
+
+    private var bubbleShape: UnevenRoundedRectangle {
+        if isUser {
+            // Tail bottom-right
+            return UnevenRoundedRectangle(
+                topLeadingRadius: bubbleRadius,
+                bottomLeadingRadius: bubbleRadius,
+                bottomTrailingRadius: tailRadius,
+                topTrailingRadius: bubbleRadius
+            )
+        } else {
+            // Tail bottom-left
+            return UnevenRoundedRectangle(
+                topLeadingRadius: bubbleRadius,
+                bottomLeadingRadius: tailRadius,
+                bottomTrailingRadius: bubbleRadius,
+                topTrailingRadius: bubbleRadius
+            )
+        }
+    }
+
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            roleIndicator
-            VStack(alignment: .leading, spacing: 3) {
-                roleLabel
+        let theme = workspace.preferences.theme
+        let actionAlignment: Alignment = isUser ? .topLeading : .topTrailing
+
+        HStack {
+            if isUser { Spacer(minLength: 0) }
+
+            VStack(alignment: isUser ? .trailing : .leading, spacing: 3) {
                 bubbleContent
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: maxBubbleWidth, alignment: .leading)
+                    .background(bubbleShape.fill(bubbleColor))
+                    .brightness(isHovered ? 0.03 : 0)
+                    .overlay(alignment: actionAlignment) {
+                        if showActions && !message.isStreaming {
+                            MessageActionBar(message: message, workspace: workspace)
+                                .transition(.opacity)
+                        }
+                    }
+
                 Text(timestampText)
                     .font(.system(size: Typography.xs, weight: .regular))
                     .foregroundStyle(Color.white.opacity(Typography.textFaint))
                     .opacity(isHovered ? 0.9 : 0.5)
+                    .padding(.horizontal, 4)
             }
-            .padding(.vertical, 8)
-            .padding(.trailing, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(alignment: .topTrailing) {
-                if showActions && !message.isStreaming {
-                    MessageActionBar(message: message, workspace: workspace)
-                        .transition(.opacity)
-                }
-            }
+
+            if !isUser { Spacer(minLength: 0) }
         }
-        .padding(.vertical, 4)
         .onHover { hovering in
             isHovered = hovering
             if hovering {
@@ -687,30 +734,6 @@ struct ChatBubble: View {
                 showActions = false
             }
         }
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(isHovered ? bubbleColor : Color.clear)
-        )
-    }
-
-    private var roleIndicator: some View {
-        let color: Color = message.role == .assistant
-            ? workspace.preferences.theme.accentColor
-            : workspace.preferences.theme.foregroundColor.opacity(0.3)
-        return Rectangle()
-            .fill(color)
-            .frame(width: 2)
-            .clipShape(Capsule())
-    }
-
-    private var roleLabel: some View {
-        let theme = workspace.preferences.theme
-        let label = message.role == .assistant ? "Assistant" : "You"
-        return Text(label)
-            .font(.system(size: Typography.xs, weight: .semibold))
-            .foregroundStyle(message.role == .assistant
-                ? theme.accentColor.opacity(0.8)
-                : theme.foregroundColor.opacity(0.5))
     }
 
     private var timestampText: String {
@@ -740,11 +763,10 @@ struct ChatBubble: View {
         case .starterPrompt:
             return theme.chatAssistantBubbleColor
         case .text:
-            switch message.role {
-            case .assistant:
+            if isUser {
+                return theme.accentColor.opacity(0.12)
+            } else {
                 return theme.chatAssistantBubbleColor
-            case .user:
-                return theme.chatUserBubbleColor
             }
         }
     }
@@ -1230,12 +1252,10 @@ struct DiffStatusBadge: View {
 }
 
 struct ThinkingRow: View {
+    let theme: AppTheme
+
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Rectangle()
-                .fill(Color.white.opacity(0.15))
-                .frame(width: 2)
-                .clipShape(Capsule())
+        HStack {
             HStack(spacing: 6) {
                 ProgressView()
                     .controlSize(.small)
@@ -1243,9 +1263,19 @@ struct ThinkingRow: View {
                     .font(.system(size: Typography.s, weight: .medium))
                     .foregroundStyle(Color.white.opacity(Typography.textMuted))
             }
+            .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            Spacer()
+            .background(
+                UnevenRoundedRectangle(
+                    topLeadingRadius: 12,
+                    bottomLeadingRadius: 4,
+                    bottomTrailingRadius: 12,
+                    topTrailingRadius: 12
+                )
+                .fill(theme.chatAssistantBubbleColor)
+            )
+
+            Spacer(minLength: 0)
         }
-        .padding(.vertical, 4)
     }
 }
