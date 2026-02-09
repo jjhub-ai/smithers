@@ -7,6 +7,7 @@ struct TerminalTabView: NSViewRepresentable {
     var theme: AppTheme = .default
     var onScrollToOffset: ((CGFloat) -> Void)?
     var onPageScroll: ((Int) -> Void)?
+    var floatingWindowEffects: NvimFloatingWindowEffects?
 
     func makeNSView(context: Context) -> ScrollbarHostingView {
         let scrollbarView = ScrollbarOverlayView()
@@ -18,7 +19,8 @@ struct TerminalTabView: NSViewRepresentable {
         view.onScrollActivity = { [weak scrollbarView] in
             scrollbarView?.notifyScrollActivity()
         }
-        return ScrollbarHostingView(contentView: view, scrollbarView: scrollbarView)
+        let overlayView = makeFloatingOverlayView()
+        return ScrollbarHostingView(contentView: view, scrollbarView: scrollbarView, overlayView: overlayView)
     }
 
     func updateNSView(_ containerView: ScrollbarHostingView, context: Context) {
@@ -35,6 +37,25 @@ struct TerminalTabView: NSViewRepresentable {
         view.onScrollActivity = { [weak scrollbarView] in
             scrollbarView?.notifyScrollActivity()
         }
+
+        if let overlayView = containerView.overlayView as? NvimFloatingWindowOverlayView {
+            if let effects = floatingWindowEffects {
+                overlayView.effects = effects
+                overlayView.isHidden = effects.windows.isEmpty || !effects.isActive
+            } else {
+                overlayView.effects = .empty
+                overlayView.isHidden = true
+            }
+        }
+    }
+
+    private func makeFloatingOverlayView() -> NvimFloatingWindowOverlayView? {
+        guard let effects = floatingWindowEffects else { return nil }
+        let overlayView = NvimFloatingWindowOverlayView()
+        overlayView.terminalView = view
+        overlayView.effects = effects
+        overlayView.isHidden = effects.windows.isEmpty || !effects.isActive
+        return overlayView
     }
 }
 
