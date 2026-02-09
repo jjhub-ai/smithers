@@ -548,8 +548,9 @@ class WorkspaceState: ObservableObject {
                 switch item {
                 case .userMessage(let userItem):
                     let text = userText(from: userItem)
-                    if !text.isEmpty {
-                        messages.append(ChatMessage(role: .user, kind: .text(text), turnId: turn.id))
+                    let images = userImages(from: userItem)
+                    if !text.isEmpty || !images.isEmpty {
+                        messages.append(ChatMessage(role: .user, kind: .text(text), images: images, turnId: turn.id))
                     }
                 case .agentMessage(let agentItem):
                     let text = agentItem.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -594,6 +595,26 @@ class WorkspaceState: ObservableObject {
             return nil
         }
         return parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func userImages(from item: UserMessageItem) -> [ChatImage] {
+        var images: [ChatImage] = []
+        for payload in item.content {
+            switch payload {
+            case .image(let url):
+                if let image = ChatImage.fromDataURL(url) {
+                    images.append(image)
+                }
+            case .localImage(let path):
+                let url = URL(fileURLWithPath: path)
+                if let image = ChatImage.fromFileURL(url) {
+                    images.append(image)
+                }
+            default:
+                continue
+            }
+        }
+        return images
     }
 
     private static func commandStatus(from item: CommandExecutionItem) -> CommandExecutionStatus {
