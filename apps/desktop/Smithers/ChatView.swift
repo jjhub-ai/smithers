@@ -12,6 +12,7 @@ struct ChatMessage: Identifiable, Hashable {
         case command(CommandExecutionInfo)
         case status(String)
         case diffPreview(DiffPreview)
+        case starterPrompt(title: String, suggestions: [String])
     }
 
     let id: UUID
@@ -397,6 +398,8 @@ struct ChatBubble: View {
             return theme.chatStatusBubbleColor
         case .diffPreview:
             return theme.chatDiffBubbleColor
+        case .starterPrompt:
+            return theme.chatAssistantBubbleColor
         case .text:
             switch message.role {
             case .assistant:
@@ -466,6 +469,35 @@ struct ChatBubble: View {
         case .diffPreview(let preview):
             DiffPreviewCard(preview: preview) {
                 workspace.presentDiff(preview)
+            }
+        case .starterPrompt(let title, let suggestions):
+            StarterPromptView(title: title, suggestions: suggestions, workspace: workspace)
+        }
+    }
+}
+
+struct StarterPromptView: View {
+    let title: String
+    let suggestions: [String]
+    @ObservedObject var workspace: WorkspaceState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.primary)
+            ForEach(suggestions, id: \.self) { suggestion in
+                Button {
+                    guard !workspace.isTurnInProgress else { return }
+                    workspace.sendChatMessage(text: suggestion)
+                } label: {
+                    Text(suggestion)
+                        .font(.system(size: 12))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(workspace.isTurnInProgress)
             }
         }
     }

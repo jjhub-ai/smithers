@@ -105,7 +105,17 @@ class WorkspaceState: ObservableObject {
     }
     @Published var currentLanguage: SupportedLanguage?
     @Published var chatMessages: [ChatMessage] = [
-        ChatMessage(role: .assistant, kind: .text("Chat ready. Ask me anything."))
+        ChatMessage(
+            role: .assistant,
+            kind: .starterPrompt(
+                title: "Talk to me to get started!",
+                suggestions: [
+                    "What tools and capabilities do you have?",
+                    "Help me fix a bug?",
+                    "Help me build a ralph script"
+                ]
+            )
+        )
     ]
     @Published var theme: AppTheme = .default
     @Published var activeDiffPreview: DiffPreview?
@@ -1325,8 +1335,14 @@ class WorkspaceState: ObservableObject {
     func sendChatMessage() {
         let text = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        chatMessages.append(ChatMessage(role: .user, kind: .text(text)))
         chatDraft = ""
+        sendChatMessage(text: text)
+    }
+
+    func sendChatMessage(text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        chatMessages.append(ChatMessage(role: .user, kind: .text(trimmed)))
         guard let codexService else {
             appendErrorMessage("Codex service is not running.")
             return
@@ -1335,7 +1351,7 @@ class WorkspaceState: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await codexService.sendMessage(text)
+                try await codexService.sendMessage(trimmed)
             } catch {
                 self.appendErrorMessage("Failed to send message: \(error.localizedDescription)")
                 self.isTurnInProgress = false
