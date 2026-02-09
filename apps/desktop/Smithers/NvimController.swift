@@ -113,6 +113,18 @@ final class NvimController {
         try? FileManager.default.removeItem(atPath: socketPath)
     }
 
+    func setGlobalVariables(_ variables: [String: MsgPackValue]) async {
+        guard !variables.isEmpty else { return }
+        await waitUntilReady()
+        let script = """
+        local vars = ...
+        for key, value in pairs(vars) do
+          vim.g[key] = value
+        end
+        """
+        _ = try? await rpc.request("nvim_exec_lua", params: [.string(script), .array([.map(variables)])])
+    }
+
     // FIX 3: The Lua script's nil check used `line ~= nil`, but MsgPack null
     // arrives in Lua as vim.NIL (userdata), not Lua nil. So the check passed
     // and math.max(1, <userdata>) crashed. Fixed to use type(line) == "number".
