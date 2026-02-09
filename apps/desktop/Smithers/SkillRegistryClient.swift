@@ -3,6 +3,7 @@ import Foundation
 final class SkillRegistryClient {
     private let session: URLSession
     private var cache: [String: SkillRegistryEntry] = [:]
+    private let cacheLock = NSLock()
 
     init(session: URLSession = .shared) {
         self.session = session
@@ -25,7 +26,7 @@ final class SkillRegistryClient {
 
         try await withThrowingTaskGroup(of: SkillRegistryEntry?.self) { group in
             for skill in slice {
-                if let cached = cache[skill.id] {
+                if let cached = cachedEntry(for: skill.id) {
                     entries.append(cached)
                     continue
                 }
@@ -37,7 +38,7 @@ final class SkillRegistryClient {
             for try await entry in group {
                 if let entry {
                     entries.append(entry)
-                    cache[entry.id] = entry
+                    cacheEntry(entry)
                 }
             }
         }
@@ -160,6 +161,18 @@ final class SkillRegistryClient {
             return source
         }
         return nil
+    }
+
+    private func cachedEntry(for id: String) -> SkillRegistryEntry? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return cache[id]
+    }
+
+    private func cacheEntry(_ entry: SkillRegistryEntry) {
+        cacheLock.lock()
+        cache[entry.id] = entry
+        cacheLock.unlock()
     }
 
     private struct SkillsSearchResponse: Decodable {
