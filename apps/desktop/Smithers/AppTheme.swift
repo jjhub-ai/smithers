@@ -48,25 +48,25 @@ struct AppTheme: Equatable {
         mutedForeground: NSColor.white.withAlphaComponent(0.7),
         secondaryBackground: NSColor(red: 0.10, green: 0.11, blue: 0.13, alpha: 1),
         panelBackground: NSColor(red: 0.12, green: 0.13, blue: 0.15, alpha: 1),
-        panelBorder: NSColor.white.withAlphaComponent(0.08),
-        divider: NSColor.white.withAlphaComponent(0.08),
+        panelBorder: NSColor.white.withAlphaComponent(0.15),
+        divider: NSColor.white.withAlphaComponent(0.12),
         tabBarBackground: NSColor(red: 0.10, green: 0.11, blue: 0.13, alpha: 1),
         tabSelectedBackground: NSColor.white.withAlphaComponent(0.10),
         tabSelectedForeground: .white,
         tabForeground: NSColor.white.withAlphaComponent(0.85),
-        tabBorder: NSColor.white.withAlphaComponent(0.05),
+        tabBorder: NSColor.white.withAlphaComponent(0.12),
         selectionBackground: NSColor.white.withAlphaComponent(0.12),
         accent: .systemBlue,
-        lineNumberForeground: NSColor(white: 0.35, alpha: 1),
+        lineNumberForeground: NSColor(white: 0.55, alpha: 1),
         lineNumberSelectedForeground: NSColor(white: 0.55, alpha: 1),
         lineNumberBackground: NSColor(red: 0.11, green: 0.12, blue: 0.14, alpha: 1),
-        lineHighlight: NSColor(white: 0.18, alpha: 1),
+        lineHighlight: NSColor(white: 0.20, alpha: 1),
         chatAssistantBubble: NSColor.white.withAlphaComponent(0.08),
-        chatUserBubble: NSColor.systemBlue.withAlphaComponent(0.35),
+        chatUserBubble: NSColor.systemBlue.withAlphaComponent(0.45),
         chatCommandBubble: NSColor.black.withAlphaComponent(0.35),
-        chatStatusBubble: NSColor.white.withAlphaComponent(0.05),
+        chatStatusBubble: NSColor.white.withAlphaComponent(0.12),
         chatDiffBubble: NSColor.white.withAlphaComponent(0.07),
-        inputFieldBackground: NSColor.white.withAlphaComponent(0.06)
+        inputFieldBackground: NSColor.white.withAlphaComponent(0.10)
     )
 
     static func fromNvimHighlights(_ highlights: [String: NvimHighlightColors]) -> AppTheme {
