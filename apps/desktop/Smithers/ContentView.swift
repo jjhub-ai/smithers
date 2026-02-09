@@ -57,14 +57,11 @@ struct CodeEditor: NSViewRepresentable {
 
         scrollView.backgroundColor = theme.background
         scrollView.scrollerStyle = .overlay
+        scrollView.hasVerticalScroller = false
+        scrollView.hasHorizontalScroller = false
         scrollView.contentView.postsBoundsChangedNotifications = true
         scrollView.setAccessibilityIdentifier("CodeEditor")
         textView.setAccessibilityIdentifier("CodeEditorTextView")
-
-        context.coordinator.attach(scrollView: scrollView, textView: textView)
-        context.coordinator.loadFile(text: text, language: language, fileURL: fileURL, textView: textView)
-        context.coordinator.appliedTheme = theme
-        context.coordinator.appliedFont = font
 
         let scrollbarView = ScrollbarOverlayView()
         scrollbarView.showMode = scrollbarMode
@@ -273,6 +270,7 @@ struct CodeEditor: NSViewRepresentable {
         weak var scrollView: NSScrollView?
         weak var textView: STTextView?
         private weak var lineNumberView: STLineNumberRulerView?
+        private weak var scrollbarView: ScrollbarOverlayView?
         private var scrollObserver: Any?
         private var magnificationRecognizer: NSMagnificationGestureRecognizer?
         private var highlighterCache: [String: TreeSitterHighlighter] = [:]
@@ -296,25 +294,38 @@ struct CodeEditor: NSViewRepresentable {
             }
         }
 
-        func attach(scrollView: NSScrollView, textView: STTextView) {
-            self.scrollView = scrollView
-            self.textView = textView
-            self.lineNumberView = scrollView.verticalRulerView as? STLineNumberRulerView
-            if magnificationRecognizer == nil {
-                let recognizer = NSMagnificationGestureRecognizer(
-                    target: self,
-                    action: #selector(handleMagnification(_:))
-                )
-                scrollView.addGestureRecognizer(recognizer)
-                magnificationRecognizer = recognizer
+        func attach(scrollView: NSScrollView, textView: STTextView, scrollbar: ScrollbarOverlayView) {
+            if self.scrollView !== scrollView || self.textView !== textView {
+                if let scrollObserver {
+                    NotificationCenter.default.removeObserver(scrollObserver)
+                    self.scrollObserver = nil
+                }
+                self.scrollView = scrollView
+                self.textView = textView
+                self.lineNumberView = scrollView.verticalRulerView as? STLineNumberRulerView
+                if magnificationRecognizer == nil {
+                    let recognizer = NSMagnificationGestureRecognizer(
+                        target: self,
+                        action: #selector(handleMagnification(_:))
+                    )
+                    scrollView.addGestureRecognizer(recognizer)
+                    magnificationRecognizer = recognizer
+                }
+                scrollObserver = NotificationCenter.default.addObserver(
+                    forName: NSView.boundsDidChangeNotification,
+                    object: scrollView.contentView,
+                    queue: .main
+                ) { [weak self] _ in
+                    guard let self, let textView = self.textView, let scrollView = self.scrollView else { return }
+                    self.updateScrollMetrics(textView: textView, scrollView: scrollView)
+                    self.scrollbarView?.notifyScrollActivity()
+                }
             }
-            scrollObserver = NotificationCenter.default.addObserver(
-                forName: NSView.boundsDidChangeNotification,
-                object: scrollView.contentView,
-                queue: .main
-            ) { [weak self] _ in
-                guard let self, let textView = self.textView, let scrollView = self.scrollView else { return }
-                self.updateScrollMetrics(textView: textView, scrollView: scrollView)
+
+            scrollbarView = scrollbar
+            configureScrollbarActions(scrollView: scrollView, scrollbar: scrollbar)
+            if let textView = self.textView, let scrollView = self.scrollView {
+                updateScrollMetrics(textView: textView, scrollView: scrollView)
             }
         }
 
@@ -360,6 +371,13 @@ struct CodeEditor: NSViewRepresentable {
                 contentHeight: contentHeight,
                 viewportHeight: viewportHeight,
                 scrollY: scrollY
+            )
+            scrollbarView?.updateMetrics(
+                ScrollbarMetrics(
+                    contentLength: contentHeight,
+                    viewportLength: viewportHeight,
+                    offset: scrollY
+                )
             )
         }
 
@@ -746,7 +764,7 @@ struct ContentView: View {
                     Divider()
                         .background(workspace.theme.dividerColor)
                     KeyboardShortcutsPanel(workspace: workspace, tmuxKeyHandler: tmuxKeyHandler)
-                        .frame(width: shortcutsPanelWidth)
+                        .frame(width: shortcutsPanelWidth, maxHeight: .infinity)
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
@@ -1122,6 +1140,7 @@ private struct ToastView: View {
 
 struct TabBar: View {
     @ObservedObject var workspace: WorkspaceState
+    @State private var dragTarget: URL?
 
     var body: some View {
         let theme = workspace.theme
@@ -1141,6 +1160,17 @@ struct TabBar: View {
                                 onClose: { workspace.requestCloseFile(url) }
                             )
                             .transition(.scale(scale: 0.8, anchor: .leading).combined(with: .opacity))
+                            .contextMenu { tabContextMenu(for: url) }
+                            .draggable(url.absoluteString) {
+                                Text(tabTitle(for: url))
+                                    .font(.system(size: Typography.s, weight: .medium))
+                                    .padding(4)
+                                    .background(theme.tabSelectedBackgroundColor)
+                                    .cornerRadius(4)
+                            }
+                            .dropDestination(for: String.self, isTargeted: dropTargetBinding(for: url)) { items, _ in
+                                handleDrop(items, target: url)
+                            }
                         } else {
                             let diffInfo = isDiff ? workspace.diffTab(for: url) : nil
                             let diffSubtitle = diffInfo?.summary.isEmpty == false ? diffInfo?.summary : "Diff view"
@@ -1151,6 +1181,7 @@ struct TabBar: View {
                                 icon: isChat ? "bubble.left.and.bubble.right" : (isDiff ? "arrow.left.and.right" : iconForFile(url.lastPathComponent)),
                                 isSelected: url == workspace.selectedFileURL,
                                 isModified: isModified,
+                                isDropTarget: dragTarget == url,
                                 theme: theme,
                                 onSelect: {
                                     workspace.selectFile(url)
@@ -1160,6 +1191,17 @@ struct TabBar: View {
                                 }
                             )
                             .transition(.scale(scale: 0.8, anchor: .leading).combined(with: .opacity))
+                            .contextMenu { tabContextMenu(for: url) }
+                            .draggable(url.absoluteString) {
+                                Text(tabTitle(for: url))
+                                    .font(.system(size: Typography.s, weight: .medium))
+                                    .padding(4)
+                                    .background(theme.tabSelectedBackgroundColor)
+                                    .cornerRadius(4)
+                            }
+                            .dropDestination(for: String.self, isTargeted: dropTargetBinding(for: url)) { items, _ in
+                                handleDrop(items, target: url)
+                            }
                         }
                     }
                 }
@@ -1198,6 +1240,35 @@ struct TabBar: View {
         }
         .accessibilityIdentifier("EditorTabBar")
         .background(theme.tabBarBackgroundColor)
+    }
+
+    private func dropTargetBinding(for url: URL) -> Binding<Bool> {
+        Binding(
+            get: { dragTarget == url },
+            set: { isTargeted in
+                dragTarget = isTargeted ? url : nil
+            }
+        )
+    }
+
+    private func handleDrop(_ items: [String], target: URL) -> Bool {
+        guard let item = items.first, let source = URL(string: item) else { return false }
+        workspace.moveTab(from: source, to: target)
+        return true
+    }
+
+    @ViewBuilder
+    private func tabContextMenu(for url: URL) -> some View {
+        Button("Close") { workspace.requestCloseFile(url) }
+        Button("Close Others") { workspace.closeAllExcept(url) }
+        Button("Close All") { workspace.closeAllTabs() }
+        Button("Close to the Right") { workspace.closeTabsToRight(of: url) }
+        if workspace.isRegularFileURL(url) {
+            Divider()
+            Button("Copy Path") { workspace.copyFilePath(url) }
+            Button("Reveal in Finder") { workspace.revealInFinder(url) }
+            Button("Reveal in Sidebar") { workspace.selectFile(url) }
+        }
     }
 
     private func tabTitle(for url: URL) -> String {
