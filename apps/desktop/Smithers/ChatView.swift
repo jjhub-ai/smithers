@@ -99,7 +99,7 @@ struct ChatImage: Identifiable, Hashable {
     }
 
     func payloadData(maxDimension: CGFloat = ChatImage.payloadMaxDimension) -> Data {
-        guard let image = fullImage else { return data }
+        guard let image = fullImage?.normalizedForEncoding() else { return data }
         let resized = ChatImage.scaled(image: image, maxDimension: maxDimension)
         return resized.pngData() ?? data
     }
@@ -604,7 +604,7 @@ struct ChatBubble: View {
         VStack(alignment: message.role == .assistant ? .leading : .trailing, spacing: 4) {
             bubbleContent
             Text(timestampText)
-                .font(.system(size: 10, weight: .regular))
+                .font(.system(size: Typography.xs, weight: .regular))
                 .foregroundStyle(.secondary)
                 .opacity(isHovered ? 0.9 : 0.6)
         }
@@ -667,7 +667,7 @@ struct ChatBubble: View {
             ? theme.accentColor
             : theme.foregroundColor.opacity(0.75)
         return Image(systemName: icon)
-            .font(.system(size: 9, weight: .bold))
+            .font(.system(size: Typography.xs, weight: .bold))
             .foregroundStyle(tint)
             .frame(width: 18, height: 18)
             .background(
@@ -690,7 +690,7 @@ struct ChatBubble: View {
                     LinkifiedText(
                         workspace: workspace,
                         text: message.isStreaming ? text + " ..." : text,
-                        font: .system(size: 13, weight: .regular),
+                        font: .system(size: Typography.base, weight: .regular),
                         baseColor: .primary,
                         selectionEnabled: true
                     )
@@ -710,7 +710,7 @@ struct ChatBubble: View {
             LinkifiedText(
                 workspace: workspace,
                 text: text,
-                font: .system(size: 12, weight: .regular),
+                font: .system(size: Typography.s, weight: .regular),
                 baseColor: .secondary,
                 selectionEnabled: true
             )
@@ -719,7 +719,7 @@ struct ChatBubble: View {
                 LinkifiedText(
                     workspace: workspace,
                     text: "$ \(info.command)",
-                    font: .system(size: 12, weight: .medium, design: .monospaced),
+                    font: .system(size: Typography.base, weight: .medium, design: .monospaced),
                     baseColor: .primary,
                     selectionEnabled: true
                 )
@@ -727,7 +727,7 @@ struct ChatBubble: View {
                     LinkifiedText(
                         workspace: workspace,
                         text: "cwd: \(info.cwd)",
-                        font: .system(size: 11),
+                        font: .system(size: Typography.s),
                         baseColor: .secondary,
                         selectionEnabled: true
                     )
@@ -736,18 +736,18 @@ struct ChatBubble: View {
                     LinkifiedText(
                         workspace: workspace,
                         text: info.output,
-                        font: .system(size: 12, weight: .regular, design: .monospaced),
+                        font: .system(size: Typography.base, weight: .regular, design: .monospaced),
                         baseColor: .primary,
                         selectionEnabled: true
                     )
                 }
                 if let exitCode = info.exitCode {
                     Text("exit \(exitCode)")
-                        .font(.system(size: 11))
+                        .font(.system(size: Typography.s))
                         .foregroundStyle(exitCode == 0 ? .green : .red)
                 } else if info.status == .running {
                     Text("running")
-                        .font(.system(size: 11))
+                        .font(.system(size: Typography.s))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -839,7 +839,7 @@ struct ChatImageOverlay: View {
                         onClose()
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 22, weight: .semibold))
+                            .font(.system(size: Typography.iconM, weight: .semibold))
                             .foregroundStyle(Color.white.opacity(0.9))
                     }
                     .buttonStyle(.plain)
@@ -891,7 +891,7 @@ struct MessageActionBar: View {
                     workspace.forkChat(from: message)
                 } label: {
                     Image(systemName: "arrow.branch")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: Typography.xs, weight: .semibold))
                 }
                 .buttonStyle(.plain)
                 .help("Fork from here")
@@ -902,7 +902,7 @@ struct MessageActionBar: View {
                     workspace.copyChatMessage(message)
                 } label: {
                     Image(systemName: "doc.on.doc")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: Typography.xs, weight: .semibold))
                 }
                 .buttonStyle(.plain)
                 .help("Copy message")
@@ -913,7 +913,7 @@ struct MessageActionBar: View {
                     workspace.retryFromMessage(message)
                 } label: {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: Typography.xs, weight: .semibold))
                 }
                 .buttonStyle(.plain)
                 .help("Retry")
@@ -924,7 +924,7 @@ struct MessageActionBar: View {
                     workspace.editAndResendMessage(message)
                 } label: {
                     Image(systemName: "pencil")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: Typography.xs, weight: .semibold))
                 }
                 .buttonStyle(.plain)
                 .help("Edit & resend")
@@ -937,7 +937,7 @@ struct MessageActionBar: View {
                     }
                 } label: {
                     Image(systemName: "ellipsis")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: Typography.xs, weight: .semibold))
                 }
                 .frame(width: 18, height: 18)
                 .help("More")
@@ -960,7 +960,7 @@ struct StarterPromptView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: Typography.base, weight: .semibold))
                 .foregroundStyle(.primary)
             ForEach(suggestions, id: \.self) { suggestion in
                 Button {
@@ -968,7 +968,7 @@ struct StarterPromptView: View {
                     workspace.sendChatMessage(text: suggestion)
                 } label: {
                     Text(suggestion)
-                        .font(.system(size: 12))
+                        .font(.system(size: Typography.base))
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.bordered)
@@ -988,23 +988,23 @@ struct DiffPreviewCard: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(preview.title)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: Typography.base, weight: .semibold))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                     Spacer(minLength: 8)
                     DiffStatusBadge(status: preview.status)
                 }
                 Text(preview.filesText)
-                    .font(.system(size: 11))
+                    .font(.system(size: Typography.s))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text(preview.summary)
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .font(.system(size: Typography.s, weight: .medium, design: .monospaced))
                     .foregroundStyle(.secondary)
                 DiffSnippetView(lines: preview.previewLines)
                 Text("Click to view full diff")
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.system(size: Typography.xs, weight: .medium))
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1020,7 +1020,7 @@ struct DiffSnippetView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                DiffLineRow(line: line, fontSize: 11)
+                DiffLineRow(line: line, fontSize: Typography.s)
             }
         }
         .padding(6)
@@ -1080,7 +1080,7 @@ struct DiffStatusBadge: View {
 
     var body: some View {
         Text(statusText)
-            .font(.system(size: 9, weight: .semibold))
+            .font(.system(size: Typography.xs, weight: .semibold))
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(
@@ -1123,7 +1123,7 @@ struct ThinkingRow: View {
             ProgressView()
                 .controlSize(.small)
             Text("Thinking...")
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: Typography.s, weight: .medium))
                 .foregroundStyle(.secondary)
             Spacer()
         }

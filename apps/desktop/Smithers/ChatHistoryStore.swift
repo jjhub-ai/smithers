@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import CoreGraphics
 
 enum ChatHistoryStore {
     private static let currentVersion = 2
@@ -69,12 +70,14 @@ private struct ChatHistoryPayload: Codable {
 private struct ChatHistoryMessage: Codable {
     let role: ChatHistoryRole
     let kind: ChatHistoryKind
+    let images: [ChatHistoryImage]
     let turnId: String?
     let timestamp: Date
 
-    init(role: ChatHistoryRole, kind: ChatHistoryKind, turnId: String?, timestamp: Date) {
+    init(role: ChatHistoryRole, kind: ChatHistoryKind, images: [ChatHistoryImage], turnId: String?, timestamp: Date) {
         self.role = role
         self.kind = kind
+        self.images = images
         self.turnId = turnId
         self.timestamp = timestamp
     }
@@ -82,14 +85,17 @@ private struct ChatHistoryMessage: Codable {
     init(_ message: ChatMessage) {
         role = ChatHistoryRole(message.role)
         kind = ChatHistoryKind(message.kind)
+        images = message.images.map(ChatHistoryImage.init)
         turnId = message.turnId
         timestamp = message.timestamp
     }
 
     func asChatMessage() -> ChatMessage {
+        let restoredImages = images.compactMap { $0.asChatImage() }
         ChatMessage(
             role: role.asChatRole(),
             kind: kind.asChatKind(),
+            images: restoredImages,
             isStreaming: false,
             turnId: turnId,
             timestamp: timestamp
@@ -99,6 +105,7 @@ private struct ChatHistoryMessage: Codable {
     private enum CodingKeys: String, CodingKey {
         case role
         case kind
+        case images
         case turnId
         case timestamp
     }
@@ -107,6 +114,7 @@ private struct ChatHistoryMessage: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         role = (try? container.decode(ChatHistoryRole.self, forKey: .role)) ?? .assistant
         kind = (try? container.decode(ChatHistoryKind.self, forKey: .kind)) ?? .text("")
+        images = (try? container.decode([ChatHistoryImage].self, forKey: .images)) ?? []
         turnId = try? container.decode(String.self, forKey: .turnId)
         timestamp = (try? container.decode(Date.self, forKey: .timestamp)) ?? Date()
     }
@@ -115,8 +123,39 @@ private struct ChatHistoryMessage: Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(role, forKey: .role)
         try container.encode(kind, forKey: .kind)
+        if !images.isEmpty {
+            try container.encode(images, forKey: .images)
+        }
         try container.encode(turnId, forKey: .turnId)
         try container.encode(timestamp, forKey: .timestamp)
+    }
+}
+
+private struct ChatHistoryImage: Codable {
+    let id: String
+    let data: String
+    let originalWidth: Double
+    let originalHeight: Double
+
+    init(id: String, data: String, originalWidth: Double, originalHeight: Double) {
+        self.id = id
+        self.data = data
+        self.originalWidth = originalWidth
+        self.originalHeight = originalHeight
+    }
+
+    init(_ image: ChatImage) {
+        id = image.id.uuidString
+        data = image.data.base64EncodedString()
+        originalWidth = Double(image.originalSize.width)
+        originalHeight = Double(image.originalSize.height)
+    }
+
+    func asChatImage() -> ChatImage? {
+        guard let decoded = Data(base64Encoded: data) else { return nil }
+        let size = CGSize(width: originalWidth, height: originalHeight)
+        let uuid = UUID(uuidString: id)
+        return ChatImage.fromData(decoded, originalSize: size, id: uuid)
     }
 }
 
