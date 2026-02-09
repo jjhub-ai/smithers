@@ -54,8 +54,8 @@ private struct CommandPalettePanel: View {
 
     var body: some View {
         let theme = workspace.theme
-        let targetWidth = min(600, containerSize.width * 0.65)
-        let targetHeight = min(400, containerSize.height * 0.5)
+        let targetWidth = min(680, max(420, containerSize.width * 0.65))
+        let targetHeight = min(460, max(320, containerSize.height * 0.55))
         let content = VStack(spacing: 0) {
             header
             Divider()
@@ -122,7 +122,7 @@ private struct CommandPalettePanel: View {
         HStack(spacing: 10) {
             if workspace.isCommandMode {
                 Text(">")
-                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .font(.system(size: Typography.base, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.secondary)
             } else {
                 Image(systemName: "magnifyingglass")
@@ -130,7 +130,7 @@ private struct CommandPalettePanel: View {
             }
             TextField("Go to File...", text: $workspace.fileSearchQuery)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13, weight: .regular))
+                .font(.system(size: Typography.base, weight: .regular))
                 .foregroundStyle(.primary)
                 .focused(searchFocused)
                 .accessibilityIdentifier("CommandPaletteSearchField")
@@ -170,7 +170,7 @@ private struct CommandPalettePanel: View {
         if workspace.paletteCommands.isEmpty {
             VStack(spacing: 8) {
                 Image(systemName: "command")
-                    .font(.system(size: 24))
+                    .font(.system(size: Typography.iconM))
                     .foregroundStyle(.tertiary)
                 Text("No matching commands")
                     .foregroundStyle(.secondary)
@@ -191,7 +191,7 @@ private struct CommandPalettePanel: View {
                         Spacer()
                         if let shortcut = command.shortcut {
                             Text(shortcut)
-                                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                .font(.system(size: Typography.s, weight: .regular, design: .monospaced))
                                 .foregroundStyle(.tertiary)
                         }
                     }
@@ -219,12 +219,13 @@ private struct CommandPalettePanel: View {
         let recentFiles = workspace.recentFileEntries
         let recentFolders = workspace.recentFolderEntries
         let fileResults = workspace.fileSearchResults
+        let highlightQuery = workspace.fileSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasResults = !fileResults.isEmpty
         let hasRecents = !recentEdits.isEmpty || !recentFiles.isEmpty || !recentFolders.isEmpty
         if !hasResults && !(showRecents && hasRecents) {
             VStack(spacing: 8) {
                 Image(systemName: "doc.text.magnifyingglass")
-                    .font(.system(size: 24))
+                    .font(.system(size: Typography.iconM))
                     .foregroundStyle(.tertiary)
                 Text("No matching files")
                     .foregroundStyle(.secondary)
@@ -244,7 +245,7 @@ private struct CommandPalettePanel: View {
                                 HStack(spacing: 8) {
                                     Image(systemName: iconForFile(entry.displayPath))
                                         .foregroundStyle(.secondary)
-                                    Text(entry.displayPath)
+                                    highlightedText(entry.displayPath, query: highlightQuery, accent: theme.accentColor)
                                         .lineLimit(1)
                                         .truncationMode(.middle)
                                 }
@@ -267,7 +268,7 @@ private struct CommandPalettePanel: View {
                                 HStack(spacing: 8) {
                                     Image(systemName: iconForFile(entry.displayPath))
                                         .foregroundStyle(.secondary)
-                                    Text(entry.displayPath)
+                                    highlightedText(entry.displayPath, query: highlightQuery, accent: theme.accentColor)
                                         .lineLimit(1)
                                         .truncationMode(.middle)
                                 }
@@ -290,7 +291,7 @@ private struct CommandPalettePanel: View {
                                 HStack(spacing: 8) {
                                     Image(systemName: "folder")
                                         .foregroundStyle(.secondary)
-                                    Text(entry.displayPath)
+                                    highlightedText(entry.displayPath, query: highlightQuery, accent: theme.accentColor)
                                         .lineLimit(1)
                                         .truncationMode(.middle)
                                 }
@@ -313,7 +314,7 @@ private struct CommandPalettePanel: View {
                                 HStack(spacing: 8) {
                                     Image(systemName: iconForFile(entry.displayPath))
                                         .foregroundStyle(.secondary)
-                                    Text(entry.displayPath)
+                                    highlightedText(entry.displayPath, query: highlightQuery, accent: theme.accentColor)
                                         .lineLimit(1)
                                         .truncationMode(.middle)
                                 }
@@ -335,7 +336,7 @@ private struct CommandPalettePanel: View {
                         HStack(spacing: 8) {
                             Image(systemName: iconForFile(entry.displayPath))
                                 .foregroundStyle(.secondary)
-                            Text(entry.displayPath)
+                            highlightedText(entry.displayPath, query: highlightQuery, accent: theme.accentColor)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                         }
@@ -391,12 +392,12 @@ private struct CommandPalettePanel: View {
                     .foregroundStyle(.secondary)
             } else {
                 Text(previewTitle)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: Typography.base, weight: .semibold))
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if !previewPath.isEmpty {
                     Text(previewPath)
-                        .font(.system(size: 10, weight: .regular))
+                        .font(.system(size: Typography.xs, weight: .regular))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -404,7 +405,7 @@ private struct CommandPalettePanel: View {
                 Divider()
                 ScrollView {
                     Text(previewText)
-                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .font(.system(size: Typography.code, weight: .regular, design: .monospaced))
                         .foregroundStyle(.primary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
@@ -415,6 +416,42 @@ private struct CommandPalettePanel: View {
         .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(workspace.theme.panelBackgroundColor)
+    }
+
+    private func highlightedText(_ text: String, query: String, accent: Color) -> Text {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = trimmed.hasPrefix(">")
+            ? String(trimmed.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+            : trimmed
+        guard !cleaned.isEmpty else { return Text(text) }
+        let lowerText = text.lowercased()
+        let lowerQuery = cleaned.lowercased()
+        var matches = Set<Int>()
+        if let range = lowerText.range(of: lowerQuery) {
+            let start = lowerText.distance(from: lowerText.startIndex, to: range.lowerBound)
+            for offset in 0..<lowerQuery.count {
+                matches.insert(start + offset)
+            }
+        } else {
+            var searchIndex = lowerText.startIndex
+            for ch in lowerQuery {
+                guard let found = lowerText[searchIndex...].firstIndex(of: ch) else { break }
+                let idx = lowerText.distance(from: lowerText.startIndex, to: found)
+                matches.insert(idx)
+                searchIndex = lowerText.index(after: found)
+            }
+        }
+        var result = Text("")
+        for (index, char) in text.enumerated() {
+            if matches.contains(index) {
+                result = result + Text(String(char))
+                    .fontWeight(.semibold)
+                    .foregroundColor(accent)
+            } else {
+                result = result + Text(String(char))
+            }
+        }
+        return result
     }
 
     private func updatePreview(for entry: PaletteSelection?) {

@@ -113,10 +113,10 @@ private struct DiffViewerHeader: View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: Typography.l, weight: .semibold))
                     .foregroundStyle(diffTheme.primaryText)
                 Text(summary)
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .font(.system(size: Typography.base, weight: .medium, design: .monospaced))
                     .foregroundStyle(diffTheme.mutedText)
             }
 
@@ -142,20 +142,20 @@ private struct DiffViewerHeader: View {
                 .disabled(hunkState.count == 0)
 
                 Text(hunkState.label)
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .font(.system(size: Typography.s, weight: .medium, design: .monospaced))
                     .foregroundStyle(diffTheme.mutedText)
                     .frame(minWidth: 56, alignment: .center)
             }
 
             Toggle(isOn: $compactMode) {
                 Text("Compact")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: Typography.s, weight: .medium))
             }
             .toggleStyle(.switch)
 
             Toggle(isOn: $wrapLines) {
                 Text("Wrap")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: Typography.s, weight: .medium))
             }
             .toggleStyle(.switch)
 
@@ -212,7 +212,7 @@ private struct DiffFileRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Text(file.status.badge)
-                .font(.system(size: 9, weight: .semibold))
+                .font(.system(size: Typography.xs, weight: .semibold))
                 .frame(width: 16, height: 16)
                 .background(file.status.badgeColor.opacity(0.25))
                 .foregroundStyle(file.status.badgeColor)
@@ -220,12 +220,12 @@ private struct DiffFileRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(file.displayPath)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: Typography.s, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .foregroundStyle(diffTheme.primaryText)
                 Text(file.summaryText)
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .font(.system(size: Typography.xs, weight: .medium, design: .monospaced))
                     .foregroundStyle(diffTheme.mutedText)
             }
             Spacer(minLength: 0)
@@ -313,10 +313,10 @@ private struct DiffFileHeader: View {
     var body: some View {
         HStack(spacing: 12) {
             Text(file.displayPath)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: Typography.base, weight: .medium))
                 .foregroundStyle(diffTheme.primaryText)
             Text(file.summaryText)
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .font(.system(size: Typography.s, weight: .medium, design: .monospaced))
                 .foregroundStyle(diffTheme.mutedText)
             Spacer()
         }
@@ -366,7 +366,7 @@ private struct DiffHunkHeader: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 11, weight: .medium, design: .monospaced))
+            .font(.system(size: Typography.s, weight: .medium, design: .monospaced))
             .foregroundStyle(diffTheme.hunkText)
             .padding(.vertical, 4)
             .padding(.horizontal, 12)
@@ -428,7 +428,7 @@ private struct DiffSideView: View {
     var body: some View {
         HStack(spacing: 8) {
             Text(side?.number.map(String.init) ?? "")
-                .font(.system(size: 10, weight: .regular, design: .monospaced))
+                .font(.system(size: Typography.xs, weight: .regular, design: .monospaced))
                 .foregroundStyle(diffTheme.lineNumber)
                 .frame(width: 40, alignment: .trailing)
 
@@ -454,7 +454,7 @@ private struct DiffSideView: View {
             return Text(attributedText)
         }
         return Text(side?.text ?? "")
-            .font(.system(size: 12, weight: .regular, design: .monospaced))
+            .font(.system(size: Typography.code, weight: .regular, design: .monospaced))
             .foregroundStyle(diffTheme.textColor(for: kind, isLeft: isLeft))
     }
 }
@@ -467,7 +467,7 @@ private struct DiffMetaRowView: View {
     var body: some View {
         HStack(spacing: 8) {
             Text(row.note ?? row.left?.text ?? "")
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .font(.system(size: Typography.s, weight: .medium, design: .monospaced))
                 .foregroundStyle(diffTheme.metaText)
             Spacer()
             if row.kind == .skip, let onReveal {
@@ -547,7 +547,7 @@ private enum DiffHighlighter {
         let leftChars = Array(left)
         let rightChars = Array(right)
         let ops = diffOps(left: leftChars, right: rightChars)
-        let font = Font.system(size: 12, weight: .regular, design: .monospaced)
+        let font = Font.system(size: Typography.code, weight: .regular, design: .monospaced)
 
         var leftAttributed = AttributedString()
         var rightAttributed = AttributedString()

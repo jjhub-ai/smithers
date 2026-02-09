@@ -55,12 +55,12 @@ struct KeyboardShortcutsPanel: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Shortcuts")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: Typography.base, weight: .semibold))
                     .foregroundStyle(theme.mutedForegroundColor.opacity(0.85))
                 ForEach(sections) { section in
                     VStack(alignment: .leading, spacing: 6) {
                         Text(section.title)
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.system(size: Typography.s, weight: .semibold))
                             .foregroundStyle(theme.mutedForegroundColor.opacity(0.8))
                             .scaleEffect(section.id == .tabs && prefixPulse ? 1.05 : 1.0)
                         ForEach(section.entries) { entry in
@@ -79,7 +79,9 @@ struct KeyboardShortcutsPanel: View {
         .accessibilityIdentifier("KeyboardShortcutsPanel")
         .onChange(of: tmuxKeyHandler.prefixActive) { _, active in
             guard active else { return }
-            prefixPulse = true
+            withAnimation(.easeOut(duration: 0.12)) {
+                prefixPulse = true
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
                 withAnimation(.easeOut(duration: 0.2)) {
                     prefixPulse = false
@@ -167,11 +169,11 @@ private struct ShortcutRow: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(entry.keys)
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .font(.system(size: Typography.s, weight: .semibold, design: .monospaced))
                 .foregroundStyle(theme.foregroundColor.opacity(0.75))
                 .frame(minWidth: 48, alignment: .leading)
             Text(entry.label)
-                .font(.system(size: 11, weight: .regular))
+                .font(.system(size: Typography.s, weight: .regular))
                 .foregroundStyle(theme.mutedForegroundColor.opacity(0.7))
                 .lineLimit(1)
                 .truncationMode(.tail)

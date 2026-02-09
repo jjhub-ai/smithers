@@ -35,7 +35,7 @@ struct SearchPanelView: View {
                 .foregroundStyle(.secondary)
             TextField("Search in files", text: $workspace.searchQuery)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13, weight: .regular))
+                .font(.system(size: Typography.base, weight: .regular))
                 .foregroundStyle(.primary)
                 .focused($searchFocused)
                 .accessibilityIdentifier("SearchInFilesField")
@@ -80,7 +80,7 @@ struct SearchPanelView: View {
     private func searchErrorView(_ message: String) -> some View {
         VStack(spacing: 8) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 24))
+                .font(.system(size: Typography.iconM))
                 .foregroundStyle(.secondary)
             Text(message)
                 .multilineTextAlignment(.center)
@@ -92,7 +92,7 @@ struct SearchPanelView: View {
     private var emptyQueryView: some View {
         VStack(spacing: 8) {
             Image(systemName: "doc.text.magnifyingglass")
-                .font(.system(size: 24))
+                .font(.system(size: Typography.iconM))
                 .foregroundStyle(.tertiary)
             Text("Search for text in the workspace")
                 .foregroundStyle(.secondary)
@@ -103,7 +103,7 @@ struct SearchPanelView: View {
     private var emptyResultsView: some View {
         VStack(spacing: 8) {
             Image(systemName: "doc.text.magnifyingglass")
-                .font(.system(size: 24))
+                .font(.system(size: Typography.iconM))
                 .foregroundStyle(.tertiary)
             Text("No matches found")
                 .foregroundStyle(.secondary)
@@ -160,11 +160,11 @@ private struct SearchMatchRow: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text("\(match.lineNumber)")
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .font(.system(size: Typography.s, weight: .medium, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .frame(width: 36, alignment: .trailing)
             Text(match.lineText.trimmingCharacters(in: .whitespaces))
-                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .font(.system(size: Typography.code, weight: .regular, design: .monospaced))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
                 .truncationMode(.tail)
@@ -182,12 +182,12 @@ private struct SearchPreviewView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Text("Preview")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: Typography.s, weight: .semibold))
                     .foregroundStyle(theme.mutedForegroundColor)
                 Spacer()
                 if let preview {
                     Text(preview.displayPath)
-                        .font(.system(size: 11))
+                        .font(.system(size: Typography.s))
                         .foregroundStyle(theme.mutedForegroundColor)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -201,11 +201,11 @@ private struct SearchPreviewView: View {
                         ForEach(preview.lines) { line in
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
                                 Text("\(line.number)")
-                                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                    .font(.system(size: Typography.s, weight: .medium, design: .monospaced))
                                     .foregroundStyle(theme.mutedForegroundColor)
                                     .frame(width: 36, alignment: .trailing)
                                 Text(line.text)
-                                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                                    .font(.system(size: Typography.code, weight: .regular, design: .monospaced))
                                     .foregroundStyle(theme.foregroundColor)
                                     .lineLimit(1)
                                     .truncationMode(.tail)
@@ -219,12 +219,12 @@ private struct SearchPreviewView: View {
                 }
                 if preview.isTruncated {
                     Text("Preview truncated for large files")
-                        .font(.system(size: 10))
+                        .font(.system(size: Typography.xs))
                         .foregroundStyle(theme.mutedForegroundColor)
                 }
             } else {
                 Text("Select a match to preview")
-                    .font(.system(size: 12))
+                    .font(.system(size: Typography.s))
                     .foregroundStyle(theme.mutedForegroundColor)
                     .frame(maxWidth: .infinity, alignment: .center)
             }
@@ -232,5 +232,34 @@ private struct SearchPreviewView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(theme.secondaryBackgroundColor)
+    }
+}
+
+struct SearchPanelOverlay: View {
+    @ObservedObject var workspace: WorkspaceState
+
+    var body: some View {
+        GeometryReader { proxy in
+            let width = min(560, proxy.size.width * 0.55)
+            let height = min(520, proxy.size.height * 0.65)
+            ZStack(alignment: .topLeading) {
+                Color.black.opacity(0.2)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        workspace.hideSearchPanel()
+                    }
+                SearchPanelView(workspace: workspace)
+                    .frame(width: width, height: height)
+                    .background(workspace.theme.panelBackgroundColor)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(workspace.theme.panelBorderColor)
+                    )
+                    .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 8)
+                    .padding(.leading, 20)
+                    .padding(.top, 60)
+            }
+        }
     }
 }
