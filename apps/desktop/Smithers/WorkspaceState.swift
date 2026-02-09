@@ -1071,6 +1071,34 @@ class WorkspaceState: ObservableObject {
         requestCloseFile(selectedFileURL)
     }
 
+    func closeOtherTabs() {
+        guard let selectedFileURL else { return }
+        let tabs = openFiles.filter { $0 != selectedFileURL }
+        for url in tabs {
+            requestCloseFile(url)
+        }
+    }
+
+    func closeAllTabs() {
+        let tabs = openFiles
+        for url in tabs {
+            requestCloseFile(url)
+        }
+    }
+
+    func revealSelectedFileInFinder() {
+        guard let selectedFileURL, isRegularFileURL(selectedFileURL) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([selectedFileURL])
+    }
+
+    func copySelectedFilePath() {
+        guard let selectedFileURL, isRegularFileURL(selectedFileURL) else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(selectedFileURL.path, forType: .string)
+        showToast("Path copied")
+    }
+
     func selectNextTab() {
         guard !openFiles.isEmpty else { return }
         if let selectedFileURL, let index = openFiles.firstIndex(of: selectedFileURL) {
@@ -1535,6 +1563,38 @@ class WorkspaceState: ObservableObject {
                 icon: "folder",
                 action: { [weak self] in
                     self?.openFolderPanel()
+                }
+            ),
+            PaletteCommand(
+                id: "close-others",
+                title: "Close Other Tabs",
+                icon: "xmark",
+                action: { [weak self] in
+                    self?.closeOtherTabs()
+                }
+            ),
+            PaletteCommand(
+                id: "close-all",
+                title: "Close All Tabs",
+                icon: "xmark.circle",
+                action: { [weak self] in
+                    self?.closeAllTabs()
+                }
+            ),
+            PaletteCommand(
+                id: "reveal-in-finder",
+                title: "Reveal in Finder",
+                icon: "folder",
+                action: { [weak self] in
+                    self?.revealSelectedFileInFinder()
+                }
+            ),
+            PaletteCommand(
+                id: "copy-path",
+                title: "Copy File Path",
+                icon: "doc.on.doc",
+                action: { [weak self] in
+                    self?.copySelectedFilePath()
                 }
             ),
             PaletteCommand(
