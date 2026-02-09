@@ -20,6 +20,7 @@ struct PaletteCommand: Identifiable {
     let id: String
     let title: String
     let icon: String
+    let shortcut: String?
     let action: () -> Void
 }
 
@@ -48,6 +49,21 @@ struct SearchResult: Identifiable, Hashable, Sendable {
     let url: URL
     let displayPath: String
     var matches: [SearchMatch]
+}
+
+struct SearchPreviewLine: Identifiable, Hashable, Sendable {
+    var id: Int { number }
+    let number: Int
+    let text: String
+    let isMatch: Bool
+}
+
+struct SearchPreview: Hashable, Sendable {
+    let url: URL
+    let displayPath: String
+    let matchLine: Int
+    let lines: [SearchPreviewLine]
+    let isTruncated: Bool
 }
 
 struct EditorSelection: Hashable, Sendable {
@@ -197,6 +213,54 @@ class WorkspaceState: ObservableObject {
             showToast("Auto Save Interval: \(Self.formatInterval(autoSaveInterval))")
         }
     }
+    @Published var editorFontName: String = {
+        if let value = UserDefaults.standard.string(forKey: WorkspaceState.editorFontNameKey),
+           !value.isEmpty {
+            return value
+        }
+        return WorkspaceState.defaultEditorFontName
+    }() {
+        didSet {
+            let normalized = Self.normalizeEditorFontName(editorFontName, size: editorFontSize)
+            if normalized != editorFontName {
+                editorFontName = normalized
+                return
+            }
+            UserDefaults.standard.set(editorFontName, forKey: Self.editorFontNameKey)
+        }
+    }
+    @Published var editorFontSize: Double = {
+        let value = UserDefaults.standard.double(forKey: WorkspaceState.editorFontSizeKey)
+        return value > 0 ? value : WorkspaceState.defaultEditorFontSize
+    }() {
+        didSet {
+            let clamped = Self.clampEditorFontSize(editorFontSize)
+            if clamped != editorFontSize {
+                editorFontSize = clamped
+                return
+            }
+            UserDefaults.standard.set(editorFontSize, forKey: Self.editorFontSizeKey)
+        }
+    }
+    @Published var preferredNvimPath: String = {
+        UserDefaults.standard.string(forKey: WorkspaceState.nvimPathKey) ?? ""
+    }() {
+        didSet {
+            UserDefaults.standard.set(preferredNvimPath, forKey: Self.nvimPathKey)
+        }
+    }
+    @Published var optionAsMeta: OptionAsMeta = {
+        if let raw = UserDefaults.standard.string(forKey: WorkspaceState.optionAsMetaKey),
+           let value = OptionAsMeta(rawValue: raw) {
+            return value
+        }
+        return .both
+    }() {
+        didSet {
+            UserDefaults.standard.set(optionAsMeta.rawValue, forKey: Self.optionAsMetaKey)
+            updateTerminalOptionAsMeta()
+        }
+    }
     @Published var fileSearchQuery: String = "" {
         didSet {
             scheduleSearch()
@@ -210,6 +274,7 @@ class WorkspaceState: ObservableObject {
     @Published private(set) var fileSearchResults: [FileIndexEntry] = []
     @Published private(set) var paletteCommands: [PaletteCommand] = []
     @Published private(set) var searchResults: [SearchResult] = []
+    @Published var searchPreview: SearchPreview?
     @Published var isSearchInProgress: Bool = false
     @Published var searchErrorMessage: String?
     @Published private(set) var recentFileEntries: [FileIndexEntry] = []
@@ -223,12 +288,15 @@ class WorkspaceState: ObservableObject {
     private var searchTask: Task<Void, Never>?
     private var searchInFilesTask: Task<Void, Never>?
     private var searchInFilesToken: Int = 0
+    private var searchPreviewTask: Task<Void, Never>?
+    private var searchPreviewToken: Int = 0
     private var openFileContents: [URL: String] = [:]
     private var savedFileContents: [URL: String] = [:]
     private var suppressEditorTextUpdate = false
     private var suppressSelectionSync = false
     private var closeGuardsBypassed = false
     private var windowHiddenForNvim = false
+    private var windowHiddenForLaunch = false
     private var suppressSessionPersistence = false
     private var recentFileURLs: [URL] = []
     private var recentFolderURLs: [URL] = []
@@ -255,16 +323,27 @@ class WorkspaceState: ObservableObject {
     private static let maxRecentItems = 10
     private static let maxRecentEdits = 10
     private static let maxSearchMatches = 1000
+    private static let maxPreviewBytes = 200_000
+    private static let previewContextLines = 2
     private static let maxSessionEntries = 20
     private static let autoSaveEnabledKey = "smithers.autoSaveEnabled"
     private static let autoSaveIntervalKey = "smithers.autoSaveInterval"
     private static let defaultAutoSaveInterval: TimeInterval = 5
+    private static let editorFontNameKey = "smithers.editorFontName"
+    private static let editorFontSizeKey = "smithers.editorFontSize"
+    private static let nvimPathKey = "smithers.nvimPath"
+    private static let optionAsMetaKey = "smithers.optionAsMeta"
+    private static let defaultEditorFontSize: Double = 13
+    private static let defaultEditorFontName: String = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular).fontName
+    private static let minEditorFontSize: Double = 9
+    private static let maxEditorFontSize: Double = 32
     private var terminalCounter = 0
     private let ghosttyApp = GhosttyApp.shared
     private var nvimController: NvimController?
     private var nvimStartTask: Task<NvimController, Error>?
     private var codexService: CodexService?
     private var codexEventsTask: Task<Void, Never>?
+    private var activeThreadId: String?
     nonisolated private static let maxSearchResults = 200
     nonisolated private static let skipDirectoryNames: Set<String> = [
         ".git",
@@ -281,6 +360,109 @@ class WorkspaceState: ObservableObject {
         recentFileURLs = Self.loadRecentURLs(key: Self.recentFilesKey)
         recentFolderURLs = Self.loadRecentURLs(key: Self.recentFoldersKey)
         refreshRecentEntries()
+    }
+
+    var editorFont: NSFont {
+        Self.resolveEditorFont(name: editorFontName, size: editorFontSize)
+    }
+
+    var editorFontDisplayName: String {
+        editorFont.displayName ?? editorFontName
+    }
+
+    var availableEditorFonts: [String] {
+        Self.monospacedFontNames
+    }
+
+    var nvimPathStatusMessage: String {
+        if preferredNvimPath.isEmpty {
+            return "Using PATH lookup"
+        }
+        let expanded = expandedNvimPath
+        if FileManager.default.isExecutableFile(atPath: expanded) {
+            return "Using \(expanded)"
+        }
+        return "Neovim path is not executable"
+    }
+
+    var nvimPathStatusIsError: Bool {
+        !preferredNvimPath.isEmpty && !FileManager.default.isExecutableFile(atPath: expandedNvimPath)
+    }
+
+    func chooseNvimPath() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        if panel.runModal() == .OK, let url = panel.url {
+            preferredNvimPath = url.path
+        }
+    }
+
+    func clearNvimPath() {
+        preferredNvimPath = ""
+    }
+
+    private func updateTerminalOptionAsMeta() {
+        for view in terminalViews.values {
+            view.optionAsMeta = optionAsMeta
+        }
+        nvimTerminalView?.optionAsMeta = optionAsMeta
+    }
+
+    private func resolveNvimPath() throws -> String {
+        let fm = FileManager.default
+        if !preferredNvimPath.isEmpty {
+            let expanded = expandedNvimPath
+            if fm.isExecutableFile(atPath: expanded) {
+                return expanded
+            }
+            throw NvimController.ControllerError.invalidNvimPath(expanded)
+        }
+        if let path = NvimController.locateNvimPath() {
+            return path
+        }
+        throw NvimController.ControllerError.missingNvim
+    }
+
+    private var expandedNvimPath: String {
+        (preferredNvimPath as NSString).expandingTildeInPath
+    }
+
+    private static let monospacedFontNames: [String] = {
+        let size = CGFloat(defaultEditorFontSize)
+        let names = NSFontManager.shared.availableFonts
+        var results: [String] = []
+        results.reserveCapacity(names.count / 4)
+        for name in names {
+            guard let font = NSFont(name: name, size: size) else { continue }
+            guard font.isFixedPitch else { continue }
+            results.append(name)
+        }
+        if !results.contains(defaultEditorFontName) {
+            results.append(defaultEditorFontName)
+        }
+        return Array(Set(results)).sorted()
+    }()
+
+    private static func resolveEditorFont(name: String, size: Double) -> NSFont {
+        let clamped = clampEditorFontSize(size)
+        if let font = NSFont(name: name, size: CGFloat(clamped)) {
+            return font
+        }
+        return NSFont.monospacedSystemFont(ofSize: CGFloat(clamped), weight: .regular)
+    }
+
+    private static func normalizeEditorFontName(_ name: String, size: Double) -> String {
+        if NSFont(name: name, size: CGFloat(size)) != nil {
+            return name
+        }
+        return defaultEditorFontName
+    }
+
+    private static func clampEditorFontSize(_ size: Double) -> Double {
+        min(max(size, minEditorFontSize), maxEditorFontSize)
     }
 
     func persistChatHistory() {
@@ -319,6 +501,112 @@ class WorkspaceState: ObservableObject {
         ChatHistoryStore.saveHistory(chatMessages, for: rootDirectory)
     }
 
+    private func updateActiveThreadId(_ threadId: String?) {
+        activeThreadId = threadId
+        guard let rootDirectory else { return }
+        if let threadId {
+            ThreadHistoryStore.saveThreadId(threadId, for: rootDirectory)
+        } else {
+            ThreadHistoryStore.removeThreadId(for: rootDirectory)
+        }
+    }
+
+    private func applyThreadHistory(_ thread: ThreadSnapshot) {
+        let messages = Self.chatMessages(from: thread)
+        suppressChatHistoryPersistence = true
+        chatMessages = messages.isEmpty ? Self.initialChatMessages() : messages
+        suppressChatHistoryPersistence = false
+        isTurnInProgress = false
+        rebuildDiffSnapshots(from: chatMessages)
+    }
+
+    private static func chatMessages(from thread: ThreadSnapshot) -> [ChatMessage] {
+        var messages: [ChatMessage] = []
+        for turn in thread.turns {
+            for item in turn.items {
+                switch item {
+                case .userMessage(let userItem):
+                    let text = userText(from: userItem)
+                    if !text.isEmpty {
+                        messages.append(ChatMessage(role: .user, kind: .text(text)))
+                    }
+                case .agentMessage(let agentItem):
+                    let text = agentItem.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !text.isEmpty {
+                        messages.append(ChatMessage(role: .assistant, kind: .text(text)))
+                    }
+                case .plan(let planItem):
+                    let text = planItem.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !text.isEmpty {
+                        messages.append(ChatMessage(role: .assistant, kind: .status("Plan:\n\(text)")))
+                    }
+                case .commandExecution(let commandItem):
+                    let output = commandItem.aggregatedOutput ?? ""
+                    let status = commandStatus(from: commandItem)
+                    let info = CommandExecutionInfo(
+                        itemId: commandItem.id,
+                        command: commandItem.command,
+                        cwd: commandItem.cwd,
+                        output: output,
+                        exitCode: commandItem.exitCode,
+                        status: status
+                    )
+                    messages.append(ChatMessage(role: .assistant, kind: .command(info)))
+                case .fileChange(let fileItem):
+                    let preview = DiffPreview.fromFileChange(turnId: turn.id, item: fileItem)
+                    messages.append(ChatMessage(role: .assistant, kind: .diffPreview(preview)))
+                case .reasoning:
+                    continue
+                case .other:
+                    continue
+                }
+            }
+        }
+        return messages
+    }
+
+    private static func userText(from item: UserMessageItem) -> String {
+        let parts = item.content.compactMap { payload -> String? in
+            if case .text(let text) = payload {
+                return text
+            }
+            return nil
+        }
+        return parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func commandStatus(from item: CommandExecutionItem) -> CommandExecutionStatus {
+        if let status = item.status {
+            switch status {
+            case .inProgress:
+                return .running
+            case .completed, .failed, .declined:
+                return .completed
+            }
+        }
+        if item.exitCode != nil {
+            return .completed
+        }
+        return .running
+    }
+
+    private func rebuildDiffSnapshots(from messages: [ChatMessage]) {
+        turnDiffs = [:]
+        turnDiffOrder = []
+        streamingTurnDiffs = [:]
+        for message in messages {
+            guard case .diffPreview(let preview) = message.kind else { continue }
+            guard let turnId = preview.turnId else { continue }
+            let trimmed = preview.diff.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if turnDiffs[turnId] == nil {
+                turnDiffOrder.append(turnId)
+            }
+            turnDiffs[turnId] = preview.diff
+        }
+        updateSessionDiffSnapshot()
+    }
+
     func openDirectory(_ url: URL, restoreSession: Bool = false) {
         persistSessionStateIfNeeded()
         persistChatHistoryNow()
@@ -342,6 +630,7 @@ class WorkspaceState: ObservableObject {
         fileSearchResults = []
         searchQuery = ""
         searchResults = []
+        clearSearchPreview()
         searchErrorMessage = nil
         isSearchPresented = false
         recentEditTimestamps = [:]
@@ -353,7 +642,15 @@ class WorkspaceState: ObservableObject {
         turnDiffOrder = []
         streamingTurnDiffs = [:]
         diffTabs = [:]
-        loadChatHistory(for: url)
+        let storedThreadId = ThreadHistoryStore.loadThreadId(for: url)
+        activeThreadId = storedThreadId
+        if storedThreadId == nil {
+            loadChatHistory(for: url)
+        } else {
+            suppressChatHistoryPersistence = true
+            chatMessages = Self.initialChatMessages()
+            suppressChatHistoryPersistence = false
+        }
         if restoreSession {
             if !restoreSessionStateIfAvailable() {
                 openChat()
@@ -362,7 +659,7 @@ class WorkspaceState: ObservableObject {
             openChat()
         }
         rebuildFileIndex()
-        startCodexService(cwd: url.path)
+        startCodexService(cwd: url.path, resumeThreadId: storedThreadId)
         suppressSessionPersistence = false
         persistSessionStateIfNeeded()
         if shouldRestartNvim {
@@ -1071,14 +1368,13 @@ class WorkspaceState: ObservableObject {
                 throw NvimModeError.missingWorkspace
             }
 
-            guard let nvimPath = NvimController.locateNvimPath() else {
-                throw NvimController.ControllerError.missingNvim
-            }
+            let nvimPath = try self.resolveNvimPath()
             let controller = NvimController(
                 workspace: self,
                 ghosttyApp: self.ghosttyApp,
                 workingDirectory: rootDirectory.path,
-                nvimPath: nvimPath
+                nvimPath: nvimPath,
+                optionAsMeta: optionAsMeta
             )
             self.nvimController = controller
             self.nvimTerminalView = controller.terminalView
@@ -1272,6 +1568,38 @@ class WorkspaceState: ObservableObject {
 
     func hideSearchPanel() {
         isSearchPresented = false
+        clearSearchPreview()
+    }
+
+    func updateSearchPreview(result: SearchResult, match: SearchMatch) {
+        searchPreviewTask?.cancel()
+        searchPreviewToken += 1
+        let token = searchPreviewToken
+        let targetURL = result.url
+        let displayPath = result.displayPath
+        let lineNumber = match.lineNumber
+        let fallbackLine = match.lineText
+        searchPreviewTask = Task { [weak self] in
+            let preview = await Task.detached(priority: .userInitiated) {
+                Self.buildSearchPreview(
+                    url: targetURL,
+                    displayPath: displayPath,
+                    lineNumber: lineNumber,
+                    fallbackLine: fallbackLine
+                )
+            }.value
+            await MainActor.run {
+                guard let self, token == self.searchPreviewToken else { return }
+                self.searchPreview = preview
+            }
+        }
+    }
+
+    func clearSearchPreview() {
+        searchPreviewTask?.cancel()
+        searchPreviewTask = nil
+        searchPreviewToken += 1
+        searchPreview = nil
     }
 
     func expandFolder(_ item: FileItem) {
@@ -1390,7 +1718,7 @@ class WorkspaceState: ObservableObject {
                 let url = URL(string: "\(Self.terminalScheme)://\(terminalCounter)")!
                 terminalCounter += 1
                 let workingDirectory = item.workingDirectory ?? rootDirectory.path
-                let view = GhosttyTerminalView(app: ghosttyApp, workingDirectory: workingDirectory)
+                let view = GhosttyTerminalView(app: ghosttyApp, workingDirectory: workingDirectory, optionAsMeta: optionAsMeta)
                 view.onClose = { [weak self] in
                     self?.closeFile(url)
                 }
@@ -1648,12 +1976,23 @@ class WorkspaceState: ObservableObject {
 
     private var windowRecoveryTask: Task<Void, Never>?
 
+    func hideWindowForLaunch() {
+        guard !windowHiddenForLaunch else { return }
+        windowHiddenForLaunch = true
+        updateWindowVisibility()
+    }
+
+    func showWindowAfterLaunch() {
+        guard windowHiddenForLaunch else { return }
+        windowHiddenForLaunch = false
+        updateWindowVisibility()
+    }
+
     private func maybeHideWindowForNvimStart() {
         guard !windowHiddenForNvim else { return }
         guard nvimController == nil && nvimStartTask == nil else { return }
-        guard let window = activeWindow() else { return }
         windowHiddenForNvim = true
-        window.orderOut(nil)
+        updateWindowVisibility()
         windowRecoveryTask?.cancel()
         windowRecoveryTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 30_000_000_000)
@@ -1668,12 +2007,20 @@ class WorkspaceState: ObservableObject {
         windowHiddenForNvim = false
         windowRecoveryTask?.cancel()
         windowRecoveryTask = nil
-        guard let window = activeWindow() else { return }
-        window.makeKeyAndOrderFront(nil)
+        updateWindowVisibility()
     }
 
     private func activeWindow() -> NSWindow? {
         NSApp.windows.first(where: { $0.isKeyWindow || $0.isMainWindow }) ?? NSApp.windows.first
+    }
+
+    private func updateWindowVisibility() {
+        guard let window = activeWindow() else { return }
+        if windowHiddenForNvim || windowHiddenForLaunch {
+            window.orderOut(nil)
+        } else {
+            window.makeKeyAndOrderFront(nil)
+        }
     }
 
     private func scheduleAutoSaveIfNeeded(for url: URL) {
@@ -1769,6 +2116,44 @@ class WorkspaceState: ObservableObject {
         }
     }
 
+    func startNewChat() {
+        guard !isTurnInProgress else {
+            showToast("Wait for the current turn to finish.")
+            return
+        }
+        guard let rootDirectory else { return }
+        guard let codexService else {
+            appendErrorMessage("Codex service is not running.")
+            return
+        }
+        let root = rootDirectory
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let threadId = try await codexService.startNewThread(cwd: root.path)
+                self.resetChatForNewThread()
+                self.openChat()
+                self.updateActiveThreadId(threadId)
+            } catch {
+                self.appendErrorMessage("Failed to start new chat: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func resetChatForNewThread() {
+        suppressChatHistoryPersistence = true
+        chatMessages = Self.initialChatMessages()
+        suppressChatHistoryPersistence = false
+        chatDraft = ""
+        isTurnInProgress = false
+        activeDiffPreview = nil
+        activeSessionDiff = nil
+        sessionDiffSnapshot = nil
+        turnDiffs = [:]
+        turnDiffOrder = []
+        streamingTurnDiffs = [:]
+    }
+
     func interruptTurn() {
         guard let codexService else { return }
         Task { [weak self] in
@@ -1785,7 +2170,7 @@ class WorkspaceState: ObservableObject {
         let url = URL(string: "\(Self.terminalScheme)://\(terminalCounter)")!
         terminalCounter += 1
         let workingDirectory = rootDirectory?.path ?? FileManager.default.homeDirectoryForCurrentUser.path
-        let view = GhosttyTerminalView(app: ghosttyApp, workingDirectory: workingDirectory)
+        let view = GhosttyTerminalView(app: ghosttyApp, workingDirectory: workingDirectory, optionAsMeta: optionAsMeta)
         view.onClose = { [weak self] in
             self?.closeFile(url)
         }
@@ -1802,6 +2187,7 @@ class WorkspaceState: ObservableObject {
                 id: "toggle-nvim",
                 title: isNvimModeEnabled ? "Disable Neovim Mode" : "Enable Neovim Mode",
                 icon: "terminal",
+                shortcut: "⇧⌘N",
                 action: { [weak self] in
                     self?.toggleNvimMode()
                 }
@@ -1810,6 +2196,7 @@ class WorkspaceState: ObservableObject {
                 id: "save",
                 title: "Save",
                 icon: "square.and.arrow.down",
+                shortcut: "⌘S",
                 action: { [weak self] in
                     self?.saveCurrentFile()
                 }
@@ -1818,6 +2205,7 @@ class WorkspaceState: ObservableObject {
                 id: "save-all",
                 title: "Save All",
                 icon: "square.and.arrow.down",
+                shortcut: "⇧⌘S",
                 action: { [weak self] in
                     self?.saveAllFiles()
                 }
@@ -1826,6 +2214,7 @@ class WorkspaceState: ObservableObject {
                 id: "toggle-auto-save",
                 title: isAutoSaveEnabled ? "Auto Save: On" : "Auto Save: Off",
                 icon: "clock.arrow.circlepath",
+                shortcut: nil,
                 action: { [weak self] in
                     self?.toggleAutoSave()
                 }
@@ -1834,6 +2223,7 @@ class WorkspaceState: ObservableObject {
                 id: "auto-save-interval-5",
                 title: "Auto Save Interval: 5s",
                 icon: "timer",
+                shortcut: nil,
                 action: { [weak self] in
                     self?.setAutoSaveInterval(5)
                 }
@@ -1842,6 +2232,7 @@ class WorkspaceState: ObservableObject {
                 id: "auto-save-interval-10",
                 title: "Auto Save Interval: 10s",
                 icon: "timer",
+                shortcut: nil,
                 action: { [weak self] in
                     self?.setAutoSaveInterval(10)
                 }
@@ -1850,6 +2241,7 @@ class WorkspaceState: ObservableObject {
                 id: "auto-save-interval-30",
                 title: "Auto Save Interval: 30s",
                 icon: "timer",
+                shortcut: nil,
                 action: { [weak self] in
                     self?.setAutoSaveInterval(30)
                 }
@@ -1858,6 +2250,7 @@ class WorkspaceState: ObservableObject {
                 id: "new-terminal",
                 title: "New Terminal",
                 icon: "terminal",
+                shortcut: "⌘`",
                 action: { [weak self] in
                     self?.openTerminal()
                 }
@@ -1866,6 +2259,7 @@ class WorkspaceState: ObservableObject {
                 id: "open-folder",
                 title: "Open Folder...",
                 icon: "folder",
+                shortcut: "⇧⌘O",
                 action: { [weak self] in
                     self?.openFolderPanel()
                 }
@@ -1874,6 +2268,7 @@ class WorkspaceState: ObservableObject {
                 id: "search-in-files",
                 title: "Search in Files...",
                 icon: "magnifyingglass",
+                shortcut: "⇧⌘F",
                 action: { [weak self] in
                     self?.showSearchPanel()
                 }
@@ -1882,6 +2277,7 @@ class WorkspaceState: ObservableObject {
                 id: "close-others",
                 title: "Close Other Tabs",
                 icon: "xmark",
+                shortcut: nil,
                 action: { [weak self] in
                     self?.closeOtherTabs()
                 }
@@ -1890,6 +2286,7 @@ class WorkspaceState: ObservableObject {
                 id: "close-all",
                 title: "Close All Tabs",
                 icon: "xmark.circle",
+                shortcut: nil,
                 action: { [weak self] in
                     self?.closeAllTabs()
                 }
@@ -1898,6 +2295,7 @@ class WorkspaceState: ObservableObject {
                 id: "reveal-in-finder",
                 title: "Reveal in Finder",
                 icon: "folder",
+                shortcut: nil,
                 action: { [weak self] in
                     self?.revealSelectedFileInFinder()
                 }
@@ -1906,14 +2304,25 @@ class WorkspaceState: ObservableObject {
                 id: "copy-path",
                 title: "Copy File Path",
                 icon: "doc.on.doc",
+                shortcut: nil,
                 action: { [weak self] in
                     self?.copySelectedFilePath()
+                }
+            ),
+            PaletteCommand(
+                id: "new-chat",
+                title: "New Chat",
+                icon: "plus.bubble",
+                shortcut: nil,
+                action: { [weak self] in
+                    self?.startNewChat()
                 }
             ),
             PaletteCommand(
                 id: "open-chat",
                 title: "Open Chat History",
                 icon: "bubble.left.and.bubble.right",
+                shortcut: nil,
                 action: { [weak self] in
                     self?.openChat()
                 }
@@ -2035,17 +2444,20 @@ class WorkspaceState: ObservableObject {
         let trimmedQuery = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let rootDirectory else {
             searchResults = []
+            clearSearchPreview()
             isSearchInProgress = false
             return
         }
         if trimmedQuery.isEmpty {
             searchResults = []
             searchErrorMessage = nil
+            clearSearchPreview()
             isSearchInProgress = false
             return
         }
         isSearchInProgress = true
         searchErrorMessage = nil
+        clearSearchPreview()
         searchInFilesToken += 1
         let token = searchInFilesToken
         let rootPath = rootDirectory.path
@@ -2193,6 +2605,63 @@ class WorkspaceState: ObservableObject {
         return .success(results)
     }
 
+    nonisolated private static func buildSearchPreview(
+        url: URL,
+        displayPath: String,
+        lineNumber: Int,
+        fallbackLine: String
+    ) -> SearchPreview {
+        let fm = FileManager.default
+        let size = (try? fm.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+        if size > maxPreviewBytes {
+            let line = SearchPreviewLine(number: lineNumber, text: fallbackLine, isMatch: true)
+            return SearchPreview(
+                url: url,
+                displayPath: displayPath,
+                matchLine: lineNumber,
+                lines: [line],
+                isTruncated: true
+            )
+        }
+
+        guard let contents = try? String(contentsOf: url) else {
+            let line = SearchPreviewLine(number: lineNumber, text: fallbackLine, isMatch: true)
+            return SearchPreview(
+                url: url,
+                displayPath: displayPath,
+                matchLine: lineNumber,
+                lines: [line],
+                isTruncated: false
+            )
+        }
+
+        let startLine = max(1, lineNumber - previewContextLines)
+        let endLine = lineNumber + previewContextLines
+        var lines: [SearchPreviewLine] = []
+        var current = 1
+        contents.enumerateLines { line, stop in
+            if current >= startLine && current <= endLine {
+                lines.append(SearchPreviewLine(number: current, text: line, isMatch: current == lineNumber))
+            }
+            if current >= endLine {
+                stop = true
+            }
+            current += 1
+        }
+
+        if lines.isEmpty {
+            lines.append(SearchPreviewLine(number: lineNumber, text: fallbackLine, isMatch: true))
+        }
+
+        return SearchPreview(
+            url: url,
+            displayPath: displayPath,
+            matchLine: lineNumber,
+            lines: lines,
+            isTruncated: false
+        )
+    }
+
     nonisolated private static func relativePath(for url: URL, rootPath: String) -> String {
         let fullPath = url.path
         let prefix = rootPath.hasSuffix("/") ? rootPath : "\(rootPath)/"
@@ -2202,7 +2671,7 @@ class WorkspaceState: ObservableObject {
         return url.lastPathComponent
     }
 
-    private func startCodexService(cwd: String) {
+    private func startCodexService(cwd: String, resumeThreadId: String?) {
         stopCodexService()
         let service = CodexService()
         codexService = service
@@ -2214,16 +2683,28 @@ class WorkspaceState: ObservableObject {
             }
         }
 
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                try await service.start(cwd: cwd)
+                let startResult = try await service.start(cwd: cwd, resumeThreadId: resumeThreadId)
+                self.handleThreadStartResult(startResult, resumeRequested: resumeThreadId != nil)
                 if let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"], !apiKey.isEmpty {
                     try await service.login(apiKey: apiKey)
                 }
             } catch {
                 self.appendErrorMessage("Codex failed to start: \(error.localizedDescription)")
                 self.stopCodexService()
+            }
+        }
+    }
+
+    private func handleThreadStartResult(_ result: ThreadStartResult, resumeRequested: Bool) {
+        updateActiveThreadId(result.threadId)
+        if let thread = result.restoredThread {
+            applyThreadHistory(thread)
+        } else if resumeRequested && result.resumed == false {
+            if chatMessages.isEmpty {
+                chatMessages = Self.initialChatMessages()
             }
         }
     }
