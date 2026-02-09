@@ -5,6 +5,9 @@ import Foundation
 final class WindowCloseDelegate: NSObject, NSWindowDelegate {
     weak var workspace: WorkspaceState?
     private var bypassNextClose = false
+    private var isConfirmingClose = false
+    private var frameSaveWorkItem: DispatchWorkItem?
+    private let frameSaveDelay: TimeInterval = 0.25
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard let workspace else { return true }
@@ -16,7 +19,10 @@ final class WindowCloseDelegate: NSObject, NSWindowDelegate {
             bypassNextClose = false
             return true
         }
+        guard !isConfirmingClose else { return false }
+        isConfirmingClose = true
         Task { @MainActor in
+            defer { isConfirmingClose = false }
             let shouldClose = await workspace.confirmCloseForWindow()
             if shouldClose {
                 workspace.persistSessionState()
@@ -29,12 +35,22 @@ final class WindowCloseDelegate: NSObject, NSWindowDelegate {
 
     func windowDidMove(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
-        persistWindowFrame(window)
+        scheduleFramePersist(window)
     }
 
     func windowDidResize(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
-        persistWindowFrame(window)
+        scheduleFramePersist(window)
+    }
+
+    private func scheduleFramePersist(_ window: NSWindow) {
+        frameSaveWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self, weak window] in
+            guard let self, let window else { return }
+            self.persistWindowFrame(window)
+        }
+        frameSaveWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + frameSaveDelay, execute: workItem)
     }
 
     private func persistWindowFrame(_ window: NSWindow) {
@@ -84,6 +100,7 @@ final class SmithersAppDelegate: NSObject, NSApplicationDelegate {
                 workspace.persistSessionState()
                 workspace.setCloseGuardsBypassed(true)
                 ipcServer.notifyAllWaiters(message: "Application terminating")
+                ipcServer.stop()
             }
             self.terminationInProgress = false
             NSApp.reply(toApplicationShouldTerminate: shouldTerminate)
