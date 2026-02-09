@@ -18,7 +18,11 @@ class JJService: ObservableObject {
         let jjDir = workingDirectory.appendingPathComponent(".jj")
         let gitDir = workingDirectory.appendingPathComponent(".git")
         let fm = FileManager.default
-        let hasJJ = fm.fileExists(atPath: jjDir.path)
+        var isDir: ObjCBool = false
+        let jjExists = fm.fileExists(atPath: jjDir.path, isDirectory: &isDir)
+        let hasJJDir = jjExists && isDir.boolValue
+        let hasJJFile = jjExists && !isDir.boolValue
+        let hasJJ = hasJJDir || hasJJFile
         let hasGit = fm.fileExists(atPath: gitDir.path)
 
         if hasJJ && hasGit {
@@ -212,15 +216,16 @@ class JJService: ObservableObject {
             args += ["-r", revision]
         }
         _ = try await runJJ(args)
+        let wsJJ = JJService(workingDirectory: URL(fileURLWithPath: path))
+        _ = wsJJ.detectVCS()
         if let description {
-            let wsJJ = JJService(workingDirectory: URL(fileURLWithPath: path))
             try await wsJJ.describe(message: description)
         }
-        let logOutput = try await runJJ([
+        let logOutput = try await wsJJ.runJJ([
             "log", "--no-graph", "-r", "@",
             "-T", Self.changeTemplate
         ])
-        let change = try parseChange(logOutput)
+        let change = try wsJJ.parseChange(logOutput)
         let name = URL(fileURLWithPath: path).lastPathComponent
         return JJWorkspaceInfo(
             name: name,
@@ -287,7 +292,7 @@ class JJService: ObservableObject {
     // MARK: - Private Helpers
 
     static let changeTemplate = """
-    '{"change_id": ' ++ change_id.escape_json() ++ ', "commit_id": ' ++ commit_id.escape_json() ++ ', "description": ' ++ description.escape_json() ++ ', "author_name": ' ++ author.name().escape_json() ++ ', "author_email": ' ++ author.email().escape_json() ++ ', "timestamp": ' ++ author.timestamp().utc().format("%Y-%m-%dT%H:%M:%SZ").escape_json() ++ ', "empty": ' ++ empty ++ ', "working_copy": ' ++ working_copy ++ ', "parents": "' ++ parents.map(|p| p.change_id()) ++ '", "bookmarks": "' ++ bookmarks ++ '"}\\n'
+    '{"change_id": ' ++ change_id.escape_json() ++ ', "commit_id": ' ++ commit_id.escape_json() ++ ', "description": ' ++ description.escape_json() ++ ', "author_name": ' ++ author.name().escape_json() ++ ', "author_email": ' ++ author.email().escape_json() ++ ', "timestamp": ' ++ author.timestamp().utc().format("%Y-%m-%dT%H:%M:%SZ").escape_json() ++ ', "empty": ' ++ empty ++ ', "working_copy": ' ++ working_copy ++ ', "parents": ' ++ json(parents.map(|p| p.change_id())) ++ ', "bookmarks": ' ++ json(bookmarks.map(|b| b.name())) ++ '}\\n'
     """
 
     private static let opTemplate = """
@@ -299,7 +304,7 @@ class JJService: ObservableObject {
     """
 
     func runJJ(_ args: [String]) async throws -> String {
-        try await runProcess("/usr/bin/env", arguments: ["jj"] + args + ["--no-pager", "--color=never"])
+        try await runProcess("/usr/bin/env", arguments: ["jj", "--no-pager", "--color=never"] + args)
     }
 
     private func runGit(_ args: [String]) async throws -> String {
@@ -378,11 +383,25 @@ class JJService: ObservableObject {
                 let isEmpty = (raw["empty"] as? Bool) ?? (raw["empty"] as? String == "true")
                 let isWorkingCopy = (raw["working_copy"] as? Bool) ?? (raw["working_copy"] as? String == "true")
 
-                let parentsStr = raw["parents"] as? String ?? ""
-                let parents = parentsStr.isEmpty ? [] : parentsStr.components(separatedBy: " ").filter { !$0.isEmpty }
+                let parents: [String]
+                if let parentList = raw["parents"] as? [String] {
+                    parents = parentList
+                } else if let parentList = raw["parents"] as? [Any] {
+                    parents = parentList.compactMap { $0 as? String }
+                } else {
+                    let parentsStr = raw["parents"] as? String ?? ""
+                    parents = parentsStr.isEmpty ? [] : parentsStr.components(separatedBy: " ").filter { !$0.isEmpty }
+                }
 
-                let bookmarksStr = raw["bookmarks"] as? String ?? ""
-                let bookmarks = bookmarksStr.isEmpty ? [] : bookmarksStr.components(separatedBy: " ").filter { !$0.isEmpty }
+                let bookmarks: [String]
+                if let bookmarkList = raw["bookmarks"] as? [String] {
+                    bookmarks = bookmarkList
+                } else if let bookmarkList = raw["bookmarks"] as? [Any] {
+                    bookmarks = bookmarkList.compactMap { $0 as? String }
+                } else {
+                    let bookmarksStr = raw["bookmarks"] as? String ?? ""
+                    bookmarks = bookmarksStr.isEmpty ? [] : bookmarksStr.components(separatedBy: " ").filter { !$0.isEmpty }
+                }
 
                 changes.append(JJChange(
                     changeId: changeId,
@@ -519,15 +538,19 @@ class JJService: ObservableObject {
 
             let name = String(parts[0]).trimmingCharacters(in: .whitespaces)
             let rest = String(parts[1]).trimmingCharacters(in: .whitespaces)
-            let isStale = rest.contains("(stale)")
-
-            // Extract change ID (first word after colon)
-            let restParts = rest.split(separator: " ")
-            let changeId = restParts.first.map(String.init) ?? ""
+            var restParts = rest.split(separator: " ")
+            var isStale = false
+            if let last = restParts.last, last == "(stale)" {
+                isStale = true
+                restParts.removeLast()
+            }
+            guard let changeIdPart = restParts.first else { continue }
+            let changeId = String(changeIdPart)
+            let path = restParts.dropFirst().joined(separator: " ")
 
             workspaces.append(JJWorkspaceInfo(
                 name: name,
-                path: workingDirectory.path,
+                path: path,
                 workingCopyChangeId: changeId,
                 isStale: isStale
             ))
