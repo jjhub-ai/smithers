@@ -30,6 +30,41 @@ final class NvimController {
         }
     }
 
+    private struct GridSize: Equatable {
+        let width: Int
+        let height: Int
+    }
+
+    private struct GridPosition: Equatable {
+        let row: Double
+        let col: Double
+    }
+
+    private enum WindowAnchor: String {
+        case northWest = "NW"
+        case northEast = "NE"
+        case southWest = "SW"
+        case southEast = "SE"
+    }
+
+    private struct FloatingAnchorInfo: Equatable {
+        let anchor: WindowAnchor
+        let anchorGrid: Int64
+        let anchorRow: Double
+        let anchorCol: Double
+        let zIndex: Int
+        let screenRow: Double?
+        let screenCol: Double?
+    }
+
+    private struct FloatingWindowState: Equatable {
+        let gridId: Int64
+        var size: GridSize?
+        var anchor: FloatingAnchorInfo?
+        var position: GridPosition?
+        var visible: Bool
+    }
+
     private let rpc = NvimRPC()
     private weak var workspace: WorkspaceState?
     private let socketPath: String
@@ -40,6 +75,13 @@ final class NvimController {
     private var isReady = false
     private var bufferByURL: [URL: Int64] = [:]
     private var urlByBuffer: [Int64: URL] = [:]
+    private var uiAttached = false
+    private var lastUiSize: (columns: Int, rows: Int)?
+    private var gridMetricsObserver: UUID?
+    private var gridSizes: [Int64: GridSize] = [:]
+    private var gridPositions: [Int64: GridPosition] = [1: GridPosition(row: 0, col: 0)]
+    private var floatingWindows: [Int64: FloatingWindowState] = [:]
+    private var lastPublishedFloatingWindows: [NvimFloatingWindow] = []
     private static let highlightGroups: [String] = [
         "Normal",
         "TabLine",
@@ -97,6 +139,8 @@ final class NvimController {
         let channelId = try await fetchChannelId()
         try await installAutocmds(channelId: channelId)
         startNotificationLoop()
+        startGridMetricsObservation()
+        try await attachUiIfNeeded()
         isRunning = true
         scheduleInitialSync()
     }
@@ -104,9 +148,12 @@ final class NvimController {
     func stop() {
         notificationsTask?.cancel()
         notificationsTask = nil
+        stopGridMetricsObservation()
+        detachUiIfNeeded()
         rpc.disconnect()
         bufferByURL.removeAll()
         urlByBuffer.removeAll()
+        clearFloatingWindowState()
         isRunning = false
         isReady = false
         terminalView.shutdown()
@@ -123,6 +170,18 @@ final class NvimController {
         end
         """
         _ = try? await rpc.request("nvim_exec_lua", params: [.string(script), .array([.map(variables)])])
+    }
+
+    func setOptions(_ options: [String: MsgPackValue]) async {
+        guard !options.isEmpty else { return }
+        await waitUntilReady()
+        let script = """
+        local opts = ...
+        for key, value in pairs(opts) do
+          vim.o[key] = value
+        end
+        """
+        _ = try? await rpc.request("nvim_exec_lua", params: [.string(script), .array([.map(options)])])
     }
 
     // FIX 3: The Lua script's nil check used `line ~= nil`, but MsgPack null
@@ -544,6 +603,10 @@ final class NvimController {
     }
 
     private func handleNotification(method: String, params: [MsgPackValue]) async {
+        if method == "redraw" {
+            handleRedraw(params: params)
+            return
+        }
         if method == "smithers/colorscheme" {
             await refreshColorscheme(reason: "colorscheme")
             return
