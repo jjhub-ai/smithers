@@ -1036,6 +1036,17 @@ Deliver:
 
 ---
 
+### Phase 5 — Workspace forks (context + code)
+
+Deliver:
+
+- Fork chat with optional code state capture
+- Fork point selection (before/after) tied to workspace snapshots
+- Merge-back v1 (diff/apply) and cleanup flow
+- Guardrails for switching code state between forks
+
+---
+
 ## 6. Technical Decisions
 
 ### 6.1 pi-mono packages and placement
@@ -1103,6 +1114,178 @@ Unify pi agent tools and Smithers tools behind a single `ToolSandbox` module in 
 
 - Component-level tests in a normal browser runner for web components.
 - End-to-end tests are harder in native webview; keep most logic testable outside Electrobun by isolating UI state management.
+
+---
+
+## 7. Workspace Forks (Context + Code)
+
+This section extends chat forking to optionally fork the workspace code state. Default remains context-only.
+
+### 7.1 Goals and defaults
+
+- Default fork behavior remains chat context only.
+- Add a user preference: "Default fork includes code state" (off by default).
+- Fork-with-code is point-in-time accurate at a defined turn boundary.
+- Fork-with-code is safe and non-destructive. Never discard uncommitted changes silently.
+- Multi-fork (fan-out) supports shared code state or separate sandboxes.
+- Provide a merge-back path in v1 (diff/apply) with optional v2 VCS merge.
+
+### 7.2 Fork point semantics
+
+**Fork point model:**
+
+- Forks are anchored to a `turnId` boundary.
+- Each fork point has explicit semantics:
+  - `before` the turn's file changes
+  - `after` the turn's file changes
+
+**Snapshot availability:**
+
+- If a turn has an existing workspace snapshot, use it directly.
+- If missing, the UI must prompt to:
+  - use the nearest prior snapshot, or
+  - create a new snapshot now (explicitly labeled).
+
+**UX language:**
+
+- "Fork from this turn (before changes)"
+- "Fork from this turn (after changes)"
+- "No snapshot for this turn. Use previous snapshot or capture now."
+
+### 7.3 Code state models (options)
+
+Provide at least two viable models and recommend one for v1.
+
+**Option A (recommended v1): single working directory, switch on activation**
+
+- Each chat session stores a `codeStateRef` (VCS change/commit/bookmark).
+- Only one code state is checked out in the on-disk workspace at a time.
+- Selecting a chat tab offers to activate its code state.
+
+**Guardrails:**
+
+- Block background agent runs in non-active forks.
+- Require explicit "Activate code state" before running tools that mutate files.
+- If the workspace is dirty when switching:
+  - offer snapshot, stash, or cancel
+  - never discard local edits
+
+Pros: minimal filesystem complexity. Cons: no true parallelism for file changes.
+
+**Option B: isolated sandboxes per fork**
+
+- Fork-with-code creates a separate working copy directory per fork.
+- Each chat session binds to a distinct `rootDirectory`.
+- Multi-root workspaces or separate windows for each sandbox.
+
+Pros: safe parallelism. Cons: heavier UX and lifecycle management.
+
+**Option C (fallback): filesystem snapshot fork**
+
+- For non-VCS repos, create a snapshot clone (APFS clone or tarball).
+- Merge-back is diff/apply only.
+
+### 7.4 UX entry points
+
+**Message hover action bar**
+
+- Split button or menu:
+  - "Fork chat"
+  - "Fork chat + code state..."
+- Alternative: "Fork" opens a sheet with [ ] Include code state.
+
+**Fan-out sheet**
+
+Add a section:
+
+- Code state for forks:
+  - ( ) Context only (default)
+  - ( ) Include code state (shared across forks)
+  - ( ) Include code state (separate sandbox per fork)
+- Show estimate: "This will create N sandboxes."
+
+**Command palette**
+
+- `Fork Chat From Here...`
+- `Fork Chat + Code From Here...`
+- `Fan-out...`
+
+### 7.5 Visual indicators
+
+- Chat tab badge shows bound code state (e.g. "Code: main@a1b2").
+- If code state is not active, show "Inactive code state" badge.
+- If workspace is dirty, show a warning dot and tooltip.
+
+### 7.6 Merge-back story (v1 and v2)
+
+**v1: diff/apply**
+
+- Provide "Apply changes to..." action in fork tab.
+- Show file diff list with checkboxes.
+- Apply via patch to target workspace and record a merge note in chat.
+
+**v2: VCS merge/rebase**
+
+- Offer "Merge via VCS" if repo supports it.
+- Run merge in Bun with tool sandboxing and show conflicts in UI.
+
+### 7.7 Data model additions (app DB)
+
+New tables in the app DB (separate from workflow DB):
+
+- `workspace_forks`
+  - `fork_id TEXT PRIMARY KEY`
+  - `session_id TEXT`
+  - `turn_id TEXT`
+  - `fork_point TEXT` ("before" | "after")
+  - `code_mode TEXT` ("context_only" | "shared" | "sandboxed")
+  - `code_state_ref TEXT` (VCS ref or snapshot id)
+  - `root_directory TEXT`
+  - `created_at TEXT`
+
+- `workspace_snapshots`
+  - `snapshot_id TEXT PRIMARY KEY`
+  - `root_directory TEXT`
+  - `turn_id TEXT`
+  - `code_state_ref TEXT`
+  - `created_at TEXT`
+
+- `workspace_sandboxes`
+  - `sandbox_id TEXT PRIMARY KEY`
+  - `fork_id TEXT`
+  - `root_directory TEXT`
+  - `created_at TEXT`
+  - `last_used_at TEXT`
+
+### 7.8 RPC additions (Bun <-> webview)
+
+Requests:
+
+- `forkChat`
+  - params: `{ sessionId, turnId, forkPoint, includeCode, codeMode }`
+  - response: `{ newSessionId, forkId }`
+- `activateCodeState`
+  - params: `{ forkId }`
+  - response: `{ activeRoot, codeStateRef }`
+- `listForks`
+  - params: `{ sessionId }`
+  - response: `{ forks: ForkDTO[] }`
+- `mergeFork`
+  - params: `{ forkId, targetSessionId, mode: "diff_apply" | "vcs" }`
+  - response: `{ mergeId }`
+
+Messages:
+
+- `workspaceStatus`
+  - `{ activeForkId, activeRoot, isDirty, codeStateRef }`
+- `mergeProgress`
+  - `{ mergeId, status, conflicts?: string[] }`
+
+### 7.9 Operational considerations
+
+- Sandboxes should be discoverable and cleanable (settings: "Clean up unused sandboxes").
+- Indexers/watchers should track active root only for Option A.
+- Disk usage UI should warn when creating multiple sandboxes.
 
 ---
 

@@ -637,3 +637,241 @@ Create a specification for a desktop application that:
 - Enables human-in-the-loop approvals with visual feedback
 
 The design should be practical, implementation-focused, and leverage the existing APIs of all three frameworks as documented above.
+
+---
+
+## Addendum to Design Prompt: Fork Code State + Context Together
+
+### Feature Area 8: Coupled Context + Code Forking ("Workspace Forks")
+
+You are designing an advanced "fork" system in Smithers chat. Today, forking is effectively a conversation/thread fork (Codex thread fork + rollback to a turn), and it does not fork the workspace code state by default. We want an optional "fork code state too" mode so that a user can branch both:
+
+1. Chat context (Codex thread history up to a turn/message), and
+2. Code state (the workspace file tree state at that same point in time),
+
+... into a new chat session.
+
+#### Core requirements
+
+1. Default behavior remains context-only fork
+   - "Fork" should keep doing what it does today unless the user explicitly opts into code forking.
+   - Add a user preference: "Default fork includes code state" (off by default).
+
+2. Fork-with-code must be point-in-time accurate
+   - If a user forks "from message X / turn T", the forked session's code state must correspond to that point (or a clearly defined variant, e.g. before vs after the turn's file changes).
+   - Smithers already has JJ revert tied to some messages. Use that existing snapshot concept as the conceptual anchor for "what is the code state at this turn?"
+
+3. Fork-with-code must be safe and non-destructive
+   - No silent discarding of uncommitted/unapplied changes.
+   - If the current workspace has unsaved edits or dirty state, the UX must explicitly handle it (capture snapshot, prompt, or create a safe temporary commit/change).
+
+4. Fork-with-code must integrate with multi-fork / fan-out
+   - If the user "fans out" into N chats, they must be able to choose whether:
+     - All forks share the same code state (one code fork), or
+     - Each fork gets its own independent code sandbox (N code forks).
+
+5. Fork-with-code must support a "merge back" story
+   - Users need a path to bring changes back to main (or between forks) with minimal friction.
+   - The merge-back UX can be v1 "diff/apply" and v2 "VCS merge/rebase," but you must design at least one workable v1.
+
+---
+
+### Design problem: define "Code Fork" semantics
+
+You must pick (or propose) a concrete model for how Smithers represents forked code state. Provide at least two viable options and recommend one for v1.
+
+#### Option A (recommended for v1): "Single working directory, multiple code states; switch on tab activation"
+
+- Each chat session is associated with a code state reference (e.g., a JJ change/commit/bookmark).
+- Only one code state is checked out in the on-disk working copy at a time.
+- When the user selects a chat tab, Smithers can offer to activate that chat's code state (checkout/switch), making the workspace match that chat.
+
+Pros: minimal filesystem complexity; fits "WorkspaceState is per-root-directory."
+Cons: cannot safely run concurrent "agent modifies files" turns across multiple chats without collisions; requires guardrails.
+
+Guardrails you must design:
+- Prevent running background turns in non-active code forks, or
+- Allow it but require isolated sandboxes (Option B) for concurrency.
+
+#### Option B: "Isolated sandboxes per code fork" (JJ workspace add / git worktree / filesystem clone)
+
+- Fork-with-code creates a separate working copy directory for the fork.
+- Each forked chat session is tied to a distinct `rootDirectory` / `cwd`.
+- The IDE either:
+  - Opens each sandbox in a new window (new WorkspaceState), or
+  - Supports multi-root workspaces (harder; design but may be v2).
+
+Pros: true parallelism; safe concurrent agent file changes.
+Cons: heavier UX + lifecycle (cleanup, indexing, watch services); more storage.
+
+For JJ-first workflows, explicitly explore using JJ multi-workspace / working copy features conceptually (e.g., "workspace add"), but keep the design tool-agnostic enough to work with git worktrees or fallback snapshotting.
+
+#### Option C (fallback): "Filesystem snapshot fork"
+
+- For non-VCS repos, create an APFS clone/copy-on-write snapshot or a tarball snapshot.
+- Merge-back is "diff/apply".
+
+---
+
+### UX: how users invoke fork-with-code
+
+Design these entry points:
+
+1. Message hover action bar
+   - Replace/extend "Fork" with a split-button or menu:
+     - "Fork chat"
+     - "Fork chat + code state..."
+   - Or keep "Fork" but open a sheet with a checkbox: [ ] Include code state.
+
+2. Multi-fork / Fan-out sheet
+   - Add a section:
+     - Code state for forks
+       - ( ) Context only (default)
+       - ( ) Include code state (shared across forks)
+       - ( ) Include code state (separate sandbox per fork)
+   - Include an estimate indicator: "This will create 4 sandboxes" (no time estimates; just count + storage caution).
+
+3. Keyboard / Command Palette
+   - Commands:
+     - `Fork Chat From Here...`
+     - `Fork Chat + Code From Here...`
+     - `Fan-out...`
+
+---
+
+### Define the fork point precisely
+
+When forking "from a message", the system must define what "the code at that message" means.
+
+Design a "Fork Point" model that supports:
+- Turn-based selection (preferred): fork from a `turnId` boundary.
+- Before vs after semantics:
+  - Before the turn's file changes
+  - After the turn's file changes
+- If the user selects a message that lacks a snapshot, define fallback behavior:
+  - Use nearest prior snapshot
+  - Or create a new snapshot now (explicitly indicated)
+
+Provide UX language that makes this unambiguous.
+
+---
+
+### Visual design: show which code state a chat is bound to
+
+Each chat tab should indicate whether it is:
+- Context-only (no code binding)
+- Bound to code fork (and which one)
+
+Design:
+- A small badge in the tab (e.g., `C+` or a branch icon)
+- A tooltip / inspector panel that shows:
+  - Chat short ID (gist ID)
+  - Code fork ID (if any)
+  - Base revision / snapshot reference
+  - "Activate code state" / "Diff vs main" / "Merge back"
+
+Also design a Code Fork Manager surface:
+- List code forks across chats
+- Which is active
+- Cleanup / delete fork
+- Rename fork (e.g., "Experiment A")
+
+---
+
+### Data model changes (must specify fields/types)
+
+You must propose concrete additions to the Swift data model, at minimum:
+
+1. ChatSessionState
+   - Add `codeBinding` metadata:
+     - `codeForkId` (short ID)
+     - `codeForkMode` enum: `.none`, `.switchable`, `.sandbox`
+     - `codeBaseRef` (opaque reference to snapshot/commit/op)
+     - `codeRootOverrideURL` (only for sandbox mode)
+     - `createdFromTurnId` / `createdFromMessageId`
+
+2. Turn / snapshot mapping
+   - If code snapshots are per-turn, define a `TurnCodeSnapshot` mapping:
+     - `turnId -> snapshotRef`
+   - If the snapshot is stored on `ChatMessage`, explain how that scales when multiple messages share a turn.
+
+3. Persistence
+   - Extend ChatHistoryStore payload (or create a new store) so that:
+     - Code bindings are persisted per session
+     - Fork relationships are persisted (parent session id, fork point)
+   - Ensure backward compatibility.
+
+---
+
+### Merge-back flows (v1 must be viable)
+
+Design at least one v1 merge-back workflow that does not depend on a full VCS UI:
+
+- "Diff & Apply Back to Main"
+  - From a forked session: generate diff vs base (or vs main)
+  - Show in existing diff UI
+  - Allow apply, with conflict handling UX (even if basic)
+
+Optionally design v2:
+- JJ/Git native merge/rebase UI affordances
+
+---
+
+### Edge cases and constraints (explicitly cover)
+
+You must design behavior for:
+- Unsaved editor buffers when forking-with-code
+- Dirty working copy when activating a different chat's code state
+- Streaming turns: fork action disabled or queue semantics
+- Concurrent turns across sessions:
+  - If code is shared: enforce "one turn that can mutate code at a time" or require sandbox mode
+- Non-VCS workspaces
+- Large repos: sandbox creation cost; cleanup policy
+- Cross-chat message routing when source/target have different code forks:
+  - How to represent referenced context (and diffs) safely
+  - How to prevent "apply this diff" accidents when bases differ
+
+---
+
+### CLI surface (smithersctl) additions
+
+Design CLI parity for fork-with-code:
+
+- `smithersctl chat fork <chat-id> --at <turn-or-message> [--with-code] [--code-mode switch|sandbox]`
+- `smithersctl chat list` (must show chat short IDs and code binding)
+- `smithersctl codefork list`
+- `smithersctl codefork activate <codefork-id>`
+- `smithersctl codefork diff <codefork-id> [--against main|<codefork-id>]`
+- `smithersctl codefork merge <codefork-id> --into <codefork-id|main>` (can be v2)
+
+Define output formats suitable for scripting.
+
+---
+
+### Prioritization guidance
+
+You must propose a v1 that is shippable with minimal architectural disruption:
+
+- Must-have v1
+  - Fork chat + (optional) attach code snapshot reference
+  - Clear UI indication of code binding
+  - A safe "activate this code state" flow (if using switchable mode)
+  - Diff/apply merge-back to main
+
+- Nice-to-have / v2
+  - True sandbox per fork (worktrees / JJ workspace add) with multi-window or multi-root
+  - Concurrent agent execution across code forks
+  - Rich merge UI, rebase UI, conflict resolution workflows
+
+---
+
+### Deliverables for this feature area
+
+For "Coupled Context + Code Forking", produce:
+
+1. User stories
+2. End-to-end interaction flows (GUI + CLI)
+3. Visual design recommendations (macOS-native)
+4. Data model + persistence changes
+5. Edge cases + safety constraints
+6. v1 vs v2 scope recommendation
