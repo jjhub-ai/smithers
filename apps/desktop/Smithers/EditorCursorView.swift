@@ -71,6 +71,12 @@ final class EditorCursorView: NSView {
         updateColors()
     }
 
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateLayerScale()
+        updateColors()
+    }
+
     func move(to rect: NSRect, motion: MotionKind, restartBlink: Bool) {
         let snapped = snapToPixel(rect)
         guard snapped.width > 0, snapped.height > 0 else { return }
@@ -132,6 +138,8 @@ final class EditorCursorView: NSView {
             updateBlinking()
         } else {
             layer?.removeAnimation(forKey: "cursor-blink")
+            layer?.removeAnimation(forKey: "cursor-position")
+            layer?.removeAnimation(forKey: "cursor-bounds")
             layer?.opacity = 0
         }
     }
@@ -164,7 +172,7 @@ final class EditorCursorView: NSView {
         } else if showsOutlineWhenInactive {
             layer.backgroundColor = NSColor.clear.cgColor
             layer.borderColor = outlineColor.cgColor
-            layer.borderWidth = max(1 / scale, 0.5)
+            layer.borderWidth = 1 / scale
         } else {
             layer.backgroundColor = cursorColor.withAlphaComponent(0.35).cgColor
             layer.borderWidth = 0
