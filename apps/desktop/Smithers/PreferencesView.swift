@@ -33,6 +33,17 @@ struct PreferencesView: View {
                 }
             }
 
+            Section("Files") {
+                Toggle("Warn before closing with unsaved changes", isOn: $workspace.isCloseWarningEnabled)
+                Toggle("Auto Save", isOn: $workspace.isAutoSaveEnabled)
+                Picker("Auto Save Interval", selection: $workspace.autoSaveInterval) {
+                    Text("5 seconds").tag(5.0)
+                    Text("10 seconds").tag(10.0)
+                    Text("30 seconds").tag(30.0)
+                }
+                .disabled(!workspace.isAutoSaveEnabled)
+            }
+
             Section("Neovim") {
                 HStack(spacing: 8) {
                     TextField("/path/to/nvim", text: $workspace.preferredNvimPath)
@@ -49,6 +60,49 @@ struct PreferencesView: View {
                     Spacer()
                     Button("Use Default") {
                         workspace.clearNvimPath()
+                    }
+                }
+            }
+
+            Section("Progress Bar") {
+                HStack {
+                    Text("Height")
+                    Spacer()
+                    Stepper(
+                        value: $workspace.progressBarHeight,
+                        in: WorkspaceState.progressBarHeightRange,
+                        step: 1
+                    ) {
+                        Text("\(Int(workspace.progressBarHeight)) pt")
+                            .font(.system(size: Typography.base, weight: .semibold))
+                    }
+                }
+                HStack {
+                    ColorPicker(
+                        "Fill",
+                        selection: progressColorBinding(
+                            $workspace.progressBarFillColor,
+                            fallback: workspace.theme.accent
+                        ),
+                        supportsOpacity: true
+                    )
+                    Spacer()
+                    Button("Use Theme") {
+                        workspace.progressBarFillColor = nil
+                    }
+                }
+                HStack {
+                    ColorPicker(
+                        "Track",
+                        selection: progressColorBinding(
+                            $workspace.progressBarTrackColor,
+                            fallback: workspace.theme.divider.withAlphaComponent(0.35)
+                        ),
+                        supportsOpacity: true
+                    )
+                    Spacer()
+                    Button("Use Theme") {
+                        workspace.progressBarTrackColor = nil
                     }
                 }
             }
@@ -72,5 +126,15 @@ struct PreferencesView: View {
             return font.displayName ?? name
         }
         return name
+    }
+
+    private func progressColorBinding(_ color: Binding<NSColor?>, fallback: NSColor) -> Binding<Color> {
+        Binding(
+            get: { Color(nsColor: color.wrappedValue ?? fallback) },
+            set: { newValue in
+                let nsColor = NSColor(newValue)
+                color.wrappedValue = nsColor.usingColorSpace(.sRGB) ?? nsColor
+            }
+        )
     }
 }
