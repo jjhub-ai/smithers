@@ -14,14 +14,17 @@ struct CommandPaletteView: View {
     @State private var selectedCommandID: String?
 
     var body: some View {
-        ZStack {
-            overlayBackground
-            CommandPalettePanel(
-                workspace: workspace,
-                selectedEntry: $selectedEntry,
-                selectedCommandID: $selectedCommandID,
-                searchFocused: $searchFocused
-            )
+        GeometryReader { proxy in
+            ZStack {
+                overlayBackground
+                CommandPalettePanel(
+                    workspace: workspace,
+                    selectedEntry: $selectedEntry,
+                    selectedCommandID: $selectedCommandID,
+                    searchFocused: $searchFocused,
+                    containerSize: proxy.size
+                )
+            }
         }
         .onExitCommand {
             workspace.hideCommandPalette()
@@ -43,6 +46,7 @@ private struct CommandPalettePanel: View {
     @Binding var selectedEntry: PaletteSelection?
     @Binding var selectedCommandID: String?
     var searchFocused: FocusState<Bool>.Binding
+    let containerSize: CGSize
     @State private var previewText: String = ""
     @State private var previewTitle: String = ""
     @State private var previewPath: String = ""
@@ -50,6 +54,8 @@ private struct CommandPalettePanel: View {
 
     var body: some View {
         let theme = workspace.theme
+        let targetWidth = min(600, containerSize.width * 0.65)
+        let targetHeight = min(400, containerSize.height * 0.5)
         let content = VStack(spacing: 0) {
             header
             Divider()
@@ -59,7 +65,7 @@ private struct CommandPalettePanel: View {
 
         let sized = AnyView(
             content
-                .frame(width: 560, height: 360)
+                .frame(width: targetWidth, height: targetHeight)
                 .background(theme.panelBackgroundColor)
         )
 
@@ -160,6 +166,7 @@ private struct CommandPalettePanel: View {
 
     @ViewBuilder
     private var commandContent: some View {
+        let theme = workspace.theme
         if workspace.paletteCommands.isEmpty {
             VStack(spacing: 8) {
                 Image(systemName: "command")
@@ -167,6 +174,9 @@ private struct CommandPalettePanel: View {
                     .foregroundStyle(.tertiary)
                 Text("No matching commands")
                     .foregroundStyle(.secondary)
+                Text("Remove \">\" to search files")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -186,6 +196,9 @@ private struct CommandPalettePanel: View {
                         }
                     }
                     .tag(command.id)
+                    .listRowBackground(
+                        selectedCommandID == command.id ? theme.selectionBackgroundColor : Color.clear
+                    )
                     .contentShape(Rectangle())
                     .onTapGesture {
                         run(command)
@@ -200,6 +213,7 @@ private struct CommandPalettePanel: View {
 
     @ViewBuilder
     private var fileContent: some View {
+        let theme = workspace.theme
         let showRecents = shouldShowRecents
         let recentEdits = workspace.recentEditEntries
         let recentFiles = workspace.recentFileEntries
@@ -214,6 +228,9 @@ private struct CommandPalettePanel: View {
                     .foregroundStyle(.tertiary)
                 Text("No matching files")
                     .foregroundStyle(.secondary)
+                Text("Type \">\" to search commands")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -222,6 +239,8 @@ private struct CommandPalettePanel: View {
                     if !recentEdits.isEmpty {
                         Section("Recent Edits") {
                             ForEach(recentEdits) { entry in
+                                let selection = PaletteSelection.file(entry.url)
+                                let isSelected = selection == selectedEntry
                                 HStack(spacing: 8) {
                                     Image(systemName: iconForFile(entry.displayPath))
                                         .foregroundStyle(.secondary)
@@ -229,7 +248,10 @@ private struct CommandPalettePanel: View {
                                         .lineLimit(1)
                                         .truncationMode(.middle)
                                 }
-                                .tag(PaletteSelection.file(entry.url))
+                                .tag(selection)
+                                .listRowBackground(
+                                    isSelected ? theme.selectionBackgroundColor : Color.clear
+                                )
                                 .contentShape(Rectangle())
                                 .onTapGesture {
                                     open(.file(entry.url))
@@ -240,6 +262,8 @@ private struct CommandPalettePanel: View {
                     if !recentFiles.isEmpty {
                         Section("Recent Files") {
                             ForEach(recentFiles) { entry in
+                                let selection = PaletteSelection.file(entry.url)
+                                let isSelected = selection == selectedEntry
                                 HStack(spacing: 8) {
                                     Image(systemName: iconForFile(entry.displayPath))
                                         .foregroundStyle(.secondary)
@@ -247,7 +271,10 @@ private struct CommandPalettePanel: View {
                                         .lineLimit(1)
                                         .truncationMode(.middle)
                                 }
-                                .tag(PaletteSelection.file(entry.url))
+                                .tag(selection)
+                                .listRowBackground(
+                                    isSelected ? theme.selectionBackgroundColor : Color.clear
+                                )
                                 .contentShape(Rectangle())
                                 .onTapGesture {
                                     open(.file(entry.url))
@@ -258,6 +285,8 @@ private struct CommandPalettePanel: View {
                     if !recentFolders.isEmpty {
                         Section("Recent Folders") {
                             ForEach(recentFolders) { entry in
+                                let selection = PaletteSelection.folder(entry.url)
+                                let isSelected = selection == selectedEntry
                                 HStack(spacing: 8) {
                                     Image(systemName: "folder")
                                         .foregroundStyle(.secondary)
@@ -265,7 +294,10 @@ private struct CommandPalettePanel: View {
                                         .lineLimit(1)
                                         .truncationMode(.middle)
                                 }
-                                .tag(PaletteSelection.folder(entry.url))
+                                .tag(selection)
+                                .listRowBackground(
+                                    isSelected ? theme.selectionBackgroundColor : Color.clear
+                                )
                                 .contentShape(Rectangle())
                                 .onTapGesture {
                                     open(.folder(entry.url))
@@ -276,6 +308,8 @@ private struct CommandPalettePanel: View {
                     if !fileResults.isEmpty {
                         Section("Files") {
                             ForEach(fileResults) { entry in
+                                let selection = PaletteSelection.file(entry.url)
+                                let isSelected = selection == selectedEntry
                                 HStack(spacing: 8) {
                                     Image(systemName: iconForFile(entry.displayPath))
                                         .foregroundStyle(.secondary)
@@ -283,7 +317,10 @@ private struct CommandPalettePanel: View {
                                         .lineLimit(1)
                                         .truncationMode(.middle)
                                 }
-                                .tag(PaletteSelection.file(entry.url))
+                                .tag(selection)
+                                .listRowBackground(
+                                    isSelected ? theme.selectionBackgroundColor : Color.clear
+                                )
                                 .contentShape(Rectangle())
                                 .onTapGesture {
                                     open(.file(entry.url))
@@ -293,6 +330,8 @@ private struct CommandPalettePanel: View {
                     }
                 } else {
                     ForEach(fileResults) { entry in
+                        let selection = PaletteSelection.file(entry.url)
+                        let isSelected = selection == selectedEntry
                         HStack(spacing: 8) {
                             Image(systemName: iconForFile(entry.displayPath))
                                 .foregroundStyle(.secondary)
@@ -300,7 +339,10 @@ private struct CommandPalettePanel: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                         }
-                        .tag(PaletteSelection.file(entry.url))
+                        .tag(selection)
+                        .listRowBackground(
+                            isSelected ? theme.selectionBackgroundColor : Color.clear
+                        )
                         .contentShape(Rectangle())
                         .onTapGesture {
                             open(.file(entry.url))
