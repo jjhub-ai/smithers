@@ -70,6 +70,7 @@ final class NvimController {
     private let socketPath: String
     private let logFilePath: String?
     private(set) var terminalView: GhosttyTerminalView
+    private let smoothScrollController: SmoothScrollController
     private var notificationsTask: Task<Void, Never>?
     private var isRunning = false
     private var isReady = false
@@ -120,12 +121,31 @@ final class NvimController {
             socketPath: socketPath,
             logFilePath: logFilePath
         )
-        terminalView = GhosttyTerminalView(
+        let view = GhosttyTerminalView(
             app: ghosttyApp,
             workingDirectory: workingDirectory,
             command: command,
             optionAsMeta: optionAsMeta
         )
+        terminalView = view
+        let scrollController = SmoothScrollController(terminalView: view)
+        smoothScrollController = scrollController
+        view.smoothScrollController = scrollController
+        scrollController.scrollSender = { [weak self] direction, gridId, row, col in
+            Task { await self?.sendMouseScroll(direction: direction, gridId: gridId, row: row, col: col) }
+        }
+        scrollController.gridResolver = { [weak self] row, col in
+            self?.resolveGridLocation(row: row, col: col) ?? (gridId: 1, row: row, col: col)
+        }
+        scrollController.canScroll = { [weak self] direction in
+            guard let viewport = self?.workspace?.nvimViewport else { return true }
+            switch direction {
+            case .up:
+                return viewport.topLine > 1
+            case .down:
+                return viewport.bottomLine < viewport.lineCount
+            }
+        }
     }
 
     deinit {
@@ -152,6 +172,7 @@ final class NvimController {
         stopGridMetricsObservation()
         detachUiIfNeeded()
         rpc.disconnect()
+        smoothScrollController.reset(animated: false)
         bufferByURL.removeAll()
         urlByBuffer.removeAll()
         clearFloatingWindowState()
@@ -490,6 +511,24 @@ final class NvimController {
         _ = try? await rpc.request("nvim_exec_lua", params: [.string(script), .array(params)])
     }
 
+    private func sendMouseScroll(
+        direction: SmoothScrollController.ScrollDirection,
+        gridId: Int64,
+        row: Int,
+        col: Int
+    ) async {
+        await waitUntilReady()
+        let params: [MsgPackValue] = [
+            .string("wheel"),
+            .string(direction.nvimAction),
+            .string(""),
+            .int(gridId),
+            .int(Int64(row)),
+            .int(Int64(col)),
+        ]
+        _ = try? await rpc.request("nvim_input_mouse", params: params)
+    }
+
     private func connectWithRetry() async throws {
         var lastError: Error?
         for _ in 0..<200 {
@@ -781,6 +820,13 @@ final class NvimController {
                         needsFloatingUpdate = true
                     }
                 }
+            case "grid_scroll":
+                for tuple in tuples {
+                    guard case let .array(items) = tuple, items.count >= 7 else { continue }
+                    guard let gridId = parseInt(items[0]),
+                          let rows = parseInt(items[5]) else { continue }
+                    smoothScrollController.handleGridScroll(gridId: gridId, rows: Int(rows))
+                }
             case "win_pos":
                 for tuple in tuples {
                     guard case let .array(items) = tuple, items.count >= 4 else { continue }
@@ -1000,6 +1046,32 @@ final class NvimController {
         return GridPosition(row: row, col: col)
     }
 
+    private func resolveGridLocation(row: Int, col: Int) -> (gridId: Int64, row: Int, col: Int) {
+        guard !lastPublishedFloatingWindows.isEmpty else {
+            return (gridId: 1, row: row, col: col)
+        }
+
+        let ordered = lastPublishedFloatingWindows.sorted {
+            if $0.zIndex == $1.zIndex { return $0.id > $1.id }
+            return $0.zIndex > $1.zIndex
+        }
+
+        for window in ordered {
+            let startRow = Int(floor(window.row))
+            let startCol = Int(floor(window.col))
+            let endRow = startRow + max(window.height, 0)
+            let endCol = startCol + max(window.width, 0)
+            guard row >= startRow, row < endRow, col >= startCol, col < endCol else { continue }
+            return (
+                gridId: window.id,
+                row: max(0, row - startRow),
+                col: max(0, col - startCol)
+            )
+        }
+
+        return (gridId: 1, row: row, col: col)
+    }
+
     private func handleBufferEnter(buf: Int64?, name: String, select: Bool) {
         guard let buf else { return }
         guard let url = urlFromBufferName(name) else { return }
@@ -1154,6 +1226,73 @@ final class NvimController {
             buffers.append(NvimModifiedBuffer(buffer: buf, name: name, listed: listed, url: url))
         }
         return buffers
+    }
+
+    private func parseStringValue(_ value: MsgPackValue?) -> String {
+        if let stringValue = value?.stringValue {
+            return stringValue
+        }
+        if let intValue = value?.intValue {
+            return String(intValue)
+        }
+        if let doubleValue = value?.doubleValue {
+            return String(doubleValue)
+        }
+        if let value, case .array = value {
+            return parseTextChunks(value).map(\.text).joined()
+        }
+        return ""
+    }
+
+    private func parseTextChunks(_ value: MsgPackValue?) -> [NvimTextChunk] {
+        guard let value else { return [] }
+        return parseTextChunks(value)
+    }
+
+    private func parseTextChunks(_ value: MsgPackValue) -> [NvimTextChunk] {
+        guard case let .array(chunks) = value else {
+            if let text = value.stringValue {
+                return [NvimTextChunk(text: text, highlightId: nil)]
+            }
+            return []
+        }
+        var result: [NvimTextChunk] = []
+        result.reserveCapacity(chunks.count)
+        for chunk in chunks {
+            if case let .array(parts) = chunk {
+                let text = parseStringValue(parts.first)
+                let hlId = parts.count > 1 ? parts[1].intValue.map { Int($0) } : nil
+                if !text.isEmpty {
+                    result.append(NvimTextChunk(text: text, highlightId: hlId))
+                }
+            } else if let text = chunk.stringValue {
+                result.append(NvimTextChunk(text: text, highlightId: nil))
+            }
+        }
+        return result
+    }
+
+    private func parseFirstc(_ value: MsgPackValue?) -> String {
+        if let intValue = value?.intValue, intValue > 0,
+           let scalar = UnicodeScalar(Int(intValue)) {
+            return String(scalar)
+        }
+        return value?.stringValue ?? ""
+    }
+
+    private func parsePopupmenuItems(_ value: MsgPackValue) -> [NvimPopupMenuItem] {
+        guard case let .array(items) = value else { return [] }
+        var result: [NvimPopupMenuItem] = []
+        result.reserveCapacity(items.count)
+        for item in items {
+            guard case let .array(fields) = item else { continue }
+            let word = parseStringValue(fields.first)
+            let kind = fields.count > 1 ? parseStringValue(fields[1]) : ""
+            let menu = fields.count > 2 ? parseStringValue(fields[2]) : ""
+            let info = fields.count > 3 ? parseStringValue(fields[3]) : ""
+            result.append(NvimPopupMenuItem(word: word, kind: kind, menu: menu, info: info))
+        }
+        return result
     }
 
     private func parseBool(_ value: MsgPackValue?) -> Bool? {
