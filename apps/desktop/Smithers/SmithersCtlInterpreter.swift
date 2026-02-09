@@ -314,7 +314,7 @@ final class SmithersCtlInterpreter {
     }
 
     private func handleWebview(args: [String]) async -> SmithersCtlResult {
-        guard let workspace else { return .error("smithers-ctl: no workspace") }
+        guard workspace != nil else { return .error("smithers-ctl: no workspace") }
         guard !args.isEmpty else { return .error("smithers-ctl webview: missing subcommand") }
 
         let subcommand = args[0]
@@ -388,8 +388,8 @@ final class SmithersCtlInterpreter {
         switch result {
         case .success(let value):
             return .ok(value)
-        case .failure(let message):
-            return .error(message)
+        case .failure(let error):
+            return .error(error.localizedDescription)
         }
     }
 
@@ -448,8 +448,8 @@ final class SmithersCtlInterpreter {
                 escape = true
                 continue
             }
-            if let quote {
-                if ch == quote {
+            if let activeQuote = quote {
+                if ch == activeQuote {
                     quote = nil
                 } else {
                     current.append(ch)
