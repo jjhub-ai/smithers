@@ -1,7 +1,7 @@
 import Foundation
 
 struct JSONValue: Codable, Sendable {
-    enum Storage {
+    enum Storage: Sendable {
         case object([String: JSONValue])
         case array([JSONValue])
         case string(String)
@@ -157,7 +157,7 @@ struct RPCErrorResponse: Encodable {
     let error: Payload
 }
 
-final class JSONRPCTransport {
+final class JSONRPCTransport: @unchecked Sendable {
     enum Incoming: Sendable {
         case notification(method: String, params: JSONValue?)
         case request(id: RPCID, method: String, params: JSONValue?)
@@ -166,6 +166,7 @@ final class JSONRPCTransport {
     enum TransportError: Error, LocalizedError {
         case processNotRunning
         case missingResponse
+        case timeout
         case rpcError(code: Int, message: String)
 
         var errorDescription: String? {
@@ -174,6 +175,8 @@ final class JSONRPCTransport {
                 return "Codex process is not running"
             case .missingResponse:
                 return "Missing response from codex"
+            case .timeout:
+                return "Timed out waiting for codex response"
             case .rpcError(let code, let message):
                 return "Codex error (\(code)): \(message)"
             }
@@ -188,7 +191,7 @@ final class JSONRPCTransport {
     private let writeLock = NSLock()
     private let pendingLock = NSLock()
     private var nextId: Int = 1
-    private var pending: [RPCID: (Result<JSONValue, Error>) -> Void] = [:]
+    private var pending: [RPCID: (Swift.Result<JSONValue, Error>) -> Void] = [:]
     private var readTask: Task<Void, Never>?
 
     let incoming: AsyncStream<Incoming>
@@ -227,7 +230,7 @@ final class JSONRPCTransport {
             return
         }
         try process.run()
-        readTask = Task.detached { [weak self] in
+        readTask = Task { [weak self] in
             await self?.readLoop()
         }
     }
@@ -238,28 +241,59 @@ final class JSONRPCTransport {
         if process.isRunning {
             process.terminate()
         }
+        try? inputHandle.close()
+        try? outputHandle.close()
         incomingContinuation.finish()
         failAllPending(error: TransportError.processNotRunning)
     }
 
-    func sendRequest<Params: Encodable, Result: Decodable>(method: String, params: Params?, responseType: Result.Type) async throws -> Result {
+    func sendRequest<Params: Encodable, Response: Decodable>(
+        method: String,
+        params: Params?,
+        responseType: Response.Type,
+        timeout: TimeInterval? = nil
+    ) async throws -> Response {
         guard process.isRunning else { throw TransportError.processNotRunning }
         let id = nextRequestId()
         let request = RPCRequest(id: id, method: method, params: params)
 
         let resultValue: JSONValue = try await withCheckedThrowingContinuation { continuation in
-            registerPending(id: id) { result in
+            let completionLock = NSLock()
+            var didComplete = false
+            var timeoutWorkItem: DispatchWorkItem?
+
+            func complete(_ result: Swift.Result<JSONValue, Error>) {
+                completionLock.lock()
+                if didComplete {
+                    completionLock.unlock()
+                    return
+                }
+                didComplete = true
+                completionLock.unlock()
+                timeoutWorkItem?.cancel()
                 continuation.resume(with: result)
+            }
+
+            registerPending(id: id) { result in
+                complete(result)
+            }
+            if let timeout, timeout > 0 {
+                let workItem = DispatchWorkItem { [weak self] in
+                    self?.removePending(id: id)
+                    complete(.failure(TransportError.timeout))
+                }
+                timeoutWorkItem = workItem
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: workItem)
             }
             do {
                 try writeMessage(request)
             } catch {
                 removePending(id: id)
-                continuation.resume(throwing: error)
+                complete(.failure(error))
             }
         }
 
-        return try resultValue.decode(Result.self, decoder: decoder)
+        return try resultValue.decode(Response.self, decoder: decoder)
     }
 
     func sendNotification<Params: Encodable>(method: String, params: Params?) throws {
@@ -288,7 +322,7 @@ final class JSONRPCTransport {
         return .int(id)
     }
 
-    private func registerPending(id: RPCID, resolver: @escaping (Result<JSONValue, Error>) -> Void) {
+    private func registerPending(id: RPCID, resolver: @escaping (Swift.Result<JSONValue, Error>) -> Void) {
         pendingLock.lock()
         pending[id] = resolver
         pendingLock.unlock()
@@ -347,6 +381,8 @@ final class JSONRPCTransport {
                     let message = try decoder.decode(RPCMessage.self, from: data)
                     handleMessage(message)
                 } catch {
+                    let preview = String(line.prefix(200))
+                    await WorkspaceState.debugLog("[RPC] decode error: \(error). line=\(preview)")
                     continue
                 }
             }
