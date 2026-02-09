@@ -46,6 +46,7 @@ final class CodexService: ObservableObject {
     private var activeTurnId: String?
     private var smithersCtlInterpreter: SmithersCtlInterpreter?
     private var handledSmithersCommandItemIds: Set<String> = []
+    private var stopping = false
 
     init() {
         var continuation: AsyncStream<CodexEvent>.Continuation?
@@ -66,6 +67,7 @@ final class CodexService: ObservableObject {
             return ThreadStartResult(threadId: threadId, restoredThread: nil, resumed: false)
         }
 
+        stopping = false
         let binaryURL = try locateCodexBinary()
         let workingDirectory = URL(fileURLWithPath: cwd)
         let transport = try JSONRPCTransport(
@@ -74,7 +76,12 @@ final class CodexService: ObservableObject {
             currentDirectoryURL: workingDirectory
         )
         self.transport = transport
-        try transport.start()
+        do {
+            try transport.start()
+        } catch {
+            self.transport = nil
+            throw error
+        }
         isRunning = true
 
         incomingTask = Task.detached { [weak self] in
@@ -87,24 +94,30 @@ final class CodexService: ObservableObject {
             await self.handleTransportEnded()
         }
 
-        try await initializeSession()
-        if let resumeThreadId {
-            do {
-                let thread = try await resumeThread(threadId: resumeThreadId, cwd: cwd)
-                return ThreadStartResult(threadId: thread.id, restoredThread: thread, resumed: true)
-            } catch {
+        do {
+            try await initializeSession()
+            if let resumeThreadId {
+                do {
+                    let thread = try await resumeThread(threadId: resumeThreadId, cwd: cwd)
+                    return ThreadStartResult(threadId: thread.id, restoredThread: thread, resumed: true)
+                } catch {
+                    try await startThread(cwd: cwd)
+                    guard let threadId else { throw ServiceError.threadUnavailable }
+                    return ThreadStartResult(threadId: threadId, restoredThread: nil, resumed: false)
+                }
+            } else {
                 try await startThread(cwd: cwd)
                 guard let threadId else { throw ServiceError.threadUnavailable }
                 return ThreadStartResult(threadId: threadId, restoredThread: nil, resumed: false)
             }
-        } else {
-            try await startThread(cwd: cwd)
-            guard let threadId else { throw ServiceError.threadUnavailable }
-            return ThreadStartResult(threadId: threadId, restoredThread: nil, resumed: false)
+        } catch {
+            stop()
+            throw error
         }
     }
 
     func stop() {
+        stopping = true
         incomingTask?.cancel()
         incomingTask = nil
         transport?.stop()
@@ -228,7 +241,9 @@ final class CodexService: ObservableObject {
 
     private func handleTransportEnded() async {
         isRunning = false
-        eventContinuation.yield(.error(message: "Codex service stopped."))
+        if !stopping {
+            eventContinuation.yield(.error(message: "Codex service stopped."))
+        }
     }
 
     private func handleNotification(method: String, params: JSONValue?) {
