@@ -1,0 +1,361 @@
+import Foundation
+import CryptoKit
+
+enum ChatHistoryStore {
+    private static let currentVersion = 1
+
+    static func loadHistory(for rootDirectory: URL) -> [ChatMessage]? {
+        guard let url = historyURL(for: rootDirectory) else { return nil }
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let payload = try? decoder.decode(ChatHistoryPayload.self, from: data) else { return nil }
+        let messages = payload.messages.map { $0.asChatMessage() }
+        return messages
+    }
+
+    static func saveHistory(_ messages: [ChatMessage], for rootDirectory: URL) {
+        guard let url = historyURL(for: rootDirectory) else { return }
+        let payload = ChatHistoryPayload(
+            version: currentVersion,
+            rootPath: rootDirectory.standardizedFileURL.path,
+            messages: messages.map(ChatHistoryMessage.init)
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(payload) else { return }
+        let folder = url.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? data.write(to: url, options: [.atomic])
+    }
+
+    private static func historyURL(for rootDirectory: URL) -> URL? {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let directory = base
+            .appendingPathComponent("Smithers", isDirectory: true)
+            .appendingPathComponent("ChatHistory", isDirectory: true)
+        let hash = hashedPath(rootDirectory.standardizedFileURL.path)
+        return directory.appendingPathComponent("history-\(hash).json")
+    }
+
+    private static func hashedPath(_ path: String) -> String {
+        let digest = SHA256.hash(data: Data(path.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+private struct ChatHistoryPayload: Codable {
+    let version: Int
+    let rootPath: String?
+    let messages: [ChatHistoryMessage]
+
+    init(version: Int, rootPath: String?, messages: [ChatHistoryMessage]) {
+        self.version = version
+        self.rootPath = rootPath
+        self.messages = messages
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = (try? container.decode(Int.self, forKey: .version)) ?? 1
+        rootPath = try? container.decode(String.self, forKey: .rootPath)
+        messages = (try? container.decode([ChatHistoryMessage].self, forKey: .messages)) ?? []
+    }
+}
+
+private struct ChatHistoryMessage: Codable {
+    let role: ChatHistoryRole
+    let kind: ChatHistoryKind
+
+    init(role: ChatHistoryRole, kind: ChatHistoryKind) {
+        self.role = role
+        self.kind = kind
+    }
+
+    init(_ message: ChatMessage) {
+        role = ChatHistoryRole(message.role)
+        kind = ChatHistoryKind(message.kind)
+    }
+
+    func asChatMessage() -> ChatMessage {
+        ChatMessage(role: role.asChatRole(), kind: kind.asChatKind(), isStreaming: false)
+    }
+}
+
+private enum ChatHistoryRole: String, Codable {
+    case user
+    case assistant
+
+    init(_ role: ChatMessage.Role) {
+        switch role {
+        case .user:
+            self = .user
+        case .assistant:
+            self = .assistant
+        }
+    }
+
+    func asChatRole() -> ChatMessage.Role {
+        switch self {
+        case .user:
+            return .user
+        case .assistant:
+            return .assistant
+        }
+    }
+}
+
+private enum ChatHistoryKind: Codable {
+    case text(String)
+    case status(String)
+    case command(CommandExecutionInfoPayload)
+    case diffPreview(DiffPreviewPayload)
+    case starterPrompt(title: String, suggestions: [String])
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case text
+        case status
+        case command
+        case diffPreview
+        case title
+        case suggestions
+    }
+
+    private enum KindType: String, Codable {
+        case text
+        case status
+        case command
+        case diffPreview
+        case starterPrompt
+    }
+
+    init(_ kind: ChatMessage.Kind) {
+        switch kind {
+        case .text(let text):
+            self = .text(text)
+        case .status(let status):
+            self = .status(status)
+        case .command(let info):
+            self = .command(CommandExecutionInfoPayload(info))
+        case .diffPreview(let preview):
+            self = .diffPreview(DiffPreviewPayload(preview))
+        case .starterPrompt(let title, let suggestions):
+            self = .starterPrompt(title: title, suggestions: suggestions)
+        }
+    }
+
+    func asChatKind() -> ChatMessage.Kind {
+        switch self {
+        case .text(let text):
+            return .text(text)
+        case .status(let status):
+            return .status(status)
+        case .command(let payload):
+            return .command(payload.asCommandExecutionInfo())
+        case .diffPreview(let payload):
+            return .diffPreview(payload.asDiffPreview())
+        case .starterPrompt(let title, let suggestions):
+            return .starterPrompt(title: title, suggestions: suggestions)
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = (try? container.decode(KindType.self, forKey: .type)) ?? .text
+        switch kind {
+        case .text:
+            let text = (try? container.decode(String.self, forKey: .text)) ?? ""
+            self = .text(text)
+        case .status:
+            let status = (try? container.decode(String.self, forKey: .status)) ?? ""
+            self = .status(status)
+        case .command:
+            let command = (try? container.decode(CommandExecutionInfoPayload.self, forKey: .command))
+                ?? CommandExecutionInfoPayload.fallback
+            self = .command(command)
+        case .diffPreview:
+            let preview = (try? container.decode(DiffPreviewPayload.self, forKey: .diffPreview))
+                ?? DiffPreviewPayload.fallback
+            self = .diffPreview(preview)
+        case .starterPrompt:
+            let title = (try? container.decode(String.self, forKey: .title)) ?? ""
+            let suggestions = (try? container.decode([String].self, forKey: .suggestions)) ?? []
+            self = .starterPrompt(title: title, suggestions: suggestions)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .text(let text):
+            try container.encode(KindType.text, forKey: .type)
+            try container.encode(text, forKey: .text)
+        case .status(let status):
+            try container.encode(KindType.status, forKey: .type)
+            try container.encode(status, forKey: .status)
+        case .command(let command):
+            try container.encode(KindType.command, forKey: .type)
+            try container.encode(command, forKey: .command)
+        case .diffPreview(let preview):
+            try container.encode(KindType.diffPreview, forKey: .type)
+            try container.encode(preview, forKey: .diffPreview)
+        case .starterPrompt(let title, let suggestions):
+            try container.encode(KindType.starterPrompt, forKey: .type)
+            try container.encode(title, forKey: .title)
+            try container.encode(suggestions, forKey: .suggestions)
+        }
+    }
+}
+
+private struct CommandExecutionInfoPayload: Codable {
+    let itemId: String
+    let command: String
+    let cwd: String
+    let output: String
+    let exitCode: Int?
+    let status: CommandExecutionStatusPayload
+
+    static let fallback = CommandExecutionInfoPayload(
+        itemId: "",
+        command: "",
+        cwd: "",
+        output: "",
+        exitCode: nil,
+        status: .completed
+    )
+
+    init(itemId: String, command: String, cwd: String, output: String, exitCode: Int?, status: CommandExecutionStatusPayload) {
+        self.itemId = itemId
+        self.command = command
+        self.cwd = cwd
+        self.output = output
+        self.exitCode = exitCode
+        self.status = status
+    }
+
+    init(_ info: CommandExecutionInfo) {
+        itemId = info.itemId
+        command = info.command
+        cwd = info.cwd
+        output = info.output
+        exitCode = info.exitCode
+        status = CommandExecutionStatusPayload(info.status)
+    }
+
+    func asCommandExecutionInfo() -> CommandExecutionInfo {
+        CommandExecutionInfo(
+            itemId: itemId,
+            command: command,
+            cwd: cwd,
+            output: output,
+            exitCode: exitCode,
+            status: status.asCommandStatus()
+        )
+    }
+}
+
+private enum CommandExecutionStatusPayload: String, Codable {
+    case running
+    case completed
+
+    init(_ status: CommandExecutionStatus) {
+        switch status {
+        case .running:
+            self = .running
+        case .completed:
+            self = .completed
+        }
+    }
+
+    func asCommandStatus() -> CommandExecutionStatus {
+        switch self {
+        case .running:
+            return .running
+        case .completed:
+            return .completed
+        }
+    }
+}
+
+private struct DiffPreviewPayload: Codable {
+    let turnId: String?
+    let files: [String]
+    let summary: String
+    let previewLines: [String]
+    let diff: String
+    let status: PatchApplyStatusPayload
+
+    static let fallback = DiffPreviewPayload(
+        turnId: nil,
+        files: [],
+        summary: "",
+        previewLines: [],
+        diff: "",
+        status: .completed
+    )
+
+    init(
+        turnId: String?,
+        files: [String],
+        summary: String,
+        previewLines: [String],
+        diff: String,
+        status: PatchApplyStatusPayload
+    ) {
+        self.turnId = turnId
+        self.files = files
+        self.summary = summary
+        self.previewLines = previewLines
+        self.diff = diff
+        self.status = status
+    }
+
+    init(_ preview: DiffPreview) {
+        turnId = preview.turnId
+        files = preview.files
+        summary = preview.summary
+        previewLines = preview.previewLines
+        diff = preview.diff
+        status = PatchApplyStatusPayload(preview.status)
+    }
+
+    func asDiffPreview() -> DiffPreview {
+        DiffPreview(
+            id: UUID(),
+            turnId: turnId,
+            files: files,
+            summary: summary,
+            previewLines: previewLines,
+            diff: diff,
+            status: status.asPatchStatus()
+        )
+    }
+}
+
+private enum PatchApplyStatusPayload: String, Codable {
+    case inProgress
+    case completed
+    case failed
+    case declined
+
+    init(_ status: PatchApplyStatus) {
+        switch status {
+        case .inProgress:
+            self = .inProgress
+        case .completed:
+            self = .completed
+        case .failed:
+            self = .failed
+        case .declined:
+            self = .declined
+        }
+    }
+
+    func asPatchStatus() -> PatchApplyStatus {
+        PatchApplyStatus(rawValue: rawValue) ?? .completed
+    }
+}
