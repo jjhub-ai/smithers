@@ -12,4 +12,14 @@ enum Typography {
     static let iconL: CGFloat = 36
 
     static let code: CGFloat = base
+
+    // Line heights
+    static let lineHeightUI: CGFloat = 1.35
+    static let lineHeightChat: CGFloat = 1.5
+    static let lineHeightCode: CGFloat = 1.4
+
+    // Text opacity hierarchy
+    static let textPrimary: Double = 0.88
+    static let textMuted: Double = 0.60
+    static let textFaint: Double = 0.45
 }
