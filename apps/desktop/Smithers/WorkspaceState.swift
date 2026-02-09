@@ -126,6 +126,7 @@ class WorkspaceState: ObservableObject {
         let rootPath: String
         let openItems: [SessionItem]
         let selectedIndex: Int?
+        var isShortcutsPanelVisible: Bool?
         var lastAccessed: Date?
     }
 
@@ -195,8 +196,14 @@ class WorkspaceState: ObservableObject {
     @Published var isTurnInProgress: Bool = false
     @Published var isCommandPalettePresented: Bool = false
     @Published var isSearchPresented: Bool = false
+    @Published var isShortcutsPanelVisible: Bool = false {
+        didSet {
+            persistSessionStateIfNeeded()
+        }
+    }
     @Published var sidebarVisibility: NavigationSplitViewVisibility = .doubleColumn
     @Published var isNvimModeEnabled: Bool = false
+    @Published private(set) var nvimMode: NvimModeKind = .normal
     @Published var cursorLine: Int = 1
     @Published var cursorColumn: Int = 1
     @Published var isAutoSaveEnabled: Bool = UserDefaults.standard.bool(
@@ -1763,6 +1770,10 @@ class WorkspaceState: ObservableObject {
         clearSearchPreview()
     }
 
+    func toggleShortcutsPanel() {
+        isShortcutsPanelVisible.toggle()
+    }
+
     func toggleSidebarVisibility() {
         withAnimation(.easeInOut(duration: 0.2)) {
             sidebarVisibility = sidebarVisibility == .detailOnly ? .doubleColumn : .detailOnly
@@ -1968,7 +1979,12 @@ class WorkspaceState: ObservableObject {
                 selectedIndex = items.count - 1
             }
         }
-        return SessionState(rootPath: rootPath, openItems: items, selectedIndex: selectedIndex)
+        return SessionState(
+            rootPath: rootPath,
+            openItems: items,
+            selectedIndex: selectedIndex,
+            isShortcutsPanelVisible: isShortcutsPanelVisible
+        )
     }
 
     private func restoreSessionStateIfAvailable() -> Bool {
@@ -1987,6 +2003,7 @@ class WorkspaceState: ObservableObject {
         selectedFileURL = nil
         terminalViews = [:]
         terminalCounter = 0
+        isShortcutsPanelVisible = session.isShortcutsPanelVisible ?? false
         var selectedURL: URL?
         for (index, item) in session.openItems.enumerated() {
             switch item.kind {
