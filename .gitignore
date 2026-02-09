@@ -39,3 +39,18 @@ test-results
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# Gemini
+.gemini-clipboard/
+
+# Zig build cache
+.zig-cache/
+
+# Xcode derived data
+apps/desktop/.build/
+
+# Profiling artifacts
+default.profraw
+
+# Deno
+deno.lock
