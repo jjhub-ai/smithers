@@ -8,12 +8,25 @@ struct FileIndexEntry: Identifiable, Hashable, Sendable {
     let url: URL
     let displayPath: String
     let lowercasedPath: String
+    let fileName: String
+    let lowercasedName: String
+    let pathDepth: Int
+    let fileExtension: String
+    let fileNameStartIndex: Int
 
     init(url: URL, displayPath: String) {
         self.id = url
         self.url = url
         self.displayPath = displayPath
-        self.lowercasedPath = displayPath.lowercased()
+        let lowercasedPath = displayPath.lowercased()
+        self.lowercasedPath = lowercasedPath
+        let components = displayPath.split(separator: "/")
+        let name = components.last.map(String.init) ?? displayPath
+        self.fileName = name
+        self.lowercasedName = name.lowercased()
+        self.pathDepth = max(0, components.count - 1)
+        self.fileExtension = url.pathExtension.lowercased()
+        self.fileNameStartIndex = max(0, lowercasedPath.count - self.lowercasedName.count)
     }
 }
 
@@ -158,6 +171,7 @@ class WorkspaceState: ObservableObject {
     @Published var openFiles: [URL] = [] {
         didSet {
             persistSessionStateIfNeeded()
+            notifyOpenFileObservers(oldValue: oldValue, newValue: openFiles)
         }
     }
     @Published var selectedFileURL: URL? {
@@ -179,6 +193,13 @@ class WorkspaceState: ObservableObject {
             updateWindowTitle()
         }
     }
+    @Published private(set) var nvimFloatingWindows: [NvimFloatingWindow] = []
+    @Published private(set) var nvimGridMetrics: GhosttyGridMetrics?
+    @Published private(set) var nvimCmdlineState: NvimCmdlineState = .empty
+    @Published private(set) var nvimPopupMenuState: NvimPopupMenuState = .empty
+    @Published private(set) var nvimMessages: [NvimMessage] = []
+    @Published private(set) var nvimMiniMessageState: NvimMiniMessageState = .empty
+    @Published var nvimMessageRoutes: [NvimMessageRoute] = NvimMessageRoute.defaultRoutes
     @Published private(set) var nvimFailure: NvimFailure?
     @Published var editorText: String = """
     func hello() {
@@ -194,6 +215,12 @@ class WorkspaceState: ObservableObject {
                   !isChatURL(selectedFileURL),
                   !isTerminalURL(selectedFileURL)
             else { return }
+            if isNonUTF8File(selectedFileURL) {
+                if editorText != Self.nonUTF8Placeholder {
+                    setEditorText(Self.nonUTF8Placeholder)
+                }
+                return
+            }
             let wasModified = isNativeFileModified(selectedFileURL)
             openFileContents[selectedFileURL] = editorText
             let nowModified = isNativeFileModified(selectedFileURL)
@@ -231,8 +258,16 @@ class WorkspaceState: ObservableObject {
         }
     }
     @Published var sidebarVisibility: NavigationSplitViewVisibility = .doubleColumn
-    @Published var isNvimModeEnabled: Bool = false
-    @Published private(set) var nvimMode: NvimModeKind = .normal
+    @Published var isNvimModeEnabled: Bool = false {
+        didSet {
+            inputMethodSwitcher.setActive(isNvimModeEnabled)
+        }
+    }
+    @Published private(set) var nvimMode: NvimModeKind = .normal {
+        didSet {
+            inputMethodSwitcher.setMode(nvimMode)
+        }
+    }
     @Published var cursorLine: Int = 1
     @Published var cursorColumn: Int = 1
     @Published var isCloseWarningEnabled: Bool = {
@@ -294,6 +329,51 @@ class WorkspaceState: ObservableObject {
                 return
             }
             UserDefaults.standard.set(editorFontSize, forKey: Self.editorFontSizeKey)
+            scheduleNvimSettingsSync()
+        }
+    }
+    @Published var editorLigaturesEnabled: Bool = {
+        if UserDefaults.standard.object(forKey: WorkspaceState.editorLigaturesEnabledKey) == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: WorkspaceState.editorLigaturesEnabledKey)
+    }() {
+        didSet {
+            UserDefaults.standard.set(editorLigaturesEnabled, forKey: Self.editorLigaturesEnabledKey)
+            scheduleNvimSettingsSync()
+        }
+    }
+    @Published var editorLineSpacing: Double = {
+        guard UserDefaults.standard.object(forKey: WorkspaceState.editorLineSpacingKey) != nil else {
+            return WorkspaceState.defaultEditorLineSpacing
+        }
+        let value = UserDefaults.standard.double(forKey: WorkspaceState.editorLineSpacingKey)
+        return WorkspaceState.clampEditorLineSpacing(value)
+    }() {
+        didSet {
+            let clamped = Self.clampEditorLineSpacing(editorLineSpacing)
+            if clamped != editorLineSpacing {
+                editorLineSpacing = clamped
+                return
+            }
+            UserDefaults.standard.set(editorLineSpacing, forKey: Self.editorLineSpacingKey)
+            scheduleNvimSettingsSync()
+        }
+    }
+    @Published var editorCharacterSpacing: Double = {
+        guard UserDefaults.standard.object(forKey: WorkspaceState.editorCharacterSpacingKey) != nil else {
+            return WorkspaceState.defaultEditorCharacterSpacing
+        }
+        let value = UserDefaults.standard.double(forKey: WorkspaceState.editorCharacterSpacingKey)
+        return WorkspaceState.clampEditorCharacterSpacing(value)
+    }() {
+        didSet {
+            let clamped = Self.clampEditorCharacterSpacing(editorCharacterSpacing)
+            if clamped != editorCharacterSpacing {
+                editorCharacterSpacing = clamped
+                return
+            }
+            UserDefaults.standard.set(editorCharacterSpacing, forKey: Self.editorCharacterSpacingKey)
             scheduleNvimSettingsSync()
         }
     }
@@ -376,6 +456,76 @@ class WorkspaceState: ObservableObject {
     }() {
         didSet {
             UserDefaults.standard.set(showMinimap, forKey: Self.showMinimapKey)
+            scheduleNvimSettingsSync()
+        }
+    }
+    @Published var nvimFloatingBlurEnabled: Bool = {
+        if UserDefaults.standard.object(forKey: WorkspaceState.nvimFloatingBlurEnabledKey) == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: WorkspaceState.nvimFloatingBlurEnabledKey)
+    }() {
+        didSet {
+            UserDefaults.standard.set(nvimFloatingBlurEnabled, forKey: Self.nvimFloatingBlurEnabledKey)
+            scheduleNvimSettingsSync()
+        }
+    }
+    @Published var nvimFloatingBlurRadius: Double = {
+        if UserDefaults.standard.object(forKey: WorkspaceState.nvimFloatingBlurRadiusKey) == nil {
+            return WorkspaceState.defaultFloatingBlurRadius
+        }
+        return UserDefaults.standard.double(forKey: WorkspaceState.nvimFloatingBlurRadiusKey)
+    }() {
+        didSet {
+            let clamped = Self.clampFloatingBlurRadius(nvimFloatingBlurRadius)
+            if clamped != nvimFloatingBlurRadius {
+                nvimFloatingBlurRadius = clamped
+                return
+            }
+            UserDefaults.standard.set(nvimFloatingBlurRadius, forKey: Self.nvimFloatingBlurRadiusKey)
+            scheduleNvimSettingsSync()
+        }
+    }
+    @Published var nvimFloatingCornerRadius: Double = {
+        if UserDefaults.standard.object(forKey: WorkspaceState.nvimFloatingCornerRadiusKey) == nil {
+            return WorkspaceState.defaultFloatingCornerRadius
+        }
+        return UserDefaults.standard.double(forKey: WorkspaceState.nvimFloatingCornerRadiusKey)
+    }() {
+        didSet {
+            let clamped = Self.clampFloatingCornerRadius(nvimFloatingCornerRadius)
+            if clamped != nvimFloatingCornerRadius {
+                nvimFloatingCornerRadius = clamped
+                return
+            }
+            UserDefaults.standard.set(nvimFloatingCornerRadius, forKey: Self.nvimFloatingCornerRadiusKey)
+            scheduleNvimSettingsSync()
+        }
+    }
+    @Published var nvimFloatingShadowEnabled: Bool = {
+        if UserDefaults.standard.object(forKey: WorkspaceState.nvimFloatingShadowEnabledKey) == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: WorkspaceState.nvimFloatingShadowEnabledKey)
+    }() {
+        didSet {
+            UserDefaults.standard.set(nvimFloatingShadowEnabled, forKey: Self.nvimFloatingShadowEnabledKey)
+            scheduleNvimSettingsSync()
+        }
+    }
+    @Published var nvimFloatingShadowRadius: Double = {
+        if UserDefaults.standard.object(forKey: WorkspaceState.nvimFloatingShadowRadiusKey) == nil {
+            return WorkspaceState.defaultFloatingShadowRadius
+        }
+        return UserDefaults.standard.double(forKey: WorkspaceState.nvimFloatingShadowRadiusKey)
+    }() {
+        didSet {
+            let clamped = Self.clampFloatingShadowRadius(nvimFloatingShadowRadius)
+            if clamped != nvimFloatingShadowRadius {
+                nvimFloatingShadowRadius = clamped
+                return
+            }
+            UserDefaults.standard.set(nvimFloatingShadowRadius, forKey: Self.nvimFloatingShadowRadiusKey)
             scheduleNvimSettingsSync()
         }
     }
@@ -496,6 +646,9 @@ class WorkspaceState: ObservableObject {
     private var recentFileURLs: [URL] = []
     private var recentFolderURLs: [URL] = []
     private var recentEditTimestamps: [URL: Date] = [:]
+    private var recentEditLocations: [URL: [EditorEditLocation]] = [:]
+    private var fileOpenObservers: [UUID: (URL) -> Void] = [:]
+    private var fileCloseObservers: [UUID: (URL) -> Void] = [:]
     private var toastTask: Task<Void, Never>?
     private var toastToken: Int = 0
     private var progressHideTask: Task<Void, Never>?
@@ -506,6 +659,8 @@ class WorkspaceState: ObservableObject {
     private var nvimSaveTask: Task<Void, Never>?
     private var nvimSettingsSyncTask: Task<Void, Never>?
     private var nvimSettingsSyncToken: Int = 0
+    private var nvimMessageExpiryTasks: [UUID: Task<Void, Never>] = [:]
+    private var nvimMiniStatusTask: Task<Void, Never>?
     private var sessionPersistTask: Task<Void, Never>?
     private var turnDiffs: [String: String] = [:]
     private var turnDiffOrder: [String] = []
@@ -513,7 +668,8 @@ class WorkspaceState: ObservableObject {
     private var suppressChatHistoryPersistence = false
     private static let chatURL = URL(string: "smithers-chat://current")!
     private static let terminalScheme = "smithers-terminal"
-    private static let openFileScheme = "smithers-open-file"
+    private static let openFileScheme = "smithers"
+    private static let legacyOpenFileScheme = "smithers-open-file"
     private static let diffScheme = "smithers-diff"
     private static let lastWorkspaceKey = "smithers.lastWorkspacePath"
     private static let sessionStateKey = "smithers.sessionStateByRoot"
@@ -531,12 +687,21 @@ class WorkspaceState: ObservableObject {
     private static let defaultAutoSaveInterval: TimeInterval = 5
     static let progressBarHeightRange: ClosedRange<CGFloat> = 1...8
     static let windowOpacityRange: ClosedRange<Double> = 0.7...1.0
+    static let floatingBlurRadiusRange: ClosedRange<Double> = 0...30
+    static let floatingCornerRadiusRange: ClosedRange<Double> = 0...20
+    static let floatingShadowRadiusRange: ClosedRange<Double> = 0...30
     private static let progressBarAutoHideDelay: TimeInterval = 0.45
+    private static let nvimMessageMaxCount = 6
+    private static let nvimDefaultMessageTimeout: TimeInterval = 4
+    private static let nvimDefaultMiniTimeout: TimeInterval = 2
     private static let progressBarHeightKey = "smithers.progressBarHeight"
     private static let progressBarFillColorKey = "smithers.progressBarFillColor"
     private static let progressBarTrackColorKey = "smithers.progressBarTrackColor"
     private static let editorFontNameKey = "smithers.editorFontName"
     private static let editorFontSizeKey = "smithers.editorFontSize"
+    private static let editorLigaturesEnabledKey = "smithers.editorLigaturesEnabled"
+    private static let editorLineSpacingKey = "smithers.editorLineSpacing"
+    private static let editorCharacterSpacingKey = "smithers.editorCharacterSpacing"
     private static let nvimPathKey = "smithers.nvimPath"
     private static let optionAsMetaKey = "smithers.optionAsMeta"
     private static let scrollbarVisibilityModeKey = "smithers.scrollbarVisibilityMode"
@@ -544,6 +709,11 @@ class WorkspaceState: ObservableObject {
     private static let highlightCurrentLineKey = "smithers.highlightCurrentLine"
     private static let showIndentGuidesKey = "smithers.showIndentGuides"
     private static let showMinimapKey = "smithers.showMinimap"
+    private static let nvimFloatingBlurEnabledKey = "smithers.nvimFloatingBlurEnabled"
+    private static let nvimFloatingBlurRadiusKey = "smithers.nvimFloatingBlurRadius"
+    private static let nvimFloatingCornerRadiusKey = "smithers.nvimFloatingCornerRadius"
+    private static let nvimFloatingShadowEnabledKey = "smithers.nvimFloatingShadowEnabled"
+    private static let nvimFloatingShadowRadiusKey = "smithers.nvimFloatingShadowRadius"
     private static let windowTransparencyEnabledKey = "smithers.windowTransparencyEnabled"
     private static let windowOpacityKey = "smithers.windowOpacity"
 #if DEBUG
@@ -552,27 +722,43 @@ class WorkspaceState: ObservableObject {
 #endif
     private static let defaultEditorFontSize: Double = 13
     private static let defaultEditorFontName: String = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular).fontName
+    private static let defaultEditorLineSpacing: Double = 0
+    private static let defaultEditorCharacterSpacing: Double = 0
+    private static let defaultFloatingBlurRadius: Double = 12
+    private static let defaultFloatingCornerRadius: Double = 8
+    private static let defaultFloatingShadowRadius: Double = 12
+    private static let defaultFloatingShadowOpacity: Float = 0.25
     static let minEditorFontSize: Double = 9
     static let maxEditorFontSize: Double = 32
+    nonisolated static let nonUTF8Placeholder = """
+    This file is not UTF-8 and is opened as read-only.
+    Open it in an external editor to modify.
+    """
+    static let editorLineSpacingRange: ClosedRange<Double> = 0...12
+    static let editorCharacterSpacingRange: ClosedRange<Double> = 0...4
     private var terminalCounter = 0
     private let ghosttyApp = GhosttyApp.shared
+    private let inputMethodSwitcher = InputMethodSwitcher()
     private var nvimLogFileURL: URL?
     private var nvimController: NvimController?
     private var nvimStartTask: Task<NvimController, Error>?
     private var codexService: CodexService?
     private var codexEventsTask: Task<Void, Never>?
+    private var completionService: CodexCompletionService?
     private var activeThreadId: String?
     private var turnHistoryOrder: [String] = []
+    private var nonUTF8Files: Set<URL> = []
     nonisolated private static let maxSearchResults = 200
+    private static let maxRecentEditLocations = 12
+    nonisolated private static let recencyEditWeight = 6
+    nonisolated private static let recencyViewWeight = 3
+    nonisolated private static let pathDepthPenalty = 6
+    nonisolated private static let extensionExactBonus = 16
+    nonisolated private static let extensionPartialBonus = 8
     nonisolated private static let skipDirectoryNames: Set<String> = [
         ".git",
         ".svn",
-        ".hg",
-        ".DS_Store",
-        "node_modules",
-        "DerivedData",
-        "build",
-        "dist"
+        ".hg"
     ]
 
     init() {
@@ -595,6 +781,26 @@ class WorkspaceState: ObservableObject {
 
     var availableEditorFonts: [String] {
         Self.monospacedFontNames
+    }
+
+    var nvimGuifont: String {
+        let displayName = editorFont.displayName ?? editorFontName
+        let escaped = Self.escapeGuifontName(displayName)
+        let size = Int(editorFontSize.rounded())
+        return "\(escaped):h\(size)"
+    }
+
+    var nvimFloatingWindowEffects: NvimFloatingWindowEffects {
+        NvimFloatingWindowEffects(
+            windows: nvimFloatingWindows,
+            blurEnabled: nvimFloatingBlurEnabled,
+            blurRadius: CGFloat(nvimFloatingBlurRadius),
+            cornerRadius: CGFloat(nvimFloatingCornerRadius),
+            shadowEnabled: nvimFloatingShadowEnabled,
+            shadowRadius: CGFloat(nvimFloatingShadowRadius),
+            shadowOpacity: Self.defaultFloatingShadowOpacity,
+            shadowOffset: CGSize(width: 0, height: -2)
+        )
     }
 
     var nvimPathStatusMessage: String {
@@ -652,19 +858,37 @@ class WorkspaceState: ObservableObject {
         let payload = nvimSettingsPayload()
         guard !payload.isEmpty else { return }
         await controller.setGlobalVariables(payload)
+        let optionPayload = nvimOptionsPayload()
+        if !optionPayload.isEmpty {
+            await controller.setOptions(optionPayload)
+        }
     }
 
     private func nvimSettingsPayload() -> [String: MsgPackValue] {
         [
             "smithers_font_name": .string(editorFontName),
             "smithers_font_size": .double(editorFontSize),
+            "smithers_font_ligatures": .bool(editorLigaturesEnabled),
+            "smithers_line_spacing": .double(editorLineSpacing),
+            "smithers_character_spacing": .double(editorCharacterSpacing),
             "smithers_option_as_meta": .string(optionAsMeta.rawValue),
             "smithers_scrollbar_mode": .string(scrollbarVisibilityMode.rawValue),
             "smithers_show_line_numbers": .bool(showLineNumbers),
             "smithers_highlight_current_line": .bool(highlightCurrentLine),
             "smithers_show_indent_guides": .bool(showIndentGuides),
             "smithers_show_minimap": .bool(showMinimap),
+            "smithers_floating_blur_enabled": .bool(nvimFloatingBlurEnabled),
+            "smithers_floating_blur_radius": .double(nvimFloatingBlurRadius),
+            "smithers_floating_corner_radius": .double(nvimFloatingCornerRadius),
+            "smithers_floating_shadow_enabled": .bool(nvimFloatingShadowEnabled),
+            "smithers_floating_shadow_radius": .double(nvimFloatingShadowRadius),
             "smithers_nvim_path": .string(preferredNvimPath.isEmpty ? "" : expandedNvimPath),
+        ]
+    }
+
+    private func nvimOptionsPayload() -> [String: MsgPackValue] {
+        [
+            "guifont": .string(nvimGuifont),
         ]
     }
 
@@ -711,6 +935,21 @@ class WorkspaceState: ObservableObject {
         return NSFont.monospacedSystemFont(ofSize: CGFloat(clamped), weight: .regular)
     }
 
+    private static func escapeGuifontName(_ name: String) -> String {
+        var escaped = ""
+        escaped.reserveCapacity(name.count)
+        for ch in name {
+            switch ch {
+            case " ", "\\", ",", ":":
+                escaped.append("\\")
+                escaped.append(ch)
+            default:
+                escaped.append(ch)
+            }
+        }
+        return escaped
+    }
+
     private static func normalizeEditorFontName(_ name: String, size: Double) -> String {
         if NSFont(name: name, size: CGFloat(size)) != nil {
             return name
@@ -722,8 +961,28 @@ class WorkspaceState: ObservableObject {
         min(max(size, minEditorFontSize), maxEditorFontSize)
     }
 
+    private static func clampEditorLineSpacing(_ value: Double) -> Double {
+        min(max(value, editorLineSpacingRange.lowerBound), editorLineSpacingRange.upperBound)
+    }
+
+    private static func clampEditorCharacterSpacing(_ value: Double) -> Double {
+        min(max(value, editorCharacterSpacingRange.lowerBound), editorCharacterSpacingRange.upperBound)
+    }
+
     private static func clampWindowOpacity(_ value: Double) -> Double {
         min(max(value, windowOpacityRange.lowerBound), windowOpacityRange.upperBound)
+    }
+
+    private static func clampFloatingBlurRadius(_ value: Double) -> Double {
+        min(max(value, floatingBlurRadiusRange.lowerBound), floatingBlurRadiusRange.upperBound)
+    }
+
+    private static func clampFloatingCornerRadius(_ value: Double) -> Double {
+        min(max(value, floatingCornerRadiusRange.lowerBound), floatingCornerRadiusRange.upperBound)
+    }
+
+    private static func clampFloatingShadowRadius(_ value: Double) -> Double {
+        min(max(value, floatingShadowRadiusRange.lowerBound), floatingShadowRadiusRange.upperBound)
     }
 
     func persistChatHistory() {
@@ -745,13 +1004,12 @@ class WorkspaceState: ObservableObject {
         guard let rootDirectory else { return }
         chatHistoryPersistTask?.cancel()
         let root = rootDirectory
-        chatHistoryPersistTask = Task { [weak self] in
+        chatHistoryPersistTask = Task.detached { [weak self] in
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard let self, !Task.isCancelled else { return }
-            let messages = self.chatMessages
-            Task.detached(priority: .utility) {
-                ChatHistoryStore.saveHistory(messages, for: root)
-            }
+            let messages = await MainActor.run { self.chatMessages }
+            guard !Task.isCancelled else { return }
+            ChatHistoryStore.saveHistory(messages, for: root)
         }
     }
 
@@ -918,6 +1176,7 @@ class WorkspaceState: ObservableObject {
         fileLoadTask?.cancel()
         openFileContents = [:]
         savedFileContents = [:]
+        nonUTF8Files = []
         fileIndex = []
         fileSearchResults = []
         searchQuery = ""
@@ -928,6 +1187,7 @@ class WorkspaceState: ObservableObject {
         isShortcutsPanelVisible = false
         recentEditTimestamps = [:]
         recentEditEntries = []
+        recentEditLocations = [:]
         activeDiffPreview = nil
         activeSessionDiff = nil
         sessionDiffSnapshot = nil
@@ -954,6 +1214,7 @@ class WorkspaceState: ObservableObject {
         }
         rebuildFileIndex()
         startCodexService(cwd: url.path, resumeThreadId: storedThreadId)
+        startCompletionService(cwd: url.path)
         suppressSessionPersistence = false
         persistSessionStateIfNeeded()
         applyWindowFrameForCurrentWorkspace()
@@ -978,6 +1239,24 @@ class WorkspaceState: ObservableObject {
     func handleExternalOpen(url: URL, line: Int?, column: Int?) {
         Task { @MainActor [weak self] in
             await self?.handleExternalOpen(urls: [url], focus: ExternalOpenFocus(url: url, line: line, column: column))
+        }
+    }
+
+    struct ExternalOpenRequest {
+        let url: URL
+        let line: Int?
+        let column: Int?
+    }
+
+    func handleExternalOpen(requests: [ExternalOpenRequest]) {
+        guard !requests.isEmpty else { return }
+        let urls = requests.map { $0.url }
+        let focusRequest = requests.first { $0.line != nil || $0.column != nil }
+        let focus = focusRequest.map {
+            ExternalOpenFocus(url: $0.url, line: $0.line, column: $0.column)
+        }
+        Task { @MainActor [weak self] in
+            await self?.handleExternalOpen(urls: urls, focus: focus)
         }
     }
 
@@ -1054,6 +1333,59 @@ class WorkspaceState: ObservableObject {
             } else {
                 selectFile(resolvedFocus.url)
             }
+        }
+    }
+
+    func addFileOpenObserver(_ handler: @escaping (URL) -> Void) -> UUID {
+        let id = UUID()
+        fileOpenObservers[id] = handler
+        return id
+    }
+
+    func removeFileOpenObserver(_ id: UUID) {
+        fileOpenObservers.removeValue(forKey: id)
+    }
+
+    func addFileCloseObserver(_ handler: @escaping (URL) -> Void) -> UUID {
+        let id = UUID()
+        fileCloseObservers[id] = handler
+        return id
+    }
+
+    func removeFileCloseObserver(_ id: UUID) {
+        fileCloseObservers.removeValue(forKey: id)
+    }
+
+    func isFileOpen(_ url: URL) -> Bool {
+        let normalized = url.standardizedFileURL
+        return openFiles.contains { candidate in
+            guard isRegularFileURL(candidate) else { return false }
+            return candidate.standardizedFileURL == normalized
+        }
+    }
+
+    private func notifyOpenFileObservers(oldValue: [URL], newValue: [URL]) {
+        let oldSet = Set(oldValue.filter { isRegularFileURL($0) }.map { $0.standardizedFileURL })
+        let newSet = Set(newValue.filter { isRegularFileURL($0) }.map { $0.standardizedFileURL })
+        let opened = newSet.subtracting(oldSet)
+        let closed = oldSet.subtracting(newSet)
+        for url in opened {
+            notifyFileOpened(url)
+        }
+        for url in closed {
+            notifyFileClosed(url)
+        }
+    }
+
+    private func notifyFileOpened(_ url: URL) {
+        for handler in fileOpenObservers.values {
+            handler(url)
+        }
+    }
+
+    private func notifyFileClosed(_ url: URL) {
+        for handler in fileCloseObservers.values {
+            handler(url)
         }
     }
 
@@ -1167,30 +1499,57 @@ class WorkspaceState: ObservableObject {
         selectedFileURL = url
         currentLanguage = SupportedLanguage.fromFileName(url.lastPathComponent)
         fileLoadTask?.cancel()
-        if let cached = openFileContents[url] {
+        let normalizedURL = url.standardizedFileURL
+        if let cached = openFileContents[normalizedURL] ?? openFileContents[url] {
+            if savedFileContents[normalizedURL] == nil {
+                savedFileContents[normalizedURL] = cached
+            }
             if savedFileContents[url] == nil {
                 savedFileContents[url] = cached
             }
             isEditorLoading = false
-            setEditorText(cached)
+            if isNonUTF8File(normalizedURL) {
+                currentLanguage = nil
+                setEditorText(Self.nonUTF8Placeholder)
+            } else {
+                setEditorText(cached)
+            }
             return
         }
         isEditorLoading = true
         setEditorText("")
         let requestedURL = url
         fileLoadTask = Task { [weak self] in
-            let text = await Task.detached(priority: .userInitiated) {
-                (try? String(contentsOf: requestedURL, encoding: .utf8)) ?? ""
+            let loadResult = await Task.detached(priority: .userInitiated) {
+                Self.loadUTF8Text(from: requestedURL)
             }.value
             guard !Task.isCancelled, let self else { return }
+            let normalized = requestedURL.standardizedFileURL
+            if loadResult.isUTF8 {
+                self.clearNonUTF8File(normalized)
+            } else {
+                self.markNonUTF8File(normalized)
+            }
+            if self.savedFileContents[normalized] == nil {
+                self.savedFileContents[normalized] = loadResult.text
+            }
             if self.savedFileContents[requestedURL] == nil {
-                self.savedFileContents[requestedURL] = text
+                self.savedFileContents[requestedURL] = loadResult.text
+            }
+            if self.openFileContents[normalized] == nil {
+                self.openFileContents[normalized] = loadResult.text
             }
             if self.openFileContents[requestedURL] == nil {
-                self.openFileContents[requestedURL] = text
+                self.openFileContents[requestedURL] = loadResult.text
             }
             guard self.selectedFileURL == requestedURL else { return }
-            self.setEditorText(text)
+            if loadResult.isUTF8 {
+                self.setEditorText(loadResult.text)
+            } else {
+                self.currentLanguage = nil
+                self.setEditorText(Self.nonUTF8Placeholder)
+                self.showToast("File is not UTF-8 and is read-only")
+            }
             self.isEditorLoading = false
             self.updateWindowTitle()
         }
@@ -1221,6 +1580,7 @@ class WorkspaceState: ObservableObject {
             openFileContents.removeValue(forKey: url)
             savedFileContents.removeValue(forKey: url)
             savedFileContents.removeValue(forKey: url.standardizedFileURL)
+            clearNonUTF8File(url)
             if wasSelected {
                 selectedFileURL = nil
                 currentLanguage = nil
@@ -1241,6 +1601,7 @@ class WorkspaceState: ObservableObject {
             openFileContents.removeValue(forKey: url)
             savedFileContents.removeValue(forKey: url)
             savedFileContents.removeValue(forKey: url.standardizedFileURL)
+            clearNonUTF8File(url)
         }
 
         guard wasSelected else { return }
@@ -1678,6 +2039,195 @@ class WorkspaceState: ObservableObject {
         }
     }
 
+    func handleNvimGridMetrics(_ metrics: GhosttyGridMetrics?) {
+        if metrics != nvimGridMetrics {
+            nvimGridMetrics = metrics
+        }
+    }
+
+    func handleNvimCmdlineShow(_ state: NvimCmdlineState) {
+        if state != nvimCmdlineState {
+            nvimCmdlineState = state
+        } else if !state.isVisible {
+            nvimCmdlineState.isVisible = true
+        }
+    }
+
+    func handleNvimCmdlineHide() {
+        if nvimCmdlineState.isVisible {
+            nvimCmdlineState.isVisible = false
+        }
+    }
+
+    func handleNvimCmdlinePos(_ pos: Int, level: Int) {
+        guard nvimCmdlineState.isVisible else { return }
+        if nvimCmdlineState.cursorPos != pos || nvimCmdlineState.level != level {
+            nvimCmdlineState.cursorPos = pos
+            nvimCmdlineState.level = level
+        }
+    }
+
+    func handleNvimPopupmenuShow(_ state: NvimPopupMenuState) {
+        if state != nvimPopupMenuState {
+            nvimPopupMenuState = state
+        } else if !state.isVisible {
+            nvimPopupMenuState.isVisible = true
+        }
+    }
+
+    func handleNvimPopupmenuHide() {
+        if nvimPopupMenuState.isVisible {
+            nvimPopupMenuState.isVisible = false
+        }
+    }
+
+    func handleNvimPopupmenuSelect(_ selected: Int) {
+        guard nvimPopupMenuState.isVisible else { return }
+        if nvimPopupMenuState.selected != selected {
+            nvimPopupMenuState.selected = selected
+        }
+    }
+
+    func handleNvimMessageShow(kind: String, chunks: [NvimTextChunk], replaceLast: Bool) {
+        let text = chunks.map(\.text).joined()
+        let lineCount = max(1, text.split(separator: "\n", omittingEmptySubsequences: false).count)
+        let route = routeNvimMessage(event: .msgShow, kind: kind, lineCount: lineCount)
+
+        switch route.view {
+        case .none:
+            return
+        case .mini:
+            setMiniStatus(text, timeout: resolveNvimTimeout(for: route, view: .mini))
+        case .float:
+            insertNvimMessage(kind: kind, text: text, replaceLast: replaceLast, timeout: resolveNvimTimeout(for: route, view: .float))
+        }
+    }
+
+    func handleNvimMessageClear() {
+        clearNvimMessages()
+        nvimMiniStatusTask?.cancel()
+        nvimMiniStatusTask = nil
+        if !nvimMiniMessageState.status.isEmpty {
+            nvimMiniMessageState.status = ""
+        }
+    }
+
+    func handleNvimMessageShowMode(_ chunks: [NvimTextChunk]) {
+        let text = chunks.map(\.text).joined()
+        if text != nvimMiniMessageState.showMode {
+            nvimMiniMessageState.showMode = text
+        }
+    }
+
+    func handleNvimMessageShowCmd(_ chunks: [NvimTextChunk]) {
+        let text = chunks.map(\.text).joined()
+        if text != nvimMiniMessageState.showCmd {
+            nvimMiniMessageState.showCmd = text
+        }
+    }
+
+    func handleNvimMessageRuler(_ chunks: [NvimTextChunk]) {
+        let text = chunks.map(\.text).joined()
+        if text != nvimMiniMessageState.ruler {
+            nvimMiniMessageState.ruler = text
+        }
+    }
+
+    private func routeNvimMessage(event: NvimMessageEvent, kind: String, lineCount: Int) -> NvimMessageRoute {
+        if let match = nvimMessageRoutes.first(where: { $0.matches(event: event, kind: kind, lineCount: lineCount) }) {
+            return match
+        }
+        return NvimMessageRoute(
+            event: event,
+            kinds: nil,
+            view: .float,
+            timeout: Self.nvimDefaultMessageTimeout,
+            minHeight: nil,
+            maxHeight: nil
+        )
+    }
+
+    private func resolveNvimTimeout(for route: NvimMessageRoute, view: NvimMessageView) -> TimeInterval? {
+        if let timeout = route.timeout {
+            return timeout > 0 ? timeout : nil
+        }
+        switch view {
+        case .mini:
+            return Self.nvimDefaultMiniTimeout
+        case .float:
+            return Self.nvimDefaultMessageTimeout
+        case .none:
+            return nil
+        }
+    }
+
+    private func setMiniStatus(_ text: String, timeout: TimeInterval?) {
+        if text != nvimMiniMessageState.status {
+            nvimMiniMessageState.status = text
+        }
+        nvimMiniStatusTask?.cancel()
+        guard let timeout else { return }
+        nvimMiniStatusTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            guard let self else { return }
+            if self.nvimMiniMessageState.status == text {
+                self.nvimMiniMessageState.status = ""
+            }
+        }
+    }
+
+    private func insertNvimMessage(kind: String, text: String, replaceLast: Bool, timeout: TimeInterval?) {
+        if replaceLast, let lastIndex = nvimMessages.indices.last {
+            var entry = nvimMessages[lastIndex]
+            cancelNvimMessageExpiry(for: entry.id)
+            entry.kind = kind
+            entry.text = text
+            entry.timestamp = Date()
+            nvimMessages[lastIndex] = entry
+            scheduleNvimMessageExpiry(id: entry.id, timeout: timeout)
+            return
+        }
+
+        let entry = NvimMessage(id: UUID(), kind: kind, text: text, timestamp: Date())
+        nvimMessages.append(entry)
+        if nvimMessages.count > Self.nvimMessageMaxCount {
+            let overflow = nvimMessages.count - Self.nvimMessageMaxCount
+            let removed = nvimMessages.prefix(overflow)
+            for message in removed {
+                cancelNvimMessageExpiry(for: message.id)
+            }
+            nvimMessages.removeFirst(overflow)
+        }
+        scheduleNvimMessageExpiry(id: entry.id, timeout: timeout)
+    }
+
+    private func scheduleNvimMessageExpiry(id: UUID, timeout: TimeInterval?) {
+        guard let timeout else { return }
+        nvimMessageExpiryTasks[id]?.cancel()
+        nvimMessageExpiryTasks[id] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            guard let self else { return }
+            if let index = self.nvimMessages.firstIndex(where: { $0.id == id }) {
+                self.nvimMessages.remove(at: index)
+            }
+            self.nvimMessageExpiryTasks.removeValue(forKey: id)
+        }
+    }
+
+    private func cancelNvimMessageExpiry(for id: UUID) {
+        nvimMessageExpiryTasks[id]?.cancel()
+        nvimMessageExpiryTasks.removeValue(forKey: id)
+    }
+
+    private func clearNvimMessages() {
+        let ids = Array(nvimMessageExpiryTasks.keys)
+        for id in ids {
+            nvimMessageExpiryTasks[id]?.cancel()
+        }
+        nvimMessageExpiryTasks.removeAll()
+        nvimMessages.removeAll()
+    }
+
     func scrollNvimToTopLine(_ topLine: Int) {
         guard isNvimModeEnabled, let controller = nvimController else { return }
         Task { await controller.scrollToTopLine(topLine) }
@@ -1728,6 +2278,10 @@ class WorkspaceState: ObservableObject {
         if selectedFileURL == oldURL {
             selectedFileURL = newURL
         }
+        if isNonUTF8File(oldURL) {
+            clearNonUTF8File(oldURL)
+            markNonUTF8File(newURL)
+        }
         if let cached = openFileContents.removeValue(forKey: oldURL) {
             openFileContents[newURL] = cached
         }
@@ -1774,6 +2328,15 @@ class WorkspaceState: ObservableObject {
 
         openFileContents = remapKeys(openFileContents)
         savedFileContents = remapKeys(savedFileContents)
+        if !nonUTF8Files.isEmpty {
+            let updatedNonUTF8 = nonUTF8Files.map { url -> URL in
+                let path = url.path
+                guard path.hasPrefix(oldPath) else { return url }
+                let suffix = String(path.dropFirst(oldPath.count))
+                return URL(fileURLWithPath: newPath + suffix)
+            }
+            nonUTF8Files = Set(updatedNonUTF8.map { $0.standardizedFileURL })
+        }
     }
 
     private func closeOpenFiles(in folderURL: URL) {
@@ -1849,6 +2412,12 @@ class WorkspaceState: ObservableObject {
         nvimModifiedBuffers = unique
     }
 
+    func setNvimFloatingWindows(_ windows: [NvimFloatingWindow]) {
+        if windows != nvimFloatingWindows {
+            nvimFloatingWindows = windows
+        }
+    }
+
     func handleNvimBufferModified(
         buffer: Int64?,
         name: String,
@@ -1896,7 +2465,35 @@ class WorkspaceState: ObservableObject {
         return nvimModifiedBuffers.contains { $0.url?.standardizedFileURL == normalized }
     }
 
+    private func markNonUTF8File(_ url: URL) {
+        nonUTF8Files.insert(url.standardizedFileURL)
+    }
+
+    private func clearNonUTF8File(_ url: URL) {
+        nonUTF8Files.remove(url.standardizedFileURL)
+    }
+
+    private func isNonUTF8File(_ url: URL) -> Bool {
+        nonUTF8Files.contains(url.standardizedFileURL)
+    }
+
+    nonisolated private static func loadUTF8Text(from url: URL) -> (text: String, isUTF8: Bool) {
+        guard let data = try? Data(contentsOf: url) else {
+            return ("", true)
+        }
+        if data.isEmpty {
+            return ("", true)
+        }
+        if let text = String(data: data, encoding: .utf8) {
+            return (text, true)
+        }
+        return (nonUTF8Placeholder, false)
+    }
+
     private func isNativeFileModified(_ url: URL) -> Bool {
+        if isNonUTF8File(url) {
+            return false
+        }
         let normalized = url.standardizedFileURL
         guard let saved = savedFileContents[normalized] ?? savedFileContents[url] else {
             return false
@@ -2043,7 +2640,12 @@ class WorkspaceState: ObservableObject {
     private func saveAllNativeFiles() {
         var didSave = false
         var hadError = false
+        var skippedNonUTF8 = false
         for url in openFiles where isRegularFileURL(url) {
+            if isNonUTF8File(url) {
+                skippedNonUTF8 = true
+                continue
+            }
             let normalized = url.standardizedFileURL
             guard let content = openFileContents[normalized] ?? openFileContents[url] else { continue }
             if let saved = savedFileContents[normalized] ?? savedFileContents[url],
@@ -2065,6 +2667,8 @@ class WorkspaceState: ObservableObject {
         }
         if hadError {
             showToast("Save failed for some files")
+        } else if skippedNonUTF8 {
+            showToast("Skipped non-UTF-8 files")
         } else if didSave {
             showToast("Saved all")
         } else {
@@ -2074,6 +2678,12 @@ class WorkspaceState: ObservableObject {
 
     private func saveNativeFile(_ url: URL, notify: Bool) {
         let normalized = url.standardizedFileURL
+        if isNonUTF8File(normalized) {
+            if notify {
+                showToast("Cannot save non-UTF-8 file")
+            }
+            return
+        }
         let content = openFileContents[normalized] ?? openFileContents[url]
             ?? (selectedFileURL == normalized ? editorText : nil)
         guard let content else { return }
@@ -2247,6 +2857,14 @@ class WorkspaceState: ObservableObject {
         nvimCurrentFilePath = nil
         nvimViewport = nil
         nvimModifiedBuffers = []
+        nvimFloatingWindows = []
+        nvimGridMetrics = nil
+        nvimCmdlineState = .empty
+        nvimPopupMenuState = .empty
+        clearNvimMessages()
+        nvimMiniStatusTask?.cancel()
+        nvimMiniStatusTask = nil
+        nvimMiniMessageState = .empty
         nvimMode = .normal
         updateWindowTitle()
         showWindowAfterNvimReady()
@@ -2271,7 +2889,7 @@ class WorkspaceState: ObservableObject {
         guard let fileURL = resolveFileURL(path: path) else { return nil }
         var components = URLComponents()
         components.scheme = Self.openFileScheme
-        components.path = "/open"
+        components.host = "open"
         var items = [URLQueryItem(name: "path", value: fileURL.path)]
         if let line {
             items.append(URLQueryItem(name: "line", value: String(line)))
@@ -2284,13 +2902,24 @@ class WorkspaceState: ObservableObject {
     }
 
     func handleOpenURL(_ url: URL) -> Bool {
-        guard url.scheme == Self.openFileScheme else { return false }
+        guard let scheme = url.scheme else { return false }
+        guard scheme == Self.openFileScheme || scheme == Self.legacyOpenFileScheme else { return false }
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+        if let host = components.host, host.lowercased() != "open" {
+            return false
+        }
+        if components.host == nil && !components.path.isEmpty && components.path.lowercased() != "/open" {
+            return false
+        }
         guard let pathValue = components.queryItems?.first(where: { $0.name == "path" })?.value else { return false }
-        guard let resolved = resolveFileURL(path: pathValue) else { return false }
+        guard let resolved = resolvePathURL(path: pathValue, allowDirectory: true) else { return false }
+        var isDir: ObjCBool = false
+        let isDirectory = FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDir) && isDir.boolValue
         let line = components.queryItems?.first(where: { $0.name == "line" })?.value.flatMap(Int.init)
         let column = components.queryItems?.first(where: { $0.name == "column" })?.value.flatMap(Int.init)
-        handleExternalOpen(url: resolved, line: line, column: column)
+        let normalizedLine = isDirectory ? nil : line.flatMap { $0 > 0 ? $0 : nil }
+        let normalizedColumn = normalizedLine == nil ? nil : column.flatMap { $0 > 0 ? $0 : nil }
+        handleExternalOpen(requests: [ExternalOpenRequest(url: resolved, line: normalizedLine, column: normalizedColumn)])
         return true
     }
 
@@ -3042,6 +3671,7 @@ class WorkspaceState: ObservableObject {
     private func scheduleAutoSaveIfNeeded(for url: URL) {
         guard isAutoSaveEnabled else { return }
         guard !isNvimModeEnabled, isRegularFileURL(url) else { return }
+        guard !isNonUTF8File(url) else { return }
         autoSaveToken += 1
         let token = autoSaveToken
         let targetURL = url.standardizedFileURL
@@ -3182,7 +3812,7 @@ class WorkspaceState: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await codexService.sendMessage(trimmed, images: images)
+                _ = try await codexService.sendMessage(trimmed, images: images)
             } catch {
                 self.appendErrorMessage("Failed to send message: \(error.localizedDescription)")
                 self.isTurnInProgress = false
@@ -3731,8 +4361,26 @@ class WorkspaceState: ObservableObject {
         let skipNames = Self.skipDirectoryNames
         let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey]
         fileIndexTask = Task { [weak self] in
-            let entries = await Task.detached(priority: .utility) {
+            let entries = await Task.detached(priority: .utility) { [rootDirectory, rootPathPrefix, skipNames, keys] in
                 let fm = FileManager.default
+                var ignoreMatcher = Self.loadIgnoreMatcher(rootDirectory: rootDirectory)
+                if let gitPaths = Self.runGitListFiles(rootDirectory: rootDirectory) {
+                    var entries: [FileIndexEntry] = []
+                    entries.reserveCapacity(gitPaths.count)
+                    for path in gitPaths {
+                        if Self.isHiddenPath(path) { continue }
+                        let fileURL = rootDirectory.appendingPathComponent(path)
+                        var isDir: ObjCBool = false
+                        if fm.fileExists(atPath: fileURL.path, isDirectory: &isDir), isDir.boolValue {
+                            continue
+                        }
+                        entries.append(FileIndexEntry(url: fileURL, displayPath: path))
+                    }
+                    entries.sort { lhs, rhs in
+                        lhs.displayPath.localizedStandardCompare(rhs.displayPath) == .orderedAscending
+                    }
+                    return entries
+                }
                 guard let enumerator = fm.enumerator(
                     at: rootDirectory,
                     includingPropertiesForKeys: keys,
@@ -3748,6 +4396,16 @@ class WorkspaceState: ObservableObject {
                         if skipNames.contains(url.lastPathComponent) {
                             enumerator.skipDescendants()
                         }
+                        let fullPath = url.path
+                        let displayPath: String
+                        if fullPath.hasPrefix(rootPathPrefix) {
+                            displayPath = String(fullPath.dropFirst(rootPathPrefix.count))
+                        } else {
+                            displayPath = url.lastPathComponent
+                        }
+                        if ignoreMatcher.shouldIgnore(path: displayPath, isDirectory: true) {
+                            continue
+                        }
                         continue
                     }
                     guard values?.isRegularFile == true else { continue }
@@ -3757,6 +4415,9 @@ class WorkspaceState: ObservableObject {
                         displayPath = String(fullPath.dropFirst(rootPathPrefix.count))
                     } else {
                         displayPath = url.lastPathComponent
+                    }
+                    if ignoreMatcher.shouldIgnore(path: displayPath, isDirectory: false) {
+                        continue
                     }
                     entries.append(FileIndexEntry(url: url, displayPath: displayPath))
                 }
@@ -3787,7 +4448,7 @@ class WorkspaceState: ObservableObject {
                 var scored: [(PaletteCommand, Int)] = []
                 scored.reserveCapacity(commands.count)
                 for command in commands {
-                    if let score = Self.scoreMatch(query: commandQuery, in: command.title.lowercased()) {
+                    if let score = Self.scoreCommandMatch(query: commandQuery, in: command.title.lowercased()) {
                         scored.append((command, score))
                     }
                 }
@@ -3804,8 +4465,10 @@ class WorkspaceState: ObservableObject {
 
         let query = trimmedQuery.lowercased()
         let entries = fileIndex
+        let recentEditScores = Self.buildRecencyScores(from: recentEditEntries.map(\.url), weight: Self.recencyEditWeight)
+        let recentViewScores = Self.buildRecencyScores(from: recentFileEntries.map(\.url), weight: Self.recencyViewWeight)
         searchTask = Task { [weak self] in
-            let results = await Task.detached(priority: .userInitiated) {
+            let results = await Task.detached(priority: .userInitiated) { [entries, query, recentEditScores, recentViewScores] in
                 if query.isEmpty {
                     return Array(entries.prefix(Self.maxSearchResults))
                 }
@@ -3813,7 +4476,12 @@ class WorkspaceState: ObservableObject {
                 scored.reserveCapacity(entries.count / 2)
                 for entry in entries {
                     if Task.isCancelled { return [FileIndexEntry]() }
-                    if let score = Self.scoreMatch(query: query, in: entry.lowercasedPath) {
+                    if let score = Self.scoreFileMatch(
+                        query: query,
+                        entry: entry,
+                        recentEditScores: recentEditScores,
+                        recentViewScores: recentViewScores
+                    ) {
                         scored.append((entry, score))
                     }
                 }
@@ -3854,12 +4522,11 @@ class WorkspaceState: ObservableObject {
         searchInFilesToken += 1
         let token = searchInFilesToken
         let rootPath = rootDirectory.path
-        searchInFilesTask = Task { [weak self] in
+        searchInFilesTask = Task.detached { [weak self] in
             try? await Task.sleep(nanoseconds: 250_000_000)
             guard let self, !Task.isCancelled else { return }
-            let result = await Task.detached(priority: .userInitiated) {
-                Self.runRipgrep(query: trimmedQuery, rootPath: rootPath)
-            }.value
+            let result = await Self.runRipgrep(query: trimmedQuery, rootPath: rootPath)
+            guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard token == self.searchInFilesToken else { return }
                 switch result {
@@ -3875,27 +4542,470 @@ class WorkspaceState: ObservableObject {
         }
     }
 
-    nonisolated private static func scoreMatch(query: String, in text: String) -> Int? {
-        if let range = text.range(of: query) {
-            let offset = text.distance(from: text.startIndex, to: range.lowerBound)
-            return offset
+    nonisolated private static func scoreCommandMatch(query: String, in text: String) -> Int? {
+        fuzzyScore(query: query, in: text, fileNameStartIndex: 0)
+    }
+
+    nonisolated private static func scoreFileMatch(
+        query: String,
+        entry: FileIndexEntry,
+        recentEditScores: [String: Int],
+        recentViewScores: [String: Int]
+    ) -> Int? {
+        guard let baseScore = fuzzyScore(
+            query: query,
+            in: entry.lowercasedPath,
+            fileNameStartIndex: entry.fileNameStartIndex
+        ) else {
+            return nil
         }
+        var score = baseScore
+        score += entry.pathDepth * Self.pathDepthPenalty
+        score += min(entry.displayPath.count, 120) / 6
+        if entry.lowercasedName == query {
+            score -= 30
+        } else if entry.lowercasedName.hasPrefix(query) {
+            score -= 18
+        } else if entry.lowercasedName.contains(query) {
+            score -= 8
+        }
+        score -= Self.extensionBonus(for: query, fileExtension: entry.fileExtension)
+        let pathKey = entry.url.standardizedFileURL.path
+        score -= (recentEditScores[pathKey] ?? 0)
+        score -= (recentViewScores[pathKey] ?? 0)
+        return score
+    }
+
+    nonisolated private static func buildRecencyScores(from urls: [URL], weight: Int) -> [String: Int] {
+        guard weight > 0, !urls.isEmpty else { return [:] }
+        var scores: [String: Int] = [:]
+        let count = urls.count
+        for (index, url) in urls.enumerated() {
+            let bonus = (count - index) * weight
+            scores[url.standardizedFileURL.path] = bonus
+        }
+        return scores
+    }
+
+    nonisolated private static func extensionBonus(for query: String, fileExtension: String) -> Int {
+        guard let dotIndex = query.lastIndex(of: "."), dotIndex < query.index(before: query.endIndex) else {
+            if !query.contains("/"), !query.contains(" "), !query.contains(".") {
+                if fileExtension == query {
+                    return Self.extensionPartialBonus
+                }
+                if fileExtension.hasPrefix(query) {
+                    return max(2, Self.extensionPartialBonus / 2)
+                }
+            }
+            return 0
+        }
+        let ext = String(query[query.index(after: dotIndex)...])
+        if ext.isEmpty { return 0 }
+        if fileExtension == ext {
+            return Self.extensionExactBonus
+        }
+        if fileExtension.hasPrefix(ext) {
+            return Self.extensionPartialBonus
+        }
+        return 0
+    }
+
+    nonisolated private static func fuzzyScore(
+        query: String,
+        in text: String,
+        fileNameStartIndex: Int
+    ) -> Int? {
+        guard !query.isEmpty else { return 0 }
+        let textChars = Array(text)
+        let queryChars = Array(query)
+        guard queryChars.count <= textChars.count else { return nil }
+
+        var searchIndex = 0
+        var lastMatch = -1
+        var firstMatch = -1
+        var lastMatchIndex = -1
+        var gapSum = 0
+        var consecutive = 0
+        var boundaryHits = 0
+        var fileNameMatches = 0
+
+        for ch in queryChars {
+            var foundIndex = -1
+            var i = searchIndex
+            while i < textChars.count {
+                if textChars[i] == ch {
+                    foundIndex = i
+                    break
+                }
+                i += 1
+            }
+            if foundIndex == -1 { return nil }
+            if firstMatch == -1 { firstMatch = foundIndex }
+            lastMatchIndex = foundIndex
+            if foundIndex >= fileNameStartIndex {
+                fileNameMatches += 1
+            }
+            if lastMatch >= 0 {
+                let gap = foundIndex - lastMatch - 1
+                if gap == 0 { consecutive += 1 }
+                gapSum += max(0, gap)
+            }
+            if foundIndex == 0 || Self.isBoundary(textChars[foundIndex - 1]) {
+                boundaryHits += 1
+            }
+            lastMatch = foundIndex
+            searchIndex = foundIndex + 1
+        }
+
+        let matchCount = queryChars.count
+        let consecutiveRun = firstMatch >= 0 && (lastMatchIndex - firstMatch + 1 == matchCount)
+        let startsInName = firstMatch >= fileNameStartIndex
+        let inFileName = fileNameMatches == matchCount
+
         var score = 0
-        var searchIndex = text.startIndex
-        for ch in query {
-            guard let found = text[searchIndex...].firstIndex(of: ch) else {
+        score += max(0, firstMatch) * 2
+        score += gapSum * 4
+        score -= consecutive * 6
+        score -= boundaryHits * 3
+        if consecutiveRun { score -= 12 }
+        if inFileName { score -= 20 } else if startsInName { score -= 10 }
+        score += textChars.count / 6
+        return score
+    }
+
+    nonisolated private static func isBoundary(_ char: Character) -> Bool {
+        switch char {
+        case "/", "_", "-", " ", ".":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private struct IgnoreRule {
+        let isNegation: Bool
+        let directoryOnly: Bool
+        let directoryRegex: NSRegularExpression?
+        let descendantRegex: NSRegularExpression?
+        let pathRegex: NSRegularExpression?
+
+        init?(
+            pattern: String,
+            basePath: String,
+            isNegation: Bool,
+            directoryOnly: Bool,
+            anchored: Bool
+        ) {
+            guard let body = WorkspaceState.buildIgnoreRegexBody(
+                pattern: pattern,
+                basePath: basePath,
+                anchored: anchored
+            ) else {
                 return nil
             }
-            score += text.distance(from: text.startIndex, to: found)
-            searchIndex = text.index(after: found)
+            self.isNegation = isNegation
+            self.directoryOnly = directoryOnly
+
+            if directoryOnly {
+                guard let dirRegex = try? NSRegularExpression(pattern: "\(body)$"),
+                      let descendantRegex = try? NSRegularExpression(pattern: "\(body)/.*$")
+                else {
+                    return nil
+                }
+                self.directoryRegex = dirRegex
+                self.descendantRegex = descendantRegex
+                self.pathRegex = nil
+            } else {
+                guard let pathRegex = try? NSRegularExpression(pattern: "\(body)(?:/.*)?$") else {
+                    return nil
+                }
+                self.directoryRegex = nil
+                self.descendantRegex = nil
+                self.pathRegex = pathRegex
+            }
         }
-        return 1000 + score
+
+        func matches(path: String, isDirectory: Bool) -> Bool {
+            let range = NSRange(path.startIndex..., in: path)
+            if directoryOnly {
+                if isDirectory, let directoryRegex,
+                   directoryRegex.firstMatch(in: path, range: range) != nil {
+                    return true
+                }
+                if let descendantRegex, descendantRegex.firstMatch(in: path, range: range) != nil {
+                    return true
+                }
+                return false
+            }
+            return pathRegex?.firstMatch(in: path, range: range) != nil
+        }
+    }
+
+    private struct IgnoreMatcher {
+        let rootDirectory: URL
+        let baseRules: [IgnoreRule]
+        private var combinedRulesCache: [String: [IgnoreRule]]
+        private var localRulesCache: [String: [IgnoreRule]]
+
+        init(rootDirectory: URL, baseRules: [IgnoreRule]) {
+            self.rootDirectory = rootDirectory
+            self.baseRules = baseRules
+            self.combinedRulesCache = ["": baseRules]
+            self.localRulesCache = ["": []]
+        }
+
+        mutating func shouldIgnore(path: String, isDirectory: Bool) -> Bool {
+            let normalizedPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let directoryPath: String
+            if isDirectory {
+                directoryPath = normalizedPath
+            } else if let slashIndex = normalizedPath.lastIndex(of: "/") {
+                directoryPath = String(normalizedPath[..<slashIndex])
+            } else {
+                directoryPath = ""
+            }
+
+            let rules = rulesForDirectory(directoryPath)
+            guard !rules.isEmpty else { return false }
+
+            var ignored = false
+            for rule in rules {
+                if rule.matches(path: normalizedPath, isDirectory: isDirectory) {
+                    ignored = !rule.isNegation
+                }
+            }
+            return ignored
+        }
+
+        private mutating func rulesForDirectory(_ directoryPath: String) -> [IgnoreRule] {
+            if let cached = combinedRulesCache[directoryPath] {
+                return cached
+            }
+            let parentPath = parentDirectory(of: directoryPath)
+            var rules = parentPath == directoryPath ? baseRules : rulesForDirectory(parentPath)
+            let localRules = loadLocalRules(for: directoryPath)
+            if !localRules.isEmpty {
+                rules.append(contentsOf: localRules)
+            }
+            combinedRulesCache[directoryPath] = rules
+            return rules
+        }
+
+        private mutating func loadLocalRules(for directoryPath: String) -> [IgnoreRule] {
+            if directoryPath.isEmpty {
+                return []
+            }
+            if let cached = localRulesCache[directoryPath] {
+                return cached
+            }
+            let dirURL = rootDirectory.appendingPathComponent(directoryPath)
+            let gitignoreURL = dirURL.appendingPathComponent(".gitignore")
+            let rules = WorkspaceState.parseIgnoreFile(at: gitignoreURL, basePath: directoryPath)
+            localRulesCache[directoryPath] = rules
+            return rules
+        }
+
+        private func parentDirectory(of path: String) -> String {
+            guard let slashIndex = path.lastIndex(of: "/") else { return "" }
+            return String(path[..<slashIndex])
+        }
+    }
+
+    nonisolated private static func loadIgnoreMatcher(rootDirectory: URL) -> IgnoreMatcher {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser
+        var rules: [IgnoreRule] = []
+
+        let globalCandidates: [URL] = [
+            home.appendingPathComponent(".config/git/ignore"),
+            home.appendingPathComponent(".gitignore_global"),
+            home.appendingPathComponent(".gitignore")
+        ]
+        for url in globalCandidates {
+            rules.append(contentsOf: parseIgnoreFile(at: url, basePath: ""))
+        }
+
+        let infoExclude = rootDirectory.appendingPathComponent(".git/info/exclude")
+        rules.append(contentsOf: parseIgnoreFile(at: infoExclude, basePath: ""))
+
+        let rootIgnore = rootDirectory.appendingPathComponent(".gitignore")
+        rules.append(contentsOf: parseIgnoreFile(at: rootIgnore, basePath: ""))
+
+        return IgnoreMatcher(rootDirectory: rootDirectory, baseRules: rules)
+    }
+
+    nonisolated private static func parseIgnoreFile(at url: URL, basePath: String) -> [IgnoreRule] {
+        guard let data = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        var rules: [IgnoreRule] = []
+        for rawLine in data.split(whereSeparator: \.isNewline) {
+            var line = String(rawLine)
+            line = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+
+            if line.hasPrefix("\\#") {
+                line.removeFirst()
+            } else if line.hasPrefix("#") {
+                continue
+            }
+
+            var isNegation = false
+            if line.hasPrefix("\\!") {
+                line.removeFirst()
+            } else if line.hasPrefix("!") {
+                isNegation = true
+                line.removeFirst()
+            }
+
+            line = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+
+            let directoryOnly = line.hasSuffix("/")
+            if directoryOnly {
+                line.removeLast()
+            }
+            let anchored = line.hasPrefix("/")
+            if anchored {
+                line.removeFirst()
+            }
+            guard !line.isEmpty else { continue }
+
+            if let rule = IgnoreRule(
+                pattern: line,
+                basePath: basePath,
+                isNegation: isNegation,
+                directoryOnly: directoryOnly,
+                anchored: anchored
+            ) {
+                rules.append(rule)
+            }
+        }
+        return rules
+    }
+
+    nonisolated private static func buildIgnoreRegexBody(
+        pattern: String,
+        basePath: String,
+        anchored: Bool
+    ) -> String? {
+        guard !pattern.isEmpty else { return nil }
+        let containsSlash = pattern.contains("/")
+        let prefix = basePath.isEmpty
+            ? ""
+            : NSRegularExpression.escapedPattern(for: basePath) + "/"
+        let body = globToRegex(pattern)
+        if containsSlash {
+            return "^\(prefix)\(body)"
+        }
+        let depthPrefix = anchored ? "" : "(?:[^/]*/)*"
+        return "^\(prefix)\(depthPrefix)\(body)"
+    }
+
+    nonisolated private static func globToRegex(_ pattern: String) -> String {
+        var regex = ""
+        var index = pattern.startIndex
+        while index < pattern.endIndex {
+            let ch = pattern[index]
+            if ch == "*" {
+                let next = pattern.index(after: index)
+                if next < pattern.endIndex && pattern[next] == "*" {
+                    regex += ".*"
+                    index = pattern.index(after: next)
+                } else {
+                    regex += "[^/]*"
+                    index = next
+                }
+                continue
+            }
+            if ch == "?" {
+                regex += "[^/]"
+                index = pattern.index(after: index)
+                continue
+            }
+            if ch == "[" {
+                var j = pattern.index(after: index)
+                var classBody = ""
+                if j < pattern.endIndex, pattern[j] == "!" {
+                    classBody += "^"
+                    j = pattern.index(after: j)
+                }
+                var closed = false
+                while j < pattern.endIndex {
+                    let current = pattern[j]
+                    if current == "]" {
+                        closed = true
+                        break
+                    }
+                    if current == "\\" {
+                        classBody += "\\\\"
+                    } else {
+                        classBody += String(current)
+                    }
+                    j = pattern.index(after: j)
+                }
+                if closed {
+                    regex += "[\(classBody)]"
+                    index = pattern.index(after: j)
+                } else {
+                    regex += "\\["
+                    index = pattern.index(after: index)
+                }
+                continue
+            }
+            if ch == "\\" {
+                let next = pattern.index(after: index)
+                if next < pattern.endIndex {
+                    let literal = String(pattern[next])
+                    regex += NSRegularExpression.escapedPattern(for: literal)
+                    index = pattern.index(after: next)
+                } else {
+                    regex += "\\\\"
+                    index = next
+                }
+                continue
+            }
+            if ".^$+(){}|[]\\".contains(ch) {
+                regex += "\\\(ch)"
+            } else {
+                regex += String(ch)
+            }
+            index = pattern.index(after: index)
+        }
+        return regex
+    }
+
+    nonisolated private static func runGitListFiles(rootDirectory: URL) -> [String]? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["git", "-C", rootDirectory.path, "ls-files", "-co", "--exclude-standard", "-z"]
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        _ = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+
+        let output = String(decoding: data, as: UTF8.self)
+        return output.split(separator: "\0").map(String.init).filter { !$0.isEmpty }
+    }
+
+    nonisolated private static func isHiddenPath(_ path: String) -> Bool {
+        path.split(separator: "/").contains { $0.hasPrefix(".") }
     }
 
     nonisolated private static func runRipgrep(
         query: String,
         rootPath: String
-    ) -> SearchOutcome {
+    ) async -> SearchOutcome {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["rg", "--json", "--smart-case", "--", query]
@@ -3912,97 +5022,93 @@ class WorkspaceState: ObservableObject {
             return .failure("Ripgrep (rg) not available.")
         }
 
-        // Read stderr concurrently to prevent pipe buffer deadlock
-        var errorData = Data()
-        let errorGroup = DispatchGroup()
-        errorGroup.enter()
-        DispatchQueue.global(qos: .utility).async {
-            errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            errorGroup.leave()
-        }
-
-        // Read stdout incrementally, stop after maxSearchMatches
-        var results: [SearchResult] = []
-        var indexByPath: [String: Int] = [:]
-        var matchCount = 0
-        let rootURL = URL(fileURLWithPath: rootPath)
-        let handle = outputPipe.fileHandleForReading
-
-        var remainder = Data()
-        let chunkSize = 65_536
-        var hitLimit = false
-
-        while !hitLimit {
-            let chunk = handle.readData(ofLength: chunkSize)
-            if chunk.isEmpty { break }
-            remainder.append(chunk)
-
-            while let newlineIndex = remainder.firstIndex(of: UInt8(ascii: "\n")) {
-                let lineData = remainder[remainder.startIndex..<newlineIndex]
-                remainder = remainder[(newlineIndex + 1)...]
-
-                guard let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
-                      let type = json["type"] as? String,
-                      type == "match",
-                      let data = json["data"] as? [String: Any],
-                      let path = (data["path"] as? [String: Any])?["text"] as? String,
-                      let lineNumber = (data["line_number"] as? NSNumber)?.intValue,
-                      let lineText = (data["lines"] as? [String: Any])?["text"] as? String,
-                      let submatches = data["submatches"] as? [[String: Any]],
-                      let firstMatch = submatches.first,
-                      let column = (firstMatch["start"] as? NSNumber)?.intValue
-                else { continue }
-                let matchEnd = (firstMatch["end"] as? NSNumber)?.intValue ?? column + 1
-                let matchLength = max(1, matchEnd - column)
-
-                let fileURL: URL
-                if path.hasPrefix("/") {
-                    fileURL = URL(fileURLWithPath: path).standardizedFileURL
-                } else {
-                    fileURL = URL(fileURLWithPath: path, relativeTo: rootURL).standardizedFileURL
-                }
-                let displayPath = relativePath(for: fileURL, rootPath: rootPath)
-                let trimmedLine = lineText.trimmingCharacters(in: .newlines)
-                let match = SearchMatch(
-                    lineNumber: lineNumber,
-                    column: column + 1,
-                    matchLength: matchLength,
-                    lineText: trimmedLine
-                )
-                if let index = indexByPath[path] {
-                    results[index].matches.append(match)
-                } else {
-                    let result = SearchResult(url: fileURL, displayPath: displayPath, matches: [match])
-                    results.append(result)
-                    indexByPath[path] = results.count - 1
-                }
-                matchCount += 1
-                if matchCount >= Self.maxSearchMatches {
-                    hitLimit = true
-                    break
-                }
+        return await withTaskCancellationHandler(operation: {
+            let errorTask = Task<Data, Never> {
+                (try? await errorPipe.fileHandleForReading.readToEnd()) ?? Data()
             }
-        }
 
-        if hitLimit {
+            var results: [SearchResult] = []
+            var indexByPath: [String: Int] = [:]
+            var matchCount = 0
+            let rootURL = URL(fileURLWithPath: rootPath)
+            let handle = outputPipe.fileHandleForReading
+            var hitLimit = false
+
+            do {
+                for try await line in handle.bytes.lines {
+                    if Task.isCancelled { break }
+                    guard !line.isEmpty, let lineData = line.data(using: .utf8) else { continue }
+                    guard let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                          let type = json["type"] as? String,
+                          type == "match",
+                          let data = json["data"] as? [String: Any],
+                          let path = (data["path"] as? [String: Any])?["text"] as? String,
+                          let lineNumber = (data["line_number"] as? NSNumber)?.intValue,
+                          let lineText = (data["lines"] as? [String: Any])?["text"] as? String,
+                          let submatches = data["submatches"] as? [[String: Any]],
+                          let firstMatch = submatches.first,
+                          let column = (firstMatch["start"] as? NSNumber)?.intValue
+                    else { continue }
+                    let matchEnd = (firstMatch["end"] as? NSNumber)?.intValue ?? column + 1
+                    let matchLength = max(1, matchEnd - column)
+
+                    let fileURL: URL
+                    if path.hasPrefix("/") {
+                        fileURL = URL(fileURLWithPath: path).standardizedFileURL
+                    } else {
+                        fileURL = URL(fileURLWithPath: path, relativeTo: rootURL).standardizedFileURL
+                    }
+                    let displayPath = relativePath(for: fileURL, rootPath: rootPath)
+                    let trimmedLine = lineText.trimmingCharacters(in: .newlines)
+                    let match = SearchMatch(
+                        lineNumber: lineNumber,
+                        column: column + 1,
+                        matchLength: matchLength,
+                        lineText: trimmedLine
+                    )
+                    if let index = indexByPath[path] {
+                        results[index].matches.append(match)
+                    } else {
+                        let result = SearchResult(url: fileURL, displayPath: displayPath, matches: [match])
+                        results.append(result)
+                        indexByPath[path] = results.count - 1
+                    }
+                    matchCount += 1
+                    if matchCount >= Self.maxSearchMatches {
+                        hitLimit = true
+                        process.terminate()
+                        break
+                    }
+                }
+            } catch {
+                // ignore read errors
+            }
+
+            if Task.isCancelled {
+                process.terminate()
+                return .success([])
+            }
+
+            if hitLimit {
+                _ = try? await handle.readToEnd()
+            }
+
+            let errorData = await errorTask.value
+            process.waitUntilExit()
+
+            // rg exit code 1 = no matches, 2+ = error
+            if process.terminationStatus == 1 {
+                return .success([])
+            }
+            if process.terminationStatus != 0 && !hitLimit {
+                let message = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                return .failure(message?.isEmpty == false ? message! : "Search failed.")
+            }
+
+            return .success(results)
+        }, onCancel: {
             process.terminate()
-            // Drain remaining pipe data to prevent SIGPIPE
-            _ = handle.readDataToEndOfFile()
-        }
-
-        errorGroup.wait()
-        process.waitUntilExit()
-
-        // rg exit code 1 = no matches, 2+ = error
-        if process.terminationStatus == 1 {
-            return .success([])
-        }
-        if process.terminationStatus != 0 && !hitLimit {
-            let message = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return .failure(message?.isEmpty == false ? message! : "Search failed.")
-        }
-
-        return .success(results)
+        })
     }
 
     nonisolated private static func buildSearchPreview(
@@ -4098,6 +5204,25 @@ class WorkspaceState: ObservableObject {
         }
     }
 
+    private func startCompletionService(cwd: String) {
+        stopCompletionService()
+        let service = CodexCompletionService()
+        completionService = service
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await service.start(cwd: cwd)
+                if let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"], !apiKey.isEmpty {
+                    try await service.login(apiKey: apiKey)
+                }
+            } catch {
+                self.appendErrorMessage("Completion service failed to start: \(error.localizedDescription)")
+                self.stopCompletionService()
+            }
+        }
+    }
+
     private func handleThreadStartResult(_ result: ThreadStartResult, resumeRequested: Bool) {
         updateActiveThreadId(result.threadId)
         if let thread = result.restoredThread {
@@ -4115,6 +5240,12 @@ class WorkspaceState: ObservableObject {
         codexService?.stop()
         codexService = nil
         isTurnInProgress = false
+        stopCompletionService()
+    }
+
+    private func stopCompletionService() {
+        completionService?.stop()
+        completionService = nil
     }
 
     private func handleCodexEvent(_ event: CodexEvent) {
@@ -4373,18 +5504,142 @@ class WorkspaceState: ObservableObject {
         suppressEditorTextUpdate = false
     }
 
+    func recordEditorEdit(line: Int, column: Int) {
+        guard let url = selectedFileURL, isRegularFileURL(url) else { return }
+        var edits = recentEditLocations[url] ?? []
+        edits.append(EditorEditLocation(line: line, column: column, timestamp: Date()))
+        if edits.count > Self.maxRecentEditLocations {
+            edits = Array(edits.suffix(Self.maxRecentEditLocations))
+        }
+        recentEditLocations[url] = edits
+    }
+
+    func requestEditorCompletion(
+        _ request: EditorCompletionRequest,
+        onPartial: @escaping @MainActor (String) -> Void
+    ) async -> String? {
+        guard let completionService else { return nil }
+        guard let rootDirectory else { return nil }
+        guard let fileURL = request.fileURL, isRegularFileURL(fileURL) else { return nil }
+        let prompt = buildCompletionPrompt(for: request, rootPath: rootDirectory.path)
+        do {
+            let completion = try await completionService.requestCompletion(prompt: prompt, onDelta: onPartial)
+            let sanitized = sanitizeCompletion(completion)
+            return sanitized.isEmpty ? nil : sanitized
+        } catch {
+            return nil
+        }
+    }
+
+    func cancelEditorCompletion() {
+        completionService?.cancelActiveRequest()
+    }
+
+    private func buildCompletionPrompt(for request: EditorCompletionRequest, rootPath: String) -> String {
+        let fileURL = request.fileURL
+        let filePath = fileURL.map { Self.relativePath(for: $0, rootPath: rootPath) } ?? "(unknown)"
+        let language = request.languageName ?? "Unknown"
+        let (prefix, suffix) = completionContextSlices(
+            text: request.text,
+            cursorOffset: request.cursorOffset,
+            maxPrefix: 4_000,
+            maxSuffix: 2_000
+        )
+        let openFiles = openFiles
+            .filter { isRegularFileURL($0) }
+            .map { Self.relativePath(for: $0, rootPath: rootPath) }
+            .prefix(20)
+        let openFilesSummary = openFiles.isEmpty
+            ? "(none)"
+            : openFiles.map { "- \($0)" }.joined(separator: "\n")
+        let recentEdits = fileURL.flatMap { recentEditLocations[$0] } ?? []
+        let recentEditsSummary: String
+        if recentEdits.isEmpty {
+            recentEditsSummary = "(none)"
+        } else {
+            recentEditsSummary = recentEdits
+                .suffix(8)
+                .map { "- \($0.line):\($0.column)" }
+                .joined(separator: "\n")
+        }
+
+        return """
+You are a code completion engine. Return ONLY the text to insert at the cursor.
+Do not include explanations, markdown, or code fences.
+If no completion is appropriate, return an empty string.
+
+File: \(filePath)
+Language: \(language)
+Cursor: line \(request.line), column \(request.column)
+
+Open files:
+\(openFilesSummary)
+
+Recent edits:
+\(recentEditsSummary)
+
+<prefix>
+\(prefix)
+</prefix>
+<suffix>
+\(suffix)
+</suffix>
+"""
+    }
+
+    private func completionContextSlices(
+        text: String,
+        cursorOffset: Int,
+        maxPrefix: Int,
+        maxSuffix: Int
+    ) -> (String, String) {
+        let nsText = text as NSString
+        let length = nsText.length
+        let cursor = min(max(cursorOffset, 0), length)
+        let prefixStart = max(0, cursor - maxPrefix)
+        let prefixRange = NSRange(location: prefixStart, length: cursor - prefixStart)
+        let suffixLength = min(maxSuffix, length - cursor)
+        let suffixRange = NSRange(location: cursor, length: suffixLength)
+        return (
+            nsText.substring(with: prefixRange),
+            nsText.substring(with: suffixRange)
+        )
+    }
+
+    private func sanitizeCompletion(_ text: String) -> String {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "" }
+        if let fenceStart = text.range(of: "```") {
+            let afterFence = text[fenceStart.upperBound...]
+            if let newlineIndex = afterFence.firstIndex(of: "\n") {
+                let contentStart = afterFence.index(after: newlineIndex)
+                if let closing = text.range(of: "```", range: contentStart..<text.endIndex) {
+                    let inner = String(text[contentStart..<closing.lowerBound])
+                    return inner.trimmingCharacters(in: .newlines)
+                }
+            }
+        }
+        return text
+    }
+
     private func resolveFileURL(path: String) -> URL? {
+        resolvePathURL(path: path, allowDirectory: false)
+    }
+
+    private func resolvePathURL(path: String, allowDirectory: Bool) -> URL? {
         let expanded = (path as NSString).expandingTildeInPath
         let fileURL: URL
         if expanded.hasPrefix("/") {
-            fileURL = URL(fileURLWithPath: expanded)
+            fileURL = URL(fileURLWithPath: expanded).standardizedFileURL
         } else if let rootDirectory {
             fileURL = URL(fileURLWithPath: expanded, relativeTo: rootDirectory).standardizedFileURL
         } else {
             return nil
         }
         var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDir), !isDir.boolValue else { return nil }
+        guard FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDir) else { return nil }
+        if isDir.boolValue && !allowDirectory {
+            return nil
+        }
         return fileURL
     }
 
