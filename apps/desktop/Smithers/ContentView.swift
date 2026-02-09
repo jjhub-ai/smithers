@@ -37,7 +37,7 @@ struct CodeEditor: NSViewRepresentable {
         textView.font = font
         textView.backgroundColor = theme.background
         textView.insertionPointColor = theme.foreground
-        textView.insertionPointWidth = 2
+        textView.insertionPointWidth = Self.cursorWidth(for: font)
         textView.highlightSelectedLine = true
         textView.selectedLineHighlightColor = theme.lineHighlight
         textView.widthTracksTextView = true
@@ -68,6 +68,7 @@ struct CodeEditor: NSViewRepresentable {
         scrollbarView.theme = theme
 
         context.coordinator.attach(scrollView: scrollView, textView: textView, scrollbar: scrollbarView)
+        updateIndentGuides(textView: textView, theme: theme, font: font, coordinator: context.coordinator)
         context.coordinator.loadFile(text: text, language: language, fileURL: fileURL, textView: textView)
         context.coordinator.appliedTheme = theme
         context.coordinator.appliedFont = font
@@ -90,6 +91,7 @@ struct CodeEditor: NSViewRepresentable {
             applyTheme(theme, previousTheme: previousTheme, to: textView, scrollView: scrollView)
             coord.appliedTheme = theme
         }
+        updateIndentGuides(textView: textView, theme: theme, font: font, coordinator: coord)
 
         if coord.currentFileURL != fileURL {
             coord.saveViewState(for: coord.currentFileURL, textView: textView, scrollView: scrollView)
@@ -107,6 +109,8 @@ struct CodeEditor: NSViewRepresentable {
             coord.loadFile(text: text, language: language, fileURL: fileURL, textView: textView)
             coord.restoreViewState(for: fileURL, textView: textView, scrollView: scrollView)
             updateLineNumberFont(font, scrollView: scrollView)
+            textView.insertionPointWidth = Self.cursorWidth(for: font)
+            updateIndentGuides(textView: textView, theme: theme, font: font, coordinator: coord)
             coord.updateScrollMetrics(textView: textView, scrollView: scrollView)
             return
         }
@@ -247,6 +251,40 @@ struct CodeEditor: NSViewRepresentable {
         return NSFont(descriptor: descriptor, size: font.pointSize) ?? font
     }
 
+    private static func cursorWidth(for font: NSFont) -> CGFloat {
+        max(2, round(font.pointSize * 0.12))
+    }
+
+    private static func indentGuideWidth(for font: NSFont) -> CGFloat {
+        let spaceWidth = (" " as NSString).size(withAttributes: [.font: font]).width
+        return max(12, round(spaceWidth * 4))
+    }
+
+    private func updateIndentGuides(
+        textView: STTextView,
+        theme: AppTheme,
+        font: NSFont,
+        coordinator: Coordinator
+    ) {
+        let indentWidth = Self.indentGuideWidth(for: font)
+        let lineColor = theme.foreground.withAlphaComponent(0.06)
+        if let guidesView = coordinator.indentGuidesView {
+            guidesView.indentWidth = indentWidth
+            guidesView.lineColor = lineColor
+            guidesView.needsDisplay = true
+            return
+        }
+
+        let guidesView = IndentGuidesView()
+        guidesView.indentWidth = indentWidth
+        guidesView.lineColor = lineColor
+        guidesView.frame = textView.bounds
+        guidesView.autoresizingMask = [.width, .height]
+        guidesView.isOpaque = false
+        textView.addSubview(guidesView, positioned: .below, relativeTo: nil)
+        coordinator.indentGuidesView = guidesView
+    }
+
     private func updateExistingTextColor(from oldColor: NSColor, to newColor: NSColor, textView: STTextView) {
         guard let storage = (textView.textContentManager as? NSTextContentStorage)?.textStorage else { return }
         let fullRange = NSRange(location: 0, length: storage.length)
@@ -271,6 +309,7 @@ struct CodeEditor: NSViewRepresentable {
         weak var textView: STTextView?
         private weak var lineNumberView: STLineNumberRulerView?
         private weak var scrollbarView: ScrollbarOverlayView?
+        private weak var indentGuidesView: IndentGuidesView?
         private var scrollObserver: Any?
         private var magnificationRecognizer: NSMagnificationGestureRecognizer?
         private var highlighterCache: [String: TreeSitterHighlighter] = [:]
@@ -318,6 +357,7 @@ struct CodeEditor: NSViewRepresentable {
                 ) { [weak self] _ in
                     guard let self, let textView = self.textView, let scrollView = self.scrollView else { return }
                     self.updateScrollMetrics(textView: textView, scrollView: scrollView)
+                    self.saveViewState(for: self.currentFileURL, textView: textView, scrollView: scrollView)
                     self.scrollbarView?.notifyScrollActivity()
                 }
             }
@@ -691,7 +731,7 @@ struct ContentView: View {
     @State private var focusedPane: FocusedPane? = .editor
     @State private var editorViewStates: [URL: EditorViewState] = [:]
     @State private var editorScrollMetrics = EditorScrollMetrics()
-    private let shortcutsPanelWidth: CGFloat = 220
+    private let shortcutsPanelWidth: CGFloat = 200
 
     var body: some View {
         let selectionKey = workspace.selectedFileURL?.absoluteString ?? "empty"
@@ -744,7 +784,14 @@ struct ContentView: View {
                                 )
                             } else if workspace.isTerminalURL(selectedURL) {
                                 if let view = workspace.terminalViews[selectedURL] {
-                                    pane(TerminalTabView(view: view), pane: .terminal)
+                                    pane(
+                                        TerminalTabView(
+                                            view: view,
+                                            scrollbarMode: workspace.scrollbarVisibilityMode,
+                                            theme: workspace.theme
+                                        ),
+                                        pane: .terminal
+                                    )
                                 } else {
                                     pane(emptyEditor, pane: .editor)
                                 }
@@ -765,7 +812,23 @@ struct ContentView: View {
                             } else {
                                 if workspace.isNvimModeEnabled {
                                     if let nvimView = workspace.nvimTerminalView {
-                                        pane(TerminalTabView(view: nvimView), pane: .terminal)
+                                        pane(
+                                            TerminalTabView(
+                                                view: nvimView,
+                                                scrollbarMode: workspace.scrollbarVisibilityMode,
+                                                scrollbarMetrics: nvimScrollbarMetrics,
+                                                theme: workspace.theme,
+                                                onScrollToOffset: { offset in
+                                                    let topLine = Int(offset.rounded()) + 1
+                                                    workspace.scrollNvimToTopLine(topLine)
+                                                },
+                                                onPageScroll: { direction in
+                                                    let lines = workspace.nvimViewport?.visibleLineCount ?? 1
+                                                    workspace.scrollNvimByLines(lines * direction)
+                                                }
+                                            ),
+                                            pane: .terminal
+                                        )
                                     } else {
                                         pane(nvimPlaceholder, pane: .editor)
                                     }
@@ -859,6 +922,18 @@ struct ContentView: View {
             .onTapGesture {
                 focusedPane = pane
             }
+    }
+
+    private var nvimScrollbarMetrics: ScrollbarMetrics? {
+        guard let viewport = workspace.nvimViewport else { return nil }
+        let contentLength = max(1, viewport.lineCount)
+        let viewportLength = max(1, viewport.visibleLineCount)
+        let offset = max(0, viewport.topLine - 1)
+        return ScrollbarMetrics(
+            contentLength: CGFloat(contentLength),
+            viewportLength: CGFloat(viewportLength),
+            offset: CGFloat(offset)
+        )
     }
 
     private var editorView: some View {
@@ -1330,6 +1405,7 @@ struct TabBarItem: View {
     let icon: String
     let isSelected: Bool
     let isModified: Bool
+    let isDropTarget: Bool
     let theme: AppTheme
     let onSelect: () -> Void
     let onClose: () -> Void
@@ -1340,6 +1416,9 @@ struct TabBarItem: View {
         let fileColor = colorForFile(title)
         let showClose = isModified ? isHovered : (isHovered || isSelected)
         let showDot = isModified && !isHovered
+        let borderColor = isDropTarget
+            ? theme.accentColor
+            : (isSelected ? theme.tabBorderColor : theme.tabBorderColor.opacity(0.6))
         HStack(spacing: 6) {
             Image(systemName: icon)
                 .font(.system(size: Typography.base))
@@ -1354,7 +1433,7 @@ struct TabBarItem: View {
                     let dotColor = isSelected ? theme.tabSelectedForegroundColor : theme.accentColor
                     Circle()
                         .fill(dotColor)
-                        .frame(width: 6, height: 6)
+                        .frame(width: 7, height: 7)
                         .accessibilityLabel("Unsaved changes")
                         .transition(.opacity)
                 }
@@ -1369,7 +1448,7 @@ struct TabBarItem: View {
                 .allowsHitTesting(showClose)
                 .accessibilityLabel("Close \(title)")
             }
-            .frame(width: 18, height: 16)
+            .frame(width: 18, height: 18)
             .animation(.easeInOut(duration: 0.12), value: showClose)
             .animation(.easeInOut(duration: 0.12), value: showDot)
         }
@@ -1381,7 +1460,7 @@ struct TabBarItem: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .strokeBorder(isSelected ? theme.tabBorderColor : theme.tabBorderColor.opacity(0.6))
+                .strokeBorder(borderColor)
         )
         .overlay(alignment: .bottom) {
             if isSelected {
