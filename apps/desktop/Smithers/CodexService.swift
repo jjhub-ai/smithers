@@ -108,7 +108,8 @@ final class CodexService: ObservableObject {
         isRunning = false
     }
 
-    func sendMessage(_ text: String, images: [ChatImage] = []) async throws {
+    @discardableResult
+    func sendMessage(_ text: String, images: [ChatImage] = []) async throws -> String {
         guard let transport, isRunning else { throw ServiceError.notRunning }
         guard let threadId else { throw ServiceError.threadUnavailable }
 
@@ -128,6 +129,7 @@ final class CodexService: ObservableObject {
         )
         activeTurnId = response.turn.id
         eventContinuation.yield(.turnStarted(turnId: response.turn.id))
+        return response.turn.id
     }
 
     func interrupt() async throws {
