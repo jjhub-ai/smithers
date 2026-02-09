@@ -20,6 +20,7 @@ struct TerminalTabView: NSViewRepresentable {
             scrollbarView?.notifyScrollActivity()
         }
         let overlayView = makeFloatingOverlayView()
+        view.smoothScrollOverlayView = overlayView
         return ScrollbarHostingView(contentView: view, scrollbarView: scrollbarView, overlayView: overlayView)
     }
 
@@ -37,6 +38,7 @@ struct TerminalTabView: NSViewRepresentable {
         view.onScrollActivity = { [weak scrollbarView] in
             scrollbarView?.notifyScrollActivity()
         }
+        view.smoothScrollOverlayView = containerView.overlayView
 
         if let overlayView = containerView.overlayView as? NvimFloatingWindowOverlayView {
             if let effects = floatingWindowEffects {

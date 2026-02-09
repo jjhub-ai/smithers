@@ -22,6 +22,17 @@ final class GhosttyTerminalView: NSView, ObservableObject, NSTextInputClient {
 
     var onClose: (() -> Void)?
     var onScrollActivity: (() -> Void)?
+    weak var smoothScrollController: SmoothScrollController? {
+        didSet {
+            smoothScrollController?.updateCellSize(cellSize)
+            smoothScrollController?.setOverlayView(smoothScrollOverlayView)
+        }
+    }
+    weak var smoothScrollOverlayView: NSView? {
+        didSet {
+            smoothScrollController?.setOverlayView(smoothScrollOverlayView)
+        }
+    }
     private(set) var command: String?
     var optionAsMeta: OptionAsMeta = .both
 
@@ -292,6 +303,9 @@ final class GhosttyTerminalView: NSView, ObservableObject, NSTextInputClient {
 
     override func scrollWheel(with event: NSEvent) {
         frameScheduler.noteInputActivity()
+        if let smoothScrollController, smoothScrollController.handleScrollWheel(event) {
+            return
+        }
         guard let surface else { return }
         var x = event.scrollingDeltaX
         var y = event.scrollingDeltaY
