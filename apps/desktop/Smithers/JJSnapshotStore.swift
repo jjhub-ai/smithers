@@ -85,6 +85,34 @@ class JJSnapshotStore {
         try migrator.migrate(dbQueue)
     }
 
+    private func performWrite(_ block: @escaping (DatabaseQueue) throws -> Void) async throws {
+        guard let dbQueue else { return }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    try block(dbQueue)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private func performRead<T>(_ fallback: T, _ block: @escaping (DatabaseQueue) throws -> T) async throws -> T {
+        guard let dbQueue else { return fallback }
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    let value = try block(dbQueue)
+                    continuation.resume(returning: value)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     // MARK: - Snapshot Operations
 
     func recordSnapshot(
@@ -95,10 +123,8 @@ class JJSnapshotStore {
         chatSessionId: String? = nil,
         chatMessageIndex: Int? = nil,
         metadata: String? = nil
-    ) throws {
-        guard let dbQueue else { return }
-
-        var snapshot = Snapshot(
+    ) async throws {
+        let snapshot = Snapshot(
             id: nil,
             changeId: changeId,
             commitId: commitId,
@@ -111,118 +137,120 @@ class JJSnapshotStore {
             metadata: metadata
         )
 
-        try dbQueue.write { db in
-            try snapshot.insert(db)
+        try await performWrite { dbQueue in
+            try dbQueue.write { db in
+                try snapshot.insert(db)
+            }
         }
     }
 
-    func snapshotsForChat(sessionId: String) throws -> [Snapshot] {
-        guard let dbQueue else { return [] }
-
-        return try dbQueue.read { db in
-            try Snapshot
-                .filter(Column("chatSessionId") == sessionId)
-                .order(Column("createdAt").asc)
-                .fetchAll(db)
+    func snapshotsForChat(sessionId: String) async throws -> [Snapshot] {
+        try await performRead([]) { dbQueue in
+            try dbQueue.read { db in
+                try Snapshot
+                    .filter(Column("chatSessionId") == sessionId)
+                    .order(Column("createdAt").asc)
+                    .fetchAll(db)
+            }
         }
     }
 
-    func snapshotsForChange(changeId: String) throws -> [Snapshot] {
-        guard let dbQueue else { return [] }
-
-        return try dbQueue.read { db in
-            try Snapshot
-                .filter(Column("changeId") == changeId)
-                .order(Column("createdAt").desc)
-                .fetchAll(db)
+    func snapshotsForChange(changeId: String) async throws -> [Snapshot] {
+        try await performRead([]) { dbQueue in
+            try dbQueue.read { db in
+                try Snapshot
+                    .filter(Column("changeId") == changeId)
+                    .order(Column("createdAt").desc)
+                    .fetchAll(db)
+            }
         }
     }
 
-    func snapshotsForWorkspace() throws -> [Snapshot] {
-        guard let dbQueue else { return [] }
-
-        return try dbQueue.read { db in
-            try Snapshot
-                .filter(Column("workspacePath") == workspacePath)
-                .order(Column("createdAt").desc)
-                .fetchAll(db)
+    func snapshotsForWorkspace() async throws -> [Snapshot] {
+        let path = workspacePath
+        return try await performRead([]) { dbQueue in
+            try dbQueue.read { db in
+                try Snapshot
+                    .filter(Column("workspacePath") == path)
+                    .order(Column("createdAt").desc)
+                    .fetchAll(db)
+            }
         }
     }
 
-    func latestSnapshot() throws -> Snapshot? {
-        guard let dbQueue else { return nil }
-
-        return try dbQueue.read { db in
-            try Snapshot
-                .filter(Column("workspacePath") == workspacePath)
-                .order(Column("createdAt").desc)
-                .fetchOne(db)
+    func latestSnapshot() async throws -> Snapshot? {
+        let path = workspacePath
+        return try await performRead(nil) { dbQueue in
+            try dbQueue.read { db in
+                try Snapshot
+                    .filter(Column("workspacePath") == path)
+                    .order(Column("createdAt").desc)
+                    .fetchOne(db)
+            }
         }
     }
 
-    func snapshotForMessage(sessionId: String, messageIndex: Int) throws -> Snapshot? {
-        guard let dbQueue else { return nil }
-
-        return try dbQueue.read { db in
-            try Snapshot
-                .filter(Column("chatSessionId") == sessionId &&
-                        Column("chatMessageIndex") == messageIndex)
-                .fetchOne(db)
+    func snapshotForMessage(sessionId: String, messageIndex: Int) async throws -> Snapshot? {
+        try await performRead(nil) { dbQueue in
+            try dbQueue.read { db in
+                try Snapshot
+                    .filter(Column("chatSessionId") == sessionId &&
+                            Column("chatMessageIndex") == messageIndex)
+                    .fetchOne(db)
+            }
         }
     }
 
     // MARK: - Agent Workspace Operations
 
-    func recordAgentWorkspace(_ record: AgentWorkspaceRecord) throws {
-        guard let dbQueue else { return }
-
-        try dbQueue.write { db in
-            try record.insert(db)
-        }
-    }
-
-    func updateAgentStatus(id: String, status: AgentStatus, testOutput: String? = nil) throws {
-        guard let dbQueue else { return }
-
-        try dbQueue.write { db in
-            if var record = try AgentWorkspaceRecord.fetchOne(db, key: id) {
-                record.status = status.rawValue
-                if let testOutput {
-                    record.testOutput = testOutput
-                }
-                if status == .completed || status == .failed || status == .cancelled {
-                    record.completedAt = Date()
-                }
-                if status == .merged {
-                    record.mergedAt = Date()
-                }
-                try record.update(db)
+    func recordAgentWorkspace(_ record: AgentWorkspaceRecord) async throws {
+        try await performWrite { dbQueue in
+            try dbQueue.write { db in
+                try record.insert(db)
             }
         }
     }
 
-    func agentWorkspaces(status: AgentStatus? = nil) throws -> [AgentWorkspaceRecord] {
-        guard let dbQueue else { return [] }
+    func updateAgentStatus(id: String, status: AgentStatus, testOutput: String? = nil) async throws {
+        try await performWrite { dbQueue in
+            try dbQueue.write { db in
+                if var record = try AgentWorkspaceRecord.fetchOne(db, key: id) {
+                    record.status = status.rawValue
+                    if let testOutput {
+                        record.testOutput = testOutput
+                    }
+                    if status == .completed || status == .failed || status == .cancelled {
+                        record.completedAt = Date()
+                    }
+                    if status == .merged {
+                        record.mergedAt = Date()
+                    }
+                    try record.update(db)
+                }
+            }
+        }
+    }
 
-        return try dbQueue.read { db in
-            if let status {
+    func agentWorkspaces(status: AgentStatus? = nil) async throws -> [AgentWorkspaceRecord] {
+        try await performRead([]) { dbQueue in
+            try dbQueue.read { db in
+                if let status {
+                    return try AgentWorkspaceRecord
+                        .filter(Column("status") == status.rawValue)
+                        .order(Column("createdAt").desc)
+                        .fetchAll(db)
+                }
                 return try AgentWorkspaceRecord
-                    .filter(Column("status") == status.rawValue)
                     .order(Column("createdAt").desc)
                     .fetchAll(db)
             }
-            return try AgentWorkspaceRecord
-                .order(Column("createdAt").desc)
-                .fetchAll(db)
         }
     }
 
     // MARK: - Merge Queue Log Operations
 
-    func logMergeQueueAction(agentId: String, action: String, details: String? = nil) throws {
-        guard let dbQueue else { return }
-
-        var entry = MergeQueueLogEntry(
+    func logMergeQueueAction(agentId: String, action: String, details: String? = nil) async throws {
+        let entry = MergeQueueLogEntry(
             id: nil,
             agentId: agentId,
             action: action,
@@ -230,19 +258,21 @@ class JJSnapshotStore {
             timestamp: Date()
         )
 
-        try dbQueue.write { db in
-            try entry.insert(db)
+        try await performWrite { dbQueue in
+            try dbQueue.write { db in
+                try entry.insert(db)
+            }
         }
     }
 
-    func mergeQueueLog(agentId: String) throws -> [MergeQueueLogEntry] {
-        guard let dbQueue else { return [] }
-
-        return try dbQueue.read { db in
-            try MergeQueueLogEntry
-                .filter(Column("agentId") == agentId)
-                .order(Column("timestamp").asc)
-                .fetchAll(db)
+    func mergeQueueLog(agentId: String) async throws -> [MergeQueueLogEntry] {
+        try await performRead([]) { dbQueue in
+            try dbQueue.read { db in
+                try MergeQueueLogEntry
+                    .filter(Column("agentId") == agentId)
+                    .order(Column("timestamp").asc)
+                    .fetchAll(db)
+            }
         }
     }
 }
