@@ -3,46 +3,29 @@ import Dispatch
 import Darwin
 
 final class DirectoryWatcher {
-    private let url: URL
-    private let onChange: () -> Void
-    private var source: DispatchSourceFileSystemObject?
-    private var fileDescriptor: Int32 = -1
+    private let source: DispatchSourceFileSystemObject
 
     init?(url: URL, onChange: @escaping () -> Void) {
-        self.url = url
-        self.onChange = onChange
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         let fd = open(url.path, O_EVTONLY)
         guard fd >= 0 else { return nil }
-        fileDescriptor = fd
-
-        let source = DispatchSource.makeFileSystemObjectSource(
+        source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd,
-            eventMask: [.write, .delete, .rename],
-            queue: DispatchQueue.global(qos: .utility)
+            eventMask: [.write, .delete, .rename, .attrib],
+            queue: DispatchQueue.main
         )
-        source.setEventHandler { [weak self] in
-            guard let self else { return }
-            DispatchQueue.main.async {
-                self.onChange()
-            }
-        }
-        source.setCancelHandler { [weak self] in
-            guard let self else { return }
-            if self.fileDescriptor >= 0 {
-                close(self.fileDescriptor)
-                self.fileDescriptor = -1
-            }
+        source.setEventHandler(handler: onChange)
+        source.setCancelHandler {
+            close(fd)
         }
         source.resume()
-        self.source = source
     }
 
-    func stop() {
-        source?.cancel()
-        source = nil
+    func invalidate() {
+        source.cancel()
     }
 
     deinit {
-        stop()
+        source.cancel()
     }
 }
