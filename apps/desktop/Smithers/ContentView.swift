@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import Dispatch
 import STTextView
 import QuartzCore
@@ -714,6 +715,30 @@ struct CodeEditor: NSViewRepresentable {
                 }
             }
         }
+    }
+}
+
+private final class IndentGuidesView: NSView {
+    var indentWidth: CGFloat = 24 {
+        didSet { needsDisplay = true }
+    }
+    var lineColor: NSColor = NSColor.white.withAlphaComponent(0.06) {
+        didSet { needsDisplay = true }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard indentWidth > 0 else { return }
+        let path = NSBezierPath()
+        var x = indentWidth
+        while x < bounds.width {
+            path.move(to: CGPoint(x: x + 0.5, y: 0))
+            path.line(to: CGPoint(x: x + 0.5, y: bounds.height))
+            x += indentWidth
+        }
+        lineColor.setStroke()
+        path.lineWidth = 1
+        path.stroke()
     }
 }
 
