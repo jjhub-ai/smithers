@@ -53,82 +53,103 @@ struct SearchPanelView: View {
 
     @ViewBuilder
     private var content: some View {
+        let trimmedQuery = workspace.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         if workspace.isSearchInProgress {
-            VStack(spacing: 8) {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Searching...")
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            searchInProgressView
         } else if let message = workspace.searchErrorMessage {
-            VStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle")
-                    .font(.system(size: 24))
-                    .foregroundStyle(.secondary)
-                Text(message)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if workspace.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            VStack(spacing: 8) {
-                Image(systemName: "doc.text.magnifyingglass")
-                    .font(.system(size: 24))
-                    .foregroundStyle(.tertiary)
-                Text("Search for text in the workspace")
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            searchErrorView(message)
+        } else if trimmedQuery.isEmpty {
+            emptyQueryView
         } else if workspace.searchResults.isEmpty {
-            VStack(spacing: 8) {
-                Image(systemName: "doc.text.magnifyingglass")
-                    .font(.system(size: 24))
-                    .foregroundStyle(.tertiary)
-                Text("No matches found")
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            emptyResultsView
         } else {
-            VStack(spacing: 0) {
-                List(selection: $selection) {
-                    ForEach(workspace.searchResults) { result in
-                        Section(result.displayPath) {
-                            ForEach(result.matches) { match in
-                                SearchMatchRow(match: match)
-                                    .tag(SearchMatchSelection(resultID: result.id, matchID: match.id))
-                                    .contentShape(Rectangle())
-                                    .onTapGesture {
-                                        workspace.openSearchResult(result, match: match)
-                                    }
-                            }
+            searchResultsView(theme: workspace.theme)
+        }
+    }
+
+    private var searchInProgressView: some View {
+        VStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Searching...")
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func searchErrorView(_ message: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 24))
+                .foregroundStyle(.secondary)
+            Text(message)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var emptyQueryView: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 24))
+                .foregroundStyle(.tertiary)
+            Text("Search for text in the workspace")
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var emptyResultsView: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 24))
+                .foregroundStyle(.tertiary)
+            Text("No matches found")
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func searchResultsView(theme: AppTheme) -> some View {
+        VStack(spacing: 0) {
+            List(selection: $selection) {
+                ForEach(workspace.searchResults) { result in
+                    Section(result.displayPath) {
+                        ForEach(result.matches) { match in
+                            SearchMatchRow(match: match)
+                                .tag(SearchMatchSelection(resultID: result.id, matchID: match.id))
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    workspace.openSearchResult(result, match: match)
+                                }
                         }
                     }
                 }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .accessibilityIdentifier("SearchInFilesResults")
-                Divider()
-                    .background(theme.dividerColor)
-                SearchPreviewView(preview: workspace.searchPreview, theme: theme)
-                    .frame(minHeight: 120, idealHeight: 160, maxHeight: 240)
             }
-            .onChange(of: selection) { _, newValue in
-                guard let newValue else {
-                    workspace.clearSearchPreview()
-                    return
-                }
-                guard let result = workspace.searchResults.first(where: { $0.id == newValue.resultID }),
-                      let match = result.matches.first(where: { $0.id == newValue.matchID }) else {
-                    workspace.clearSearchPreview()
-                    return
-                }
-                workspace.updateSearchPreview(result: result, match: match)
-            }
-            .onChange(of: workspace.searchResults) { _, _ in
-                selection = nil
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .accessibilityIdentifier("SearchInFilesResults")
+            Divider()
+                .background(theme.dividerColor)
+            SearchPreviewView(preview: workspace.searchPreview, theme: theme)
+                .frame(minHeight: 120, idealHeight: 160, maxHeight: 240)
+        }
+        .onChange(of: selection) { _, newValue in
+            guard let newValue else {
                 workspace.clearSearchPreview()
+                return
             }
+            guard let result = workspace.searchResults.first(where: { $0.id == newValue.resultID }),
+                  let match = result.matches.first(where: { $0.id == newValue.matchID }) else {
+                workspace.clearSearchPreview()
+                return
+            }
+            workspace.updateSearchPreview(result: result, match: match)
+        }
+        .onChange(of: workspace.searchResults) { _, _ in
+            selection = nil
+            workspace.clearSearchPreview()
         }
     }
 }
