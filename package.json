@@ -1,5 +1,5 @@
 {
-  "name": "smithers",
+  "name": "smithers-orchestrator",
   "version": "0.1.0",
   "description": "AI workflow orchestration with JSX",
   "module": "src/index.ts",
