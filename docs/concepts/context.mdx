@@ -1,0 +1,269 @@
+---
+title: Context API
+description: Reading inputs, outputs, and loop state inside a Smithers workflow.
+---
+
+Every Smithers workflow receives a `SmithersCtx` object that provides type-safe access to the current run's input data, all outputs produced so far, and loop iteration state. The context is the primary mechanism for making your workflow reactive -- tasks can read outputs from earlier tasks and conditionally render new work.
+
+## Getting the Context
+
+There are two ways to access context depending on your API choice.
+
+**Builder function parameter** (both APIs):
+
+```tsx
+export default smithers(db, (ctx) => (
+  <Workflow name="example">
+    <Task id="analyze" output={schema.analyze} agent={agent}>
+      {`Analyze: ${ctx.input.description}`}
+    </Task>
+  </Workflow>
+));
+```
+
+**`useCtx()` hook** (inside components, with `createSmithers`):
+
+```tsx
+const { Workflow, useCtx, smithers } = createSmithers(db);
+
+function AnalyzeStep() {
+  const ctx = useCtx();
+  return (
+    <Task id="analyze" output={schema.analyze} agent={agent}>
+      {`Analyze: ${ctx.input.description}`}
+    </Task>
+  );
+}
+
+export default smithers(() => (
+  <Workflow name="example">
+    <AnalyzeStep />
+  </Workflow>
+));
+```
+
+## SmithersCtx Interface
+
+```ts
+interface SmithersCtx<Schema> {
+  runId: string;
+  iteration: number;
+  iterations?: Record<string, number>;
+  input: InferRow<Schema["input"]>;
+  outputs: OutputAccessor<Schema>;
+
+  output<T extends keyof Schema>(
+    table: Schema[T],
+    key: { nodeId: string; iteration?: number },
+  ): InferRow<Schema[T]>;
+
+  outputMaybe<T extends keyof Schema>(
+    table: Schema[T],
+    key: { nodeId: string; iteration?: number },
+  ): InferRow<Schema[T]> | undefined;
+
+  latest(table: any, nodeId: string): any;
+  latestArray(value: unknown, schema: ZodType): any[];
+  iterationCount(table: any, nodeId: string): number;
+}
+```
+
+## Properties
+
+### `runId`
+
+The unique identifier for the current workflow run. This is either auto-generated or provided via `runWorkflow(workflow, { runId: "custom-id" })`.
+
+### `iteration`
+
+The current Ralph loop iteration. For tasks not inside a `<Ralph>`, this is always `0`. Inside a Ralph loop, it reflects the iteration number of the enclosing loop (starting from 0).
+
+### `iterations`
+
+A record mapping Ralph IDs to their current iteration numbers. Useful when multiple Ralph loops exist in the same workflow:
+
+```tsx
+<Ralph id="outer" until={outerDone}>
+  <Ralph id="inner" until={innerDone}>
+    {/* ctx.iterations is { outer: 2, inner: 1 } */}
+  </Ralph>
+</Ralph>
+```
+
+Note: nested Ralph is not currently supported, but the `iterations` map is still populated for all Ralph nodes in the tree.
+
+### `input`
+
+The input row for the current run, typed from `schema.input`. This is the data passed to `runWorkflow(workflow, { input: { description: "..." } })`.
+
+```tsx
+<Task id="analyze" output={schema.analyze} agent={agent}>
+  {`Analyze: ${ctx.input.description}`}
+</Task>
+```
+
+### `outputs`
+
+An `OutputAccessor` that serves double duty -- it is both callable as a function and indexable as an object.
+
+**As a function** -- returns all rows for a table:
+
+```ts
+const allAnalyzeRows = ctx.outputs(schema.analyze); // Row[]
+```
+
+**As a property** -- returns all rows by table name:
+
+```ts
+const allAnalyzeRows = ctx.outputs.analyze; // Row[]
+```
+
+## Methods
+
+### `output(table, key)`
+
+Returns the output row matching the given `nodeId` and optional `iteration`. **Throws an error** if no matching row exists.
+
+```ts
+const result = ctx.output(schema.analyze, { nodeId: "analyze" });
+// result.summary is guaranteed to be defined
+```
+
+When `iteration` is not specified, it defaults to the current `ctx.iteration`. For non-loop tasks, this means iteration 0.
+
+Use this when you know the output must exist -- typically when reading from a task that is sequenced before the current one.
+
+### `outputMaybe(table, key)`
+
+Same as `output()` but returns `undefined` instead of throwing when no matching row exists.
+
+```tsx
+const analysis = ctx.outputMaybe(schema.analyze, { nodeId: "analyze" });
+
+return (
+  <Workflow name="conditional">
+    <Sequence>
+      <Task id="analyze" output={schema.analyze} agent={agent}>
+        {prompt}
+      </Task>
+
+      {analysis ? (
+        <Task id="review" output={schema.output} agent={reviewAgent}>
+          {`Review: ${analysis.summary}`}
+        </Task>
+      ) : null}
+    </Sequence>
+  </Workflow>
+);
+```
+
+This is the most common pattern for conditional rendering. On the first render cycle, `analysis` is `undefined` so the review task is not mounted. After the analyze task completes and the tree re-renders, `analysis` is populated and the review task mounts.
+
+### `latest(table, nodeId)`
+
+Returns the output row with the highest iteration number for a given `nodeId`. This is particularly useful inside or after Ralph loops where you want the most recent result regardless of which iteration produced it.
+
+```ts
+const latestDraft = ctx.latest(schema.draft, "write");
+// Returns the row with the highest iteration value
+```
+
+The lookup compares all rows in the table matching the `nodeId` and picks the one with the largest `iteration` value. Returns `undefined` if no rows match.
+
+### `latestArray(value, schema)`
+
+A utility for safely parsing array fields stored as JSON text in SQLite. Takes a raw value (typically from a JSON column) and a Zod schema, returning an array of validated items. Invalid items are silently dropped.
+
+```ts
+const draft = ctx.latest(schema.draft, "write");
+const sources = ctx.latestArray(draft?.sources, z.string());
+// sources: string[] -- only items that pass z.string() validation
+```
+
+Handles these input shapes:
+
+- `null` or `undefined` returns `[]`
+- A JSON string is parsed, then each element is validated
+- An array is validated element-by-element
+- A non-array value is wrapped in `[value]` and validated
+
+### `iterationCount(table, nodeId)`
+
+Returns the number of distinct iterations that have produced output for a given `nodeId`. Useful for tracking Ralph loop progress.
+
+```ts
+const draftsCompleted = ctx.iterationCount(schema.draft, "write");
+// e.g., 3 if iterations 0, 1, 2 have output rows
+```
+
+## Row Resolution Logic
+
+When `output()` or `outputMaybe()` looks up a row, the matching logic works as follows:
+
+1. Find all rows in the table where `row.nodeId === key.nodeId`.
+2. If the table has an `iteration` column, also match `row.iteration === (key.iteration ?? ctx.iteration)`.
+3. Return the first match, or `undefined`/throw depending on the method.
+
+This means that inside a Ralph loop, calling `ctx.output(table, { nodeId: "write" })` without specifying `iteration` automatically matches the row for the current iteration.
+
+## Patterns
+
+### Chaining Sequential Tasks
+
+```tsx
+export default smithers(db, (ctx) => {
+  const analysis = ctx.outputMaybe(schema.analyze, { nodeId: "analyze" });
+  const review = ctx.outputMaybe(schema.review, { nodeId: "review" });
+
+  return (
+    <Workflow name="pipeline">
+      <Sequence>
+        <Task id="analyze" output={schema.analyze} agent={analyzeAgent}>
+          {`Analyze: ${ctx.input.description}`}
+        </Task>
+
+        {analysis ? (
+          <Task id="review" output={schema.review} agent={reviewAgent}>
+            {`Review this analysis: ${analysis.summary}`}
+          </Task>
+        ) : null}
+
+        {review ? (
+          <Task id="publish" output={schema.output}>
+            {{ title: ctx.input.description, approved: review.approved }}
+          </Task>
+        ) : null}
+      </Sequence>
+    </Workflow>
+  );
+});
+```
+
+### Reading Ralph Loop History
+
+```tsx
+export default smithers(db, (ctx) => {
+  const latestDraft = ctx.latest(schema.draft, "write");
+  const draftCount = ctx.iterationCount(schema.draft, "write");
+  const converged = latestDraft?.score > 0.9 || draftCount >= 5;
+
+  return (
+    <Workflow name="iterative">
+      <Ralph until={converged} maxIterations={10} onMaxReached="return-last">
+        <Task id="write" output={schema.draft} agent={writerAgent}>
+          {latestDraft
+            ? `Improve this draft (score: ${latestDraft.score}): ${latestDraft.text}`
+            : `Write a first draft about: ${ctx.input.topic}`}
+        </Task>
+      </Ralph>
+    </Workflow>
+  );
+});
+```
+
+### Accessing All Outputs from a Table
+
+```tsx
+const allReviews = ctx.outputs(schema.review);
+const approvedCount = allReviews.filter((r) => r.approved).length;
+```

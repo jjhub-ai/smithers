@@ -1,0 +1,204 @@
+---
+title: Approvals
+description: Gate task execution on human review with approval workflows.
+---
+
+Smithers supports human-in-the-loop workflows through an approval system. Any task can be gated on explicit human approval before it executes. This is useful for high-stakes operations like deployments, financial transactions, or content publication where you want a human checkpoint.
+
+## Basic Usage
+
+Set the `needsApproval` prop on a `<Task>` to gate it:
+
+```tsx
+import { smithers, Workflow, Task, Sequence } from "smithers";
+
+export default smithers(db, (ctx) => (
+  <Workflow name="deploy-pipeline">
+    <Sequence>
+      <Task id="build" output={schema.build} agent={buildAgent}>
+        {`Build the project: ${ctx.input.repo}`}
+      </Task>
+
+      <Task id="deploy" output={schema.deploy} needsApproval>
+        {{ url: "https://prod.example.com", version: "1.2.0" }}
+      </Task>
+    </Sequence>
+  </Workflow>
+));
+```
+
+In this example, the "build" task runs automatically. Once it finishes, the "deploy" task enters the `waiting-approval` state instead of executing immediately.
+
+## Approval Flow
+
+The lifecycle of an approval-gated task:
+
+```
+Task extracted from tree
+  |
+  v
+needsApproval = true?
+  |
+  +---> Check _smithers_approvals table
+  |
+  +---> No approval record exists
+  |       |
+  |       +---> Insert approval request (status: "requested")
+  |       +---> Emit ApprovalRequested event
+  |       +---> Emit NodeWaitingApproval event
+  |       +---> Node state: waiting-approval
+  |
+  +---> Approval status = "approved"
+  |       |
+  |       +---> Proceed to normal execution
+  |
+  +---> Approval status = "denied"
+          |
+          +---> continueOnFail = true?  -> Node state: skipped
+          +---> continueOnFail = false? -> Node state: failed
+```
+
+When no runnable tasks remain and at least one task is in `waiting-approval`, the entire run transitions to `waiting-approval` status and returns. The run can be resumed after an approval decision is made.
+
+## Events
+
+The approval system emits these events, all available through the `onProgress` callback:
+
+| Event | When |
+| --- | --- |
+| `ApprovalRequested` | A task enters `waiting-approval` for the first time. Contains `runId`, `nodeId`, `iteration`, and `timestampMs`. |
+| `NodeWaitingApproval` | Emitted alongside `ApprovalRequested` to update the node state. |
+| `ApprovalGranted` | An approval decision of "approved" is recorded. |
+| `ApprovalDenied` | An approval decision of "denied" is recorded. |
+
+Listen for approval events to trigger notifications:
+
+```ts
+import { runWorkflow } from "smithers";
+
+const result = await runWorkflow(workflow, {
+  input: { repo: "my-app" },
+  onProgress: (event) => {
+    if (event.type === "ApprovalRequested") {
+      // Send Slack notification, email, etc.
+      notify(`Task ${event.nodeId} needs approval for run ${event.runId}`);
+    }
+  },
+});
+
+if (result.status === "waiting-approval") {
+  console.log("Run paused -- waiting for human approval");
+}
+```
+
+## CLI Commands
+
+Approve or deny tasks using the Smithers CLI:
+
+```bash
+# Approve a task
+smithers approve workflow.tsx --run-id <run-id> --node-id deploy
+
+# Deny a task
+smithers deny workflow.tsx --run-id <run-id> --node-id deploy
+
+# Approve with a note and author
+smithers approve workflow.tsx --run-id <run-id> --node-id deploy \
+  --note "Looks good, ship it" --decided-by "alice"
+
+# Deny with a reason
+smithers deny workflow.tsx --run-id <run-id> --node-id deploy \
+  --note "Staging tests failed" --decided-by "bob"
+```
+
+After approving, resume the run:
+
+```bash
+smithers run workflow.tsx --run-id <run-id> --resume
+```
+
+## What Happens on Approve
+
+When a task is approved:
+
+1. The `_smithers_approvals` row is updated with `status: "approved"`, `decidedAtMs`, `note`, and `decidedBy`.
+2. An `ApprovalGranted` event is persisted.
+3. The node state is reset to `pending`.
+4. On the next `runWorkflow` call with `--resume`, the task proceeds through normal execution.
+
+## What Happens on Deny
+
+When a task is denied:
+
+1. The `_smithers_approvals` row is updated with `status: "denied"`, `decidedAtMs`, `note`, and `decidedBy`.
+2. An `ApprovalDenied` event is persisted.
+3. The node state is set to `failed`.
+4. On the next `runWorkflow` call with `--resume`:
+   - If `continueOnFail` is set on the task, it is treated as `skipped` and the workflow continues.
+   - If `continueOnFail` is not set (the default), the failed task blocks the workflow and the run finishes with status `failed`.
+
+## Database Storage
+
+Approval state is stored in the `_smithers_approvals` table:
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `run_id` | TEXT | The workflow run ID. |
+| `node_id` | TEXT | The task node ID. |
+| `iteration` | INTEGER | The Ralph loop iteration (0 for non-loop tasks). |
+| `status` | TEXT | One of: `requested`, `approved`, `denied`. |
+| `requested_at_ms` | INTEGER | Timestamp when the approval was first requested. |
+| `decided_at_ms` | INTEGER | Timestamp when the approval or denial was recorded. |
+| `note` | TEXT | Optional free-text note from the reviewer. |
+| `decided_by` | TEXT | Optional identifier of who made the decision. |
+
+The primary key is `(run_id, node_id, iteration)`, so each task in each iteration can have exactly one approval record.
+
+## Approval with Ralph Loops
+
+When a task inside a `<Ralph>` loop has `needsApproval`, the approval is scoped to the current iteration. Each iteration requires its own approval:
+
+```tsx
+<Ralph until={converged} maxIterations={5}>
+  <Sequence>
+    <Task id="generate" output={schema.draft} agent={writerAgent}>
+      {prompt}
+    </Task>
+    <Task id="publish" output={schema.published} needsApproval>
+      {{ content: latestDraft?.text }}
+    </Task>
+  </Sequence>
+</Ralph>
+```
+
+Iteration 0 of "publish" requires approval. If approved, the Ralph loop may advance to iteration 1, where "publish" again requires a separate approval.
+
+## Patterns
+
+### Approval Gate Before Destructive Action
+
+```tsx
+<Sequence>
+  <Task id="plan" output={schema.plan} agent={planAgent}>
+    {`Plan changes for: ${ctx.input.target}`}
+  </Task>
+  <Task id="execute" output={schema.result} agent={execAgent} needsApproval>
+    {`Execute the plan: ${ctx.output(schema.plan, { nodeId: "plan" }).steps}`}
+  </Task>
+</Sequence>
+```
+
+### Optional Approval with Continue-on-Fail
+
+```tsx
+<Task
+  id="deploy"
+  output={schema.deploy}
+  needsApproval
+  continueOnFail
+>
+  {{ url: "https://staging.example.com" }}
+</Task>
+```
+
+If denied, the workflow continues with "deploy" marked as `skipped` rather than failing the entire run.

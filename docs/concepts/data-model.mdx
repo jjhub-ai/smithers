@@ -1,0 +1,185 @@
+---
+title: Data Model
+description: How Smithers stores workflow state in SQLite using Drizzle ORM.
+---
+
+Smithers persists all workflow state -- inputs, outputs, execution metadata, approvals, and cache -- in a single SQLite database managed through Drizzle ORM. There are two ways to set up the data layer depending on how much control you need.
+
+## Two API Modes
+
+### Schema-Driven API (Recommended)
+
+Define your output shapes as Zod schemas and let Smithers handle everything: database creation, table generation, and Drizzle configuration.
+
+```ts
+import { createSmithers } from "smithers";
+import { z } from "zod";
+
+const { Workflow, useCtx, smithers, db, tables } = createSmithers({
+  discover: z.object({
+    topics: z.array(z.string()),
+    confidence: z.number(),
+  }),
+  research: z.object({
+    summary: z.string(),
+    sources: z.array(z.string()),
+  }),
+});
+```
+
+What happens under the hood:
+
+1. Each Zod schema is converted to a Drizzle `sqliteTable` via `zodToTable()`. The table name is the snake_case version of the key (e.g., `discover` stays `discover`, `researchResult` becomes `research_result`).
+2. Standard columns `runId`, `nodeId`, and `iteration` are prepended automatically with a composite primary key of `(runId, nodeId, iteration)`.
+3. A SQLite database is created at `./smithers.db` (or the path you specify with `{ dbPath: "..." }`).
+4. `CREATE TABLE IF NOT EXISTS` statements are executed for each table, including a bare `input` table with just `run_id`.
+5. A schema registry maps string keys (like `"discover"`) to their Drizzle tables and Zod schemas, so `<Task output="discover">` resolves at runtime.
+
+Zod-to-column mapping:
+
+| Zod Type | SQLite Column |
+| --- | --- |
+| `z.string()`, `z.enum()`, `z.literal()` | `TEXT` |
+| `z.number()` | `INTEGER` |
+| `z.boolean()` | `INTEGER` (boolean mode) |
+| `z.array()`, `z.object()`, unions, complex | `TEXT` (JSON mode) |
+
+Tasks reference outputs by string key:
+
+```tsx
+<Task id="discover" output="discover" agent={agent}>
+  {prompt}
+</Task>
+```
+
+### Manual API
+
+For full control, provide your own Drizzle database instance with manually defined tables.
+
+```ts
+import { smithers } from "smithers";
+import { drizzle } from "drizzle-orm/bun-sqlite";
+import { sqliteTable, text, integer, primaryKey } from "drizzle-orm/sqlite-core";
+
+const inputTable = sqliteTable("input", {
+  runId: text("run_id").primaryKey(),
+  description: text("description").notNull(),
+});
+
+const analyzeTable = sqliteTable(
+  "analyze",
+  {
+    runId: text("run_id").notNull(),
+    nodeId: text("node_id").notNull(),
+    iteration: integer("iteration").notNull().default(0),
+    summary: text("summary").notNull(),
+    files: text("files", { mode: "json" }).$type<string[]>(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.runId, t.nodeId, t.iteration] }),
+  }),
+);
+
+const schema = { input: inputTable, output: analyzeTable, analyze: analyzeTable };
+const db = drizzle("./workflow.db", { schema });
+
+export default smithers(db, (ctx) => (
+  <Workflow name="manual">
+    <Task id="analyze" output={schema.analyze} agent={agent}>
+      {`Analyze: ${ctx.input.description}`}
+    </Task>
+  </Workflow>
+));
+```
+
+Tasks reference outputs by Drizzle table object:
+
+```tsx
+<Task id="analyze" output={schema.analyze} agent={agent}>
+```
+
+## Required Columns
+
+All output tables **must** include these columns, regardless of which API mode you use:
+
+| Column | Type | Purpose |
+| --- | --- | --- |
+| `runId` | `text("run_id")` | Links the row to a specific workflow run. |
+| `nodeId` | `text("node_id")` | Links the row to a specific task node. |
+| `iteration` | `integer("iteration")` | Distinguishes loop iterations for Ralph tasks. Defaults to `0` for non-loop tasks. |
+
+These columns are injected automatically by the engine when persisting output. If the agent or static payload does not include them, Smithers adds `runId`, `nodeId`, and `iteration` before inserting.
+
+## Primary Keys
+
+The primary key convention determines how Smithers identifies whether a task has already produced output:
+
+- **Non-loop tasks**: `PRIMARY KEY (run_id, node_id)` -- or include `iteration` defaulting to 0.
+- **Ralph loop tasks**: `PRIMARY KEY (run_id, node_id, iteration)` -- required so each iteration produces a distinct row.
+
+In practice, using `(run_id, node_id, iteration)` for all tables is the safest choice. The schema-driven API does this automatically.
+
+## Reserved Schema Keys
+
+Two schema keys have special meaning:
+
+| Key | Purpose |
+| --- | --- |
+| `schema.input` | The workflow input table. Smithers inserts one row per run with the provided input data. The `runId` field is set as the primary key. |
+| `schema.output` | The workflow output table. When a run finishes, Smithers queries this table for all rows matching the `runId` and returns them as the run result. |
+
+These are conventions, not hard requirements. If `schema.output` is not defined, the run result's `output` field will be `undefined`.
+
+## Output Validation
+
+Every output -- whether from an agent or a static payload -- is validated against the Drizzle table schema before being written. The validation checks:
+
+1. All `notNull` columns have values.
+2. Column types match (text columns get strings, integer columns get numbers).
+3. The composite key columns (`runId`, `nodeId`, `iteration`) are present and match the current execution context.
+
+For agent tasks, if validation fails, Smithers will re-prompt the agent up to 2 additional times with the specific Zod validation errors and expected schema shape before giving up.
+
+## Internal Tables
+
+Smithers automatically creates and manages these tables with the `_smithers_` prefix. You never need to define or query them directly, but they are available for debugging.
+
+| Table | Primary Key | Purpose |
+| --- | --- | --- |
+| `_smithers_runs` | `(run_id)` | Run metadata: status, workflow name, timestamps, config, errors. |
+| `_smithers_nodes` | `(run_id, node_id, iteration)` | Current state of every task node per run. |
+| `_smithers_attempts` | `(run_id, node_id, iteration, attempt)` | Individual execution attempts with timing, errors, and response text. |
+| `_smithers_frames` | `(run_id, frame_no)` | XML snapshots of the tree at each render cycle. |
+| `_smithers_approvals` | `(run_id, node_id, iteration)` | Approval requests and decisions. |
+| `_smithers_cache` | `(cache_key)` | Cached task outputs keyed by content hash. |
+| `_smithers_tool_calls` | `(run_id, node_id, iteration, attempt, seq)` | Tool call logs for agent tasks. |
+| `_smithers_events` | `(run_id, seq)` | Ordered event stream for the run. |
+| `_smithers_ralph` | `(run_id, ralph_id)` | Ralph loop iteration state and done flag. |
+
+These tables are created via `CREATE TABLE IF NOT EXISTS` when `runWorkflow` is called. They do not require Drizzle migrations.
+
+## Upsert Behavior
+
+Output rows are upserted -- if a row with the same `(runId, nodeId, iteration)` already exists, it is replaced. This means:
+
+- Re-running a task (after a revert or invalidation) overwrites the previous output.
+- Retries that eventually succeed replace any partial state.
+- You never see duplicate output rows for the same task in the same iteration.
+
+## Inspecting Data
+
+Since everything is in SQLite, you can query the database directly:
+
+```bash
+# Check run status
+sqlite3 workflow.db "SELECT run_id, status FROM _smithers_runs"
+
+# View task states for a run
+sqlite3 workflow.db "SELECT node_id, state, iteration FROM _smithers_nodes WHERE run_id = 'abc'"
+
+# See output for a specific task
+sqlite3 workflow.db "SELECT * FROM analyze WHERE run_id = 'abc' AND node_id = 'analyze'"
+
+# View event stream
+sqlite3 workflow.db "SELECT seq, type, payload_json FROM _smithers_events WHERE run_id = 'abc' ORDER BY seq"
+```

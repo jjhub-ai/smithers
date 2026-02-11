@@ -1,0 +1,156 @@
+---
+title: Execution Model
+description: The render-schedule-execute-persist loop that drives every Smithers workflow.
+---
+
+Smithers workflows execute through a deterministic loop that separates pure rendering from side-effectful execution. Understanding this loop is essential for reasoning about when your tasks run, why they re-run, and how the framework achieves resumability.
+
+## The Core Loop
+
+Every workflow run follows the same four-phase cycle, repeated until no runnable nodes remain:
+
+```
+1. Render    JSX tree -> HostElement tree -> TaskDescriptor[] + XML snapshot
+2. Schedule  Evaluate node states, pick runnable tasks (respecting ordering + concurrency)
+3. Execute   Run agent.generate() or apply static payloads
+4. Persist   Validate output against schema, write to SQLite, commit frame
+             -> Loop back to step 1 with updated context
+```
+
+### Phase 1: Render
+
+Smithers calls your builder function with the current `SmithersCtx`, which contains the run's input and all outputs produced so far. The JSX you return is rendered through a [custom React reconciler](/docs/concepts/renderer-internals) -- not React DOM -- producing an in-memory `HostElement` tree.
+
+The `extractFromHost` function then walks this tree depth-first, left-to-right and produces two outputs:
+
+- **TaskDescriptor[]** -- one entry per `<Task>` node with its `nodeId`, `ordinal`, `iteration`, output table, agent, prompt, and all configuration props (`skipIf`, `needsApproval`, `retries`, `timeoutMs`, `continueOnFail`).
+- **XmlNode** -- a serializable XML snapshot of the full tree, stored in the `_smithers_frames` table for debugging and inspection.
+
+Rendering is **pure**. No network calls, no database writes, no side effects. The builder function can read from `ctx.outputs` and `ctx.input` but cannot mutate anything.
+
+### Phase 2: Schedule
+
+The engine evaluates the state of every extracted task by checking:
+
+1. Is the task's `skipIf` prop true? Mark as `skipped`.
+2. Does it need approval? Check `_smithers_approvals`. If not yet approved, emit `ApprovalRequested` and mark as `waiting-approval`.
+3. Is there an in-progress attempt? Mark as `in-progress`.
+4. Does a valid output row already exist in the output table for `(runId, nodeId, iteration)`? Mark as `finished`.
+5. Is this a Ralph child whose loop is done? Mark as `skipped`.
+6. Has it exhausted its retries? Mark as `failed`.
+7. Otherwise: mark as `pending`.
+
+The scheduler then walks the plan tree (built from the XML) to determine which pending tasks are actually **runnable** given structural constraints:
+
+- **Sequence**: only the first non-terminal child is runnable.
+- **Parallel**: all non-terminal children are runnable simultaneously.
+- **Ralph**: children run as a group; when all finish, the loop may advance to the next iteration.
+- **Workflow**: behaves like an implicit sequence at the root.
+
+Finally, concurrency limits are applied. The global `maxConcurrency` (default 4) and per-`<Parallel>` `maxConcurrency` cap how many tasks execute at once, accounting for already in-progress tasks.
+
+### Phase 3: Execute
+
+Runnable tasks execute in parallel up to the concurrency limit. For each task:
+
+1. A new attempt row is inserted into `_smithers_attempts` with state `in-progress`.
+2. The node row in `_smithers_nodes` is updated to `in-progress`.
+3. A `NodeStarted` event is emitted.
+4. **Agent tasks**: `agent.generate()` is called with the prompt. The response is parsed for JSON output (structured output, raw JSON, code-fenced JSON, or extracted via balanced-brace matching). If extraction fails, a follow-up prompt requests just the JSON.
+5. **Static tasks**: the static payload from the JSX children is used directly.
+6. Output validation is performed against the Drizzle table schema.
+7. If schema validation fails for agent tasks, up to 2 schema-retry prompts are sent with the Zod error details.
+8. The validated payload is upserted into the output table.
+
+### Phase 4: Persist
+
+After execution:
+
+- The attempt row is updated to `finished` (or `failed` on error).
+- The node row is updated accordingly.
+- `NodeFinished` or `NodeFailed` events are emitted.
+- If caching is enabled and this was not a cache hit, the result is written to `_smithers_cache`.
+- The JJ pointer (version control change ID) is captured if available.
+
+The loop then returns to Phase 1. The builder function re-renders with the newly available outputs in `ctx`, which may cause new tasks to mount, Ralph loops to advance, or Branch conditions to change.
+
+## Node States
+
+Every task node transitions through these states:
+
+| State | Meaning |
+| --- | --- |
+| `pending` | Extracted from the tree but not yet started. |
+| `waiting-approval` | The `needsApproval` prop is set and no approval decision exists yet. |
+| `in-progress` | An attempt is currently executing. |
+| `finished` | A valid output row exists in the output table. |
+| `failed` | All attempts have failed (retries exhausted) or approval was denied. |
+| `cancelled` | The node was unmounted between render cycles while in-progress, or the run was aborted. |
+| `skipped` | The `skipIf` prop evaluated to true, or a Branch was not taken, or a Ralph loop completed. |
+
+State transitions are always persisted to `_smithers_nodes` before the engine proceeds.
+
+## Deterministic Ordering
+
+Task ordering is deterministic and derived from the JSX tree structure:
+
+1. **Ordinals**: Each `<Task>` receives an ordinal assigned during depth-first, left-to-right extraction. The first task encountered gets ordinal 0, the next gets 1, and so on.
+2. **Sequence gating**: Within a `<Sequence>` (or `<Workflow>`, which is an implicit sequence), tasks execute in order. The second task does not become runnable until the first reaches a terminal state (`finished`, `skipped`, or `failed` with `continueOnFail`).
+3. **Parallel concurrency**: Within a `<Parallel>`, all children are eligible to run simultaneously, subject to concurrency limits.
+4. **Stable identity**: Tasks are identified by their `id` prop, not their position. Moving a `<Task id="analyze">` within the tree does not create a new task -- the engine matches on `(runId, nodeId)`.
+
+This means the same workflow definition always produces the same execution order given the same inputs and outputs.
+
+## Re-Render Cycle
+
+The re-render cycle is what makes Smithers workflows reactive:
+
+```tsx
+export default smithers(db, (ctx) => {
+  const analysis = ctx.outputMaybe(schema.analyze, { nodeId: "analyze" });
+
+  return (
+    <Workflow name="example">
+      <Sequence>
+        <Task id="analyze" output={schema.analyze} agent={codeAgent}>
+          {`Analyze: ${ctx.input.description}`}
+        </Task>
+
+        {analysis ? (
+          <Task id="review" output={schema.output} agent={reviewAgent}>
+            {`Review: ${analysis.summary}`}
+          </Task>
+        ) : null}
+      </Sequence>
+    </Workflow>
+  );
+});
+```
+
+On the first render cycle, `analysis` is `undefined`, so only the "analyze" task is mounted. After it executes and persists its output, the next render cycle sees `analysis` as a real row, causing the "review" task to mount and become runnable.
+
+This pattern extends to any conditional rendering: Ralph loops that check convergence, Branch nodes that inspect previous outputs, and dynamic task lists generated from arrays.
+
+## Retries
+
+When a task fails, the engine checks if the number of failed attempts is less than `retries + 1`. If so, the node remains `pending` and will be picked up on the next scheduling pass. Each retry creates a new attempt row in `_smithers_attempts` -- previous attempts are never overwritten.
+
+A `NodeRetrying` event is emitted between the failure and the next attempt. The latest attempt always determines the node's current state.
+
+## Run Termination
+
+The loop terminates when one of these conditions is met:
+
+| Condition | Run Status |
+| --- | --- |
+| No runnable tasks and no pending work remain | `finished` |
+| A task failed without `continueOnFail` and no runnable work remains | `failed` |
+| Tasks are waiting for approval and no other work is runnable | `waiting-approval` |
+| A Ralph loop exceeded `maxIterations` with `onMaxReached: "fail"` | `failed` |
+| The `AbortSignal` was triggered | `cancelled` |
+
+On `waiting-approval`, the run can be resumed after an approval or denial decision is made via the CLI.
+
+## Stale Attempt Recovery
+
+If a run is interrupted (process crash, timeout), in-progress attempts older than 15 minutes are automatically cancelled on resume. This prevents zombie tasks from blocking forward progress. The nodes are reset to `pending` so they can be retried.

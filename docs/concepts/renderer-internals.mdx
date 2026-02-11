@@ -1,0 +1,259 @@
+---
+title: Renderer Internals
+description: How Smithers turns JSX into task descriptors and XML snapshots using a custom React reconciler.
+---
+
+<Warning>
+  This is internal architecture documentation. You do not need to understand it to use Smithers. It is here for contributors and for debugging advanced issues.
+</Warning>
+
+Smithers uses a custom React reconciler to turn your JSX workflow definitions into an in-memory host tree, then extracts structured task descriptors and an XML snapshot from that tree. This page explains each stage of the pipeline.
+
+## Pipeline Overview
+
+```
+JSX elements (Workflow, Task, Sequence, ...)
+  |
+  v  React component functions (src/components.ts)
+Host elements (smithers:workflow, smithers:task, ...)
+  |
+  v  Custom React reconciler (src/dom/renderer.ts)
+HostElement tree (in-memory)
+  |
+  v  extractFromHost() (src/dom/extract.ts)
+TaskDescriptor[] + XmlNode + mountedTaskIds[]
+  |
+  v  Engine scheduler (src/engine/scheduler.ts)
+PlanNode tree + runnable TaskDescriptor[]
+```
+
+## Stage 1: JSX Components to Host Elements
+
+Smithers JSX components are thin wrappers that emit host elements with `smithers:` prefixed tags. They live in `src/components.ts`.
+
+| JSX Component | Host Tag | Behavior |
+| --- | --- | --- |
+| `<Workflow>` | `smithers:workflow` | Passes all props through. Children are rendered as implicit sequence. |
+| `<Task>` | `smithers:task` | Agent tasks: renders children to a prompt string via `renderToStaticMarkup`. Static tasks: attaches payload as `__smithersPayload`. Adds `__smithersKind` as `"agent"` or `"static"`. |
+| `<Sequence>` | `smithers:sequence` | Returns `null` if `skipIf` is true. Otherwise passes children through. |
+| `<Parallel>` | `smithers:parallel` | Returns `null` if `skipIf` is true. Otherwise passes children through. |
+| `<Branch>` | `smithers:branch` | Evaluates `if` prop and renders either `then` or `else` as children. |
+| `<Ralph>` | `smithers:ralph` | Returns `null` if `skipIf` is true. Otherwise passes children through. |
+
+The `<Task>` component does the most work. For agent tasks, it calls `renderToStaticMarkup` on the children to produce a plain-text prompt string. If a `outputSchema` prop is present and the child is a React element, it injects the Zod schema as a JSON example into the child via `cloneElement`.
+
+## Stage 2: Custom React Reconciler
+
+The reconciler is implemented in `src/dom/renderer.ts` using the `react-reconciler` package. It builds an in-memory tree of `HostElement` and `HostText` nodes.
+
+### HostConfig
+
+The reconciler's host config supports mutation but not persistence or hydration:
+
+```ts
+{
+  supportsMutation: true,
+  supportsPersistence: false,
+  supportsHydration: false,
+  isPrimaryRenderer: true,
+  supportsMicrotasks: true,
+}
+```
+
+Key operations:
+
+| Method | What it does |
+| --- | --- |
+| `createInstance(type, props)` | Creates a `HostElement` with `tag`, string-coerced `props`, and raw `rawProps`. |
+| `createTextInstance(text)` | Creates a `HostText` node. |
+| `appendInitialChild` / `appendChild` | Appends a child to a parent element's `children` array. |
+| `appendChildToContainer` | Sets the container's `root` to the given node. |
+| `removeChild` / `removeChildFromContainer` | Removes nodes via splice or null assignment. |
+| `commitUpdate` | Updates element `props` and `rawProps` via re-creation with `createElement`. |
+| `commitTextUpdate` | Directly mutates the text node's `text` property. |
+
+Props are stored in two forms:
+
+- **`props`**: String-coerced key-value pairs (used for XML serialization). Functions, `undefined` values, and keys starting with `__` are excluded.
+- **`rawProps`**: The original props object with full type fidelity (used for task extraction).
+
+### HostElement and HostText Types
+
+```ts
+type HostElement = {
+  kind: "element";
+  tag: string;
+  props: Record<string, string>;     // string-coerced for XML
+  rawProps: Record<string, any>;      // original for extraction
+  children: HostNode[];
+};
+
+type HostText = {
+  kind: "text";
+  text: string;
+};
+
+type HostNode = HostElement | HostText;
+```
+
+### SmithersRenderer Class
+
+The `SmithersRenderer` class wraps the reconciler in a simple API:
+
+```ts
+class SmithersRenderer {
+  constructor()
+  async render(element: ReactElement, opts?: ExtractOptions): Promise<ExtractResult>
+  getRoot(): HostNode | null
+}
+```
+
+The `render()` method:
+
+1. Calls `updateContainerSync(element, root)` to synchronously reconcile the element into the host tree.
+2. Calls `flushSyncWork()` to complete all pending work.
+3. Calls `extractFromHost(container.root, opts)` to extract the result.
+
+The renderer instance is reused across render cycles within a single `runWorkflow` call. This means React reconciliation diffs against the previous tree, which is important for efficiency but also means state is preserved between renders.
+
+## Stage 3: Host Tree Extraction
+
+The `extractFromHost()` function in `src/dom/extract.ts` performs a depth-first, left-to-right walk of the host tree and produces three outputs:
+
+### TaskDescriptor[]
+
+Each `smithers:task` node becomes a `TaskDescriptor`:
+
+```ts
+type TaskDescriptor = {
+  nodeId: string;          // from Task id prop
+  ordinal: number;         // depth-first order (0, 1, 2, ...)
+  iteration: number;       // from enclosing Ralph, or 0
+  ralphId?: string;        // ID of the enclosing Ralph, if any
+
+  outputTable: Table | null;      // Drizzle table object (null for string refs)
+  outputTableName: string;        // Table name string
+  outputSchema?: ZodObject;       // Optional Zod schema override
+
+  parallelGroupId?: string;       // ID of enclosing Parallel
+  parallelMaxConcurrency?: number;
+
+  needsApproval: boolean;
+  skipIf: boolean;
+  retries: number;
+  timeoutMs: number | null;
+  continueOnFail: boolean;
+
+  agent?: AgentLike;
+  prompt?: string;           // For agent tasks
+  staticPayload?: unknown;   // For static tasks
+
+  label?: string;
+  meta?: Record<string, unknown>;
+};
+```
+
+Ordinals are assigned sequentially as tasks are encountered in depth-first order. This is what makes ordering deterministic -- the same tree structure always produces the same ordinal assignments.
+
+### XmlNode
+
+A serializable snapshot of the entire tree structure:
+
+```ts
+type XmlNode = XmlElement | XmlText;
+
+type XmlElement = {
+  kind: "element";
+  tag: string;
+  props: Record<string, string>;
+  children: XmlNode[];
+};
+
+type XmlText = {
+  kind: "text";
+  text: string;
+};
+```
+
+The XML snapshot uses the string-coerced `props` (not `rawProps`), so it contains only serializable data. This is written to `_smithers_frames` for debugging and can be visualized as XML.
+
+### mountedTaskIds[]
+
+An array of `"nodeId::iteration"` strings for every task currently in the tree. The engine uses this to detect when a task has been unmounted between render cycles (e.g., a Branch condition changed) and cancel any in-progress attempts.
+
+## Stage 4: Plan Tree and Scheduling
+
+The scheduler in `src/engine/scheduler.ts` takes the XML snapshot and builds a `PlanNode` tree that models the structural constraints:
+
+```ts
+type PlanNode =
+  | { kind: "task"; nodeId: string }
+  | { kind: "sequence"; children: PlanNode[] }
+  | { kind: "parallel"; children: PlanNode[] }
+  | { kind: "ralph"; id: string; children: PlanNode[]; until: boolean; maxIterations: number }
+  | { kind: "group"; children: PlanNode[] };
+```
+
+Mapping from host tags:
+
+| Host Tag | PlanNode Kind |
+| --- | --- |
+| `smithers:workflow` | `sequence` (implicit) |
+| `smithers:task` | `task` |
+| `smithers:sequence` | `sequence` |
+| `smithers:parallel` | `parallel` |
+| `smithers:ralph` | `ralph` |
+| `smithers:branch` | `group` |
+
+The `scheduleTasks()` function walks this plan tree with the current task state map and returns:
+
+- **`runnable`**: Tasks in `pending` state that are structurally eligible to run. In a sequence, only the first non-terminal child is eligible. In a parallel, all non-terminal children are eligible.
+- **`pendingExists`**: Whether any task is still pending.
+- **`waitingApprovalExists`**: Whether any task is waiting for approval.
+- **`readyRalphs`**: Ralph loops whose children have all reached terminal states, indicating the loop should either advance or complete.
+
+## Extraction Context
+
+The walk maintains context as it descends:
+
+- **`path: number[]`**: Element indices tracking position in the tree, used by `resolveStableId()` to generate deterministic IDs for Parallel and Ralph nodes that do not have explicit `id` props.
+- **`iteration: number`**: The current Ralph iteration, applied to all Task descendants.
+- **`ralphId?: string`**: The enclosing Ralph's ID, propagated to child tasks.
+- **`parallelStack`**: A stack of enclosing Parallel groups with their IDs and max concurrency, so tasks know which parallel group they belong to.
+
+Nested `<Ralph>` is explicitly disallowed -- the extraction throws an error if a `smithers:ralph` is encountered inside another Ralph.
+
+## Why React?
+
+Smithers uses React's reconciliation model for several reasons:
+
+1. **Familiar component model**: Developers can compose workflow logic using the same patterns they use for UI. Custom components, hooks, and conditional rendering all work as expected.
+2. **Deterministic reconciliation**: React's diffing algorithm produces deterministic output given the same inputs. This is critical for a workflow engine where re-renders must be predictable.
+3. **Efficient updates**: On re-render, only the parts of the tree that changed are updated. The reconciler does not rebuild the entire host tree from scratch.
+4. **Ecosystem compatibility**: JSX tooling, TypeScript support, and developer experience are mature and well-understood.
+
+The tradeoff is a dependency on `react` and `react-reconciler`, which adds bundle size. However, since Smithers runs server-side (Node/Bun), this is not a practical concern.
+
+## Debugging the Renderer
+
+To inspect the host tree at any point:
+
+```ts
+import { SmithersRenderer } from "smithers/dom/renderer";
+
+const renderer = new SmithersRenderer();
+const result = await renderer.render(element);
+
+// result.xml -- the XmlNode tree
+// result.tasks -- the TaskDescriptor array
+// result.mountedTaskIds -- the mounted task IDs
+
+// View as JSON
+console.log(JSON.stringify(result.xml, null, 2));
+```
+
+Frame snapshots are also stored in `_smithers_frames`:
+
+```bash
+sqlite3 workflow.db "SELECT frame_no, xml_hash, task_index_json FROM _smithers_frames WHERE run_id = 'abc'"
+```
