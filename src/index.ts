@@ -33,6 +33,7 @@ export {
   unwrapZodType,
 } from "./zod-to-table";
 export { zodSchemaToJsonExample } from "./zod-to-example";
+export * from "./vcs/jj";
 
 type CreateSmithersApi = {
   Workflow: (props: WorkflowProps) => React.ReactElement;

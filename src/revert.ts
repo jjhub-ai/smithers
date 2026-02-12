@@ -50,7 +50,9 @@ export async function revertToAttempt(
     timestampMs: Date.now(),
   });
 
-  const result = await revertToJjPointer(jjPointer);
+  // Revert must target the same repository/worktree where the attempt ran.
+  const cwd: string | undefined = (attemptRow as any).jjCwd ?? undefined;
+  const result = await revertToJjPointer(jjPointer, cwd);
 
   onProgress?.({
     type: "RevertFinished",

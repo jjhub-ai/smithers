@@ -530,7 +530,8 @@ async function executeTask(
     finishedAtMs: null,
     errorJson: null,
     jjPointer: null,
-    cached: false,
+      jjCwd: desc.worktreePath ?? toolConfig.rootDir,
+      cached: false,
     metaJson: JSON.stringify({
       prompt: desc.prompt ?? null,
       staticPayload: desc.staticPayload ?? null,
@@ -974,7 +975,8 @@ async function executeTask(
         payloadJson: JSON.stringify(payload),
       });
     }
-    const jjPointer = await getJjPointer();
+    const taskRootDir = desc.worktreePath ?? toolConfig.rootDir;
+    const jjPointer = await getJjPointer(taskRootDir);
 
     await adapter.updateAttempt(runId, desc.nodeId, desc.iteration, attemptNo, {
       state: "finished",

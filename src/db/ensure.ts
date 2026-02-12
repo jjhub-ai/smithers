@@ -124,4 +124,7 @@ export function ensureSmithersTables(db: BunSQLiteDatabase<any>): void {
   try {
     client.exec(`ALTER TABLE _smithers_attempts ADD COLUMN response_text TEXT`);
   } catch {}
+  try {
+    client.exec(`ALTER TABLE _smithers_attempts ADD COLUMN jj_cwd TEXT`);
+  } catch {}
 }

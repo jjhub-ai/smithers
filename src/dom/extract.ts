@@ -209,10 +209,8 @@ export function extractFromHost(
         parallelMaxConcurrency: parallelGroup?.max,
       };
 
-      // Provide a root directory override for task execution when inside a Worktree.
-      if (topWorktree?.path) {
-        (descriptor as any).rootDirOverride = topWorktree.path;
-      }
+      // Worktree path is captured in typed fields (worktreeId/worktreePath) and
+      // consumed by the engine; avoid attaching untyped ad-hoc properties.
       tasks.push(descriptor);
       mountedTaskIds.push(`${nodeId}::${iteration}`);
     }
