@@ -75,6 +75,22 @@ export function extractFromHost(
   const seenWorktree = new Set<string>();
   let ordinal = 0;
 
+  function pushGroup(
+    tag: "parallel" | "merge-queue",
+    raw: any,
+    path: number[],
+    stack: { id: string; max?: number }[],
+  ) {
+    const id = resolveStableId(raw?.id, tag, path);
+    const rawMax =
+      typeof raw?.maxConcurrency === "number" ? raw.maxConcurrency : undefined;
+    const max =
+      tag === "merge-queue"
+        ? rawMax ?? C.DEFAULT_MERGE_QUEUE_CONCURRENCY
+        : rawMax;
+    return [...stack, { id, max }];
+  }
+
   function walk(
     node: HostNode,
     ctx: {
@@ -111,25 +127,21 @@ export function extractFromHost(
 
     let nextParallelStack = parallelStack;
     if (node.tag === "smithers:parallel") {
-      const max =
-        typeof node.rawProps?.maxConcurrency === "number"
-          ? node.rawProps.maxConcurrency
-          : undefined;
-      const id = resolveStableId(node.rawProps?.id, "parallel", ctx.path);
-      nextParallelStack = [...parallelStack, { id, max }];
+      nextParallelStack = pushGroup(
+        "parallel",
+        node.rawProps,
+        ctx.path,
+        parallelStack,
+      );
     }
     // Treat <MergeQueue> as a parallel-concurrency group with default 1
     if (node.tag === "smithers:merge-queue") {
-      const max =
-        typeof node.rawProps?.maxConcurrency === "number"
-          ? node.rawProps.maxConcurrency
-          : C.DEFAULT_MERGE_QUEUE_CONCURRENCY;
-      const id = resolveStableId(
-        node.rawProps?.id,
+      nextParallelStack = pushGroup(
         "merge-queue",
+        node.rawProps,
         ctx.path,
+        parallelStack,
       );
-      nextParallelStack = [...parallelStack, { id, max }];
     }
     // Entering a Worktree node: push onto the worktree stack
     let nextWorktreeStack = worktreeStack;
@@ -143,11 +155,10 @@ export function extractFromHost(
       if (!pathVal) {
         throw new Error(C.WORKTREE_EMPTY_PATH_ERROR);
       }
+      const baseRoot = opts?.baseRootDir;
       const base =
-        opts?.baseRootDir &&
-        typeof opts.baseRootDir === "string" &&
-        opts.baseRootDir.length > 0
-          ? opts.baseRootDir
+        typeof baseRoot === "string" && baseRoot.length > 0
+          ? baseRoot
           : process.cwd();
       const normPath = isAbsolute(pathVal)
         ? resolvePath(pathVal)
