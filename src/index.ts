@@ -59,7 +59,7 @@ export function smithers<Schema extends Record<string, unknown>>(
  */
 export function createSmithers(
   schemasOrDb: any,
-  opts?: { dbPath?: string },
+  opts?: { dbPath?: string; journalMode?: string },
 ): CreateSmithersApi {
   // Detect which overload: if it has $client or _.fullSchema, it's a Drizzle db
   const isDrizzleDb =
@@ -121,7 +121,7 @@ function createSmithersFromSchemas<
   Schemas extends Record<string, z.ZodObject<any>>,
 >(
   schemas: Schemas,
-  opts?: { dbPath?: string },
+  opts?: { dbPath?: string; journalMode?: string },
 ) {
   // Dynamic import to avoid hard dependency issues at module level
   const { Database } = require("bun:sqlite");
@@ -142,7 +142,7 @@ function createSmithersFromSchemas<
   // 2. Create SQLite db
   const dbPath = opts?.dbPath ?? "./smithers.db";
   const sqlite = new Database(dbPath);
-  sqlite.exec("PRAGMA journal_mode = WAL");
+  sqlite.exec(`PRAGMA journal_mode = ${opts?.journalMode ?? "WAL"}`);
   sqlite.exec("PRAGMA foreign_keys = ON");
 
   // 3. Auto-create tables using CREATE TABLE IF NOT EXISTS
