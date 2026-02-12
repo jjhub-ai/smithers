@@ -164,7 +164,7 @@ describe("scheduler: per-group concurrency caps in scheduleTasks()", () => {
       ["b", mkWithCap("b", "g", 2)],
       ["c", mkWithCap("c", "g", 2)],
     ]);
-    const states = new Map<string, any>([[key("a"), "in-progress"]]);
+    const states = new Map<string, any>([[key("a", 0), "in-progress"]]);
     const ralph = new Map<string, any>();
     const s = scheduleTasks(plan!, states as any, desc as any, ralph as any);
     // Only one of b/c should be runnable due to remaining group capacity = 1
