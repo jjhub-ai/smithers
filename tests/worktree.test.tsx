@@ -68,25 +68,30 @@ describe("<Worktree>", () => {
 
   test("empty path throws early in component", () => {
     // Invoke component directly to validate props before rendering machinery
-    // @ts-expect-error testing invalid prop
-    expect(() => Worktree({ path: "   ", children: null, bogus: 1 })).toThrow(
-      "<Worktree> requires a non-empty path prop",
+    expect(() => Worktree({ path: "   ", children: null } as any)).toThrow(
+      WORKTREE_EMPTY_PATH_ERROR,
     );
   });
 
   test("empty path throws early in component (empty string)", () => {
-    // @ts-expect-error testing invalid prop
     expect(() => Worktree({ path: "", children: null })).toThrow(
       WORKTREE_EMPTY_PATH_ERROR,
     );
   });
 
   test("missing path throws early in component (undefined)", () => {
-    // @ts-expect-error testing invalid prop
     expect(() => Worktree({ path: undefined as any, children: null })).toThrow(
       WORKTREE_EMPTY_PATH_ERROR,
     );
   });
+
+  test("skipIf does not bypass path validation", () => {
+    // Even when skipIf is true, invalid path should throw immediately
+    expect(() =>
+      Worktree({ path: "   ", skipIf: true, children: null } as any),
+    ).toThrow(WORKTREE_EMPTY_PATH_ERROR);
+  });
+
   test("resolves relative path against baseRootDir", async () => {
     const renderer = new SmithersRenderer();
     const base = process.cwd();
@@ -144,6 +149,20 @@ describe("<Worktree>", () => {
     const expectedInner = require("node:path").resolve(base, inner);
     expect(t.worktreeId).toBe("inner");
     expect(t.worktreePath).toBe(expectedInner);
+  });
+
+  test("tasks outside Worktree do not get worktree fields", async () => {
+    const renderer = new SmithersRenderer();
+    const res = await renderer.render(
+      <Workflow name="w">
+        <Task id="t" output={outputA}>
+          {{ value: 1 }}
+        </Task>
+      </Workflow>,
+      { baseRootDir: "." },
+    );
+    expect(res.tasks[0]!.worktreeId).toBeUndefined();
+    expect(res.tasks[0]!.worktreePath).toBeUndefined();
   });
 
 });
