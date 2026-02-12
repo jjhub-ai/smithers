@@ -1,4 +1,4 @@
-import type { Agent } from "ai";
+// Decouple from external ai Agent type to keep tests flexible
 import type { Table } from "drizzle-orm";
 import type React from "react";
 
@@ -43,7 +43,15 @@ export type TaskDescriptor = {
   meta?: Record<string, unknown>;
 };
 
-export type AgentLike = Agent<any, any, any>;
+export type AgentLike = {
+  id?: string;
+  tools?: Record<string, any>;
+  generate: (...args: any[]) => Promise<any>;
+  // Optional fields tolerated by the engine (present in some Agent impls)
+  version?: string | number;
+  stream?: (...args: any[]) => any;
+};
+
 
 export type GraphSnapshot = {
   runId: string;

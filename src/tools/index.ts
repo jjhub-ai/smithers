@@ -49,7 +49,7 @@ function safeJson(value: unknown, maxBytes: number): string {
   return JSON.stringify({ truncated: true, bytes: Buffer.byteLength(json, "utf8"), preview });
 }
 
-export const read = tool({
+export const read: any = tool({
   description: "Read a file",
   inputSchema: zodSchema(z.object({ path: z.string() })),
   execute: async ({ path }: { path: string }) => {
