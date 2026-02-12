@@ -9,6 +9,8 @@ import type {
   ParallelProps,
   BranchProps,
   RalphProps,
+  WorktreeProps,
+  MergeQueueProps,
 } from "./types";
 export function Workflow(props: WorkflowProps) {
   return React.createElement("smithers:workflow", props, props.children);
@@ -85,4 +87,14 @@ export function Branch(props: BranchProps) {
 export function Ralph(props: RalphProps) {
   if (props.skipIf) return null;
   return React.createElement("smithers:ralph", props, props.children);
+}
+
+export function Worktree(props: WorktreeProps) {
+  if (props.skipIf) return null;
+  return React.createElement("smithers:worktree", props, props.children);
+}
+
+export function MergeQueue(props: MergeQueueProps) {
+  if (props.skipIf) return null;
+  return React.createElement("smithers:merge-queue", props, props.children);
 }

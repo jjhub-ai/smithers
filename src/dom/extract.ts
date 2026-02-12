@@ -63,12 +63,22 @@ export function extractFromHost(root: HostNode | null, opts?: ExtractOptions): E
   const seenRalph = new Set<string>();
   let ordinal = 0;
 
-  function walk(node: HostNode, ctx: { path: number[]; iteration: number; ralphId?: string; parallelStack: { id: string; max?: number }[] }) {
+  function walk(
+    node: HostNode,
+    ctx: {
+      path: number[];
+      iteration: number;
+      ralphId?: string;
+      parallelStack: { id: string; max?: number }[];
+      worktree?: { id: string; path: string; baseRev?: string } | null;
+    },
+  ) {
     if (node.kind === "text") return;
 
     let iteration = ctx.iteration;
     const parallelStack = ctx.parallelStack;
     let ralphId = ctx.ralphId;
+    let worktree = ctx.worktree ?? null;
 
     if (node.tag === "smithers:ralph") {
       if (ralphId) {
@@ -88,6 +98,22 @@ export function extractFromHost(root: HostNode | null, opts?: ExtractOptions): E
       const max = typeof node.rawProps?.maxConcurrency === "number" ? node.rawProps.maxConcurrency : undefined;
       const id = resolveStableId(node.rawProps?.id, "parallel", ctx.path);
       nextParallelStack = [...parallelStack, { id, max }];
+    }
+
+    // Treat merge-queue like a parallel group for concurrency purposes
+    if (node.tag === "smithers:merge-queue") {
+      const max = typeof node.rawProps?.maxWorktrees === "number" ? node.rawProps.maxWorktrees : undefined;
+      const id = resolveStableId(node.rawProps?.id, "merge-queue", ctx.path);
+      nextParallelStack = [...parallelStack, { id, max }];
+    }
+
+    // Entering a Worktree node updates inherited worktree context
+    let nextWorktree = worktree;
+    if (node.tag === "smithers:worktree") {
+      const id = resolveStableId(node.rawProps?.id, "worktree", ctx.path);
+      const path = String(node.rawProps?.path ?? "");
+      const baseRev = typeof node.rawProps?.baseRev === "string" ? node.rawProps.baseRev : undefined;
+      nextWorktree = { id, path, baseRev };
     }
 
     if (node.tag === "smithers:task") {
@@ -136,6 +162,11 @@ export function extractFromHost(root: HostNode | null, opts?: ExtractOptions): E
         ordinal: ordinal++,
         iteration,
         ralphId,
+        worktreeId: nextWorktree?.id,
+        worktreePath: nextWorktree?.path,
+        rootDirOverride: typeof raw.rootDirOverride === "string" && raw.rootDirOverride.length > 0
+          ? raw.rootDirOverride
+          : (nextWorktree?.path || undefined),
         outputTable,
         outputTableName,
         outputSchema: raw.outputSchema, // Pass through custom output schema
@@ -159,11 +190,11 @@ export function extractFromHost(root: HostNode | null, opts?: ExtractOptions): E
     let elementIndex = 0;
     for (const child of node.children) {
       const nextPath = child.kind === "element" ? [...ctx.path, elementIndex++] : ctx.path;
-      walk(child, { path: nextPath, iteration, ralphId, parallelStack: nextParallelStack });
+      walk(child, { path: nextPath, iteration, ralphId, parallelStack: nextParallelStack, worktree: nextWorktree });
     }
   }
 
-  walk(root, { path: [], iteration: 0, parallelStack: [] });
+  walk(root, { path: [], iteration: 0, parallelStack: [], worktree: null });
 
   return { xml: toXmlNode(root), tasks, mountedTaskIds };
 }

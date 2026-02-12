@@ -516,6 +516,7 @@ async function executeTask(
     }
 
     if (!payload) {
+      const taskRoot = desc.rootDirOverride ?? toolConfig.rootDir;
       if (desc.agent) {
         const result = await runWithToolContext(
           {
@@ -524,7 +525,7 @@ async function executeTask(
             nodeId: desc.nodeId,
             iteration: desc.iteration,
             attempt: attemptNo,
-            rootDir: toolConfig.rootDir,
+            rootDir: taskRoot,
             allowNetwork: toolConfig.allowNetwork,
             maxOutputBytes: toolConfig.maxOutputBytes,
             timeoutMs: desc.timeoutMs ?? toolConfig.toolTimeoutMs,
