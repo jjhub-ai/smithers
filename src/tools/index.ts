@@ -303,4 +303,5 @@ export const bash = tool({
   },
 });
 
+// Convenience map of built-in tools for agents that expect a tool registry.
 export const tools = { read, write, edit, grep, bash };
