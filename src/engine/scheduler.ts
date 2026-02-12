@@ -1,7 +1,7 @@
 import type { XmlNode, TaskDescriptor } from "../types";
 import { resolveStableId } from "../utils/tree-ids";
 import { parseBool, parseNum } from "../utils/parse";
-
+import { DEFAULT_MERGE_QUEUE_CONCURRENCY } from "../constants";
 export type PlanNode =
   | { kind: "task"; nodeId: string }
   | { kind: "sequence"; children: PlanNode[] }
@@ -52,7 +52,6 @@ function key(nodeId: string, iteration: number) {
   return `${nodeId}::${iteration}`;
 }
 
-
 export function buildPlanTree(xml: XmlNode | null): {
   plan: PlanNode | null;
   ralphs: RalphMeta[];
@@ -101,11 +100,19 @@ export function buildPlanTree(xml: XmlNode | null): {
         maxConcurrency: Number.isFinite(max) ? max : undefined,
       };
     }
+    if (tag === "smithers:merge-queue") {
+      const maxRaw = parseNum(node.props.maxConcurrency, NaN);
+      const max = Number.isFinite(maxRaw)
+        ? maxRaw
+        : DEFAULT_MERGE_QUEUE_CONCURRENCY;
+      return { kind: "parallel", children, maxConcurrency: max };
+    }
     // Worktree has no special scheduling semantics in the plan tree.
     // Recognize explicitly to preserve subtree boundaries and ordering.
     if (tag === "smithers:worktree") {
       return { kind: "group", children };
-    }    if (tag === "smithers:ralph") {
+    }
+    if (tag === "smithers:ralph") {
       const id = resolveStableId(node.props.id, "ralph", ctx.path);
       if (seenRalph.has(id)) {
         throw new Error(`Duplicate Ralph id detected: ${id}`);
