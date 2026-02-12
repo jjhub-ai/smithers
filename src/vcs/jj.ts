@@ -160,7 +160,9 @@ export async function workspaceAdd(
     if (res.code === 0) return { success: true };
     lastErr = jjError(res);
   }
-  return { success: false, error: lastErr };
+  // Provide a helpful hint: failed attempts may have created partial dirs
+  const hint = " (partial state may exist at " + path + "; consider removing it before retrying)";
+  return { success: false, error: lastErr + hint };
 }
 
 export type WorkspaceInfo = {

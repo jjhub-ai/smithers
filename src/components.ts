@@ -82,7 +82,7 @@ export function Parallel(props: ParallelProps) {
   if (props.skipIf) return null;
   return React.createElement("smithers:parallel", props, props.children);
 }
- 
+
 export function MergeQueue(props: MergeQueueProps) {
   if (props.skipIf) return null;
   // Default maxConcurrency to 1 when not provided

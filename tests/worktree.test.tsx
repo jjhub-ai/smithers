@@ -73,3 +73,63 @@ describe("<Worktree>", () => {
     );
   });
 });
+
+
+  test("resolves relative path against baseRootDir", async () => {
+    const renderer = new SmithersRenderer();
+    const base = process.cwd();
+    const rel = "sub/wt";
+    const res = await renderer.render(
+      <Workflow name="w">
+        <Worktree id="r" path={rel}>
+          <Task id="rt" output={outputA}>
+            {{ value: 1 }}
+          </Task>
+        </Worktree>
+      </Workflow>,
+      { baseRootDir: base },
+    );
+    const t = res.tasks[0]!;
+    const expected = require("node:path").resolve(base, rel);
+    expect(t.worktreePath).toBe(expected);
+  });
+
+  test("absolute path is preserved", async () => {
+    const renderer = new SmithersRenderer();
+    const abs = require("node:path").resolve("/", "tmp", "smithers-wt-abs");
+    const res = await renderer.render(
+      <Workflow name="w">
+        <Worktree id="abs" path={abs}>
+          <Task id="at" output={outputA}>
+            {{ value: 1 }}
+          </Task>
+        </Worktree>
+      </Workflow>,
+      { baseRootDir: "/does/not/matter" },
+    );
+    const t = res.tasks[0]!;
+    expect(t.worktreePath).toBe(abs);
+  });
+
+  test("nested worktrees prefer innermost path", async () => {
+    const renderer = new SmithersRenderer();
+    const base = process.cwd();
+    const outer = "outer-wt";
+    const inner = "inner-wt";
+    const res = await renderer.render(
+      <Workflow name="w">
+        <Worktree id="outer" path={outer}>
+          <Worktree id="inner" path={inner}>
+            <Task id="t" output={outputA}>
+              {{ value: 1 }}
+            </Task>
+          </Worktree>
+        </Worktree>
+      </Workflow>,
+      { baseRootDir: base },
+    );
+    const t = res.tasks[0]!;
+    const expectedInner = require("node:path").resolve(base, inner);
+    expect(t.worktreeId).toBe("inner");
+    expect(t.worktreePath).toBe(expectedInner);
+  });

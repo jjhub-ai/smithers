@@ -91,7 +91,7 @@ export function buildPlanTree(xml: XmlNode | null): {
     }
 
     if (tag === "smithers:task") {
-      const nodeId = (node.props as any).id;
+      const nodeId = node.props.id;
       if (!nodeId) return null;
       return { kind: "task", nodeId };
     }
@@ -102,7 +102,7 @@ export function buildPlanTree(xml: XmlNode | null): {
       return { kind: "sequence", children };
     }
     if (tag === "smithers:parallel") {
-      const max = parseNum((node.props as any).maxConcurrency, NaN);
+      const max = parseNum(node.props.maxConcurrency, NaN);
       return {
         kind: "parallel",
         children,
@@ -111,19 +111,19 @@ export function buildPlanTree(xml: XmlNode | null): {
     }
     if (tag === "smithers:merge-queue") {
       // MergeQueue behaves like a parallel group with a default concurrency of 1
-      const max = parseNum((node.props as any).maxConcurrency, 1);
+      const max = parseNum(node.props.maxConcurrency, 1);
       return { kind: "parallel", children, maxConcurrency: max };
     }
     if (tag === "smithers:ralph") {
-      const id = resolveStableId((node.props as any).id, "ralph", ctx.path);
+      const id = resolveStableId(node.props.id, "ralph", ctx.path);
       if (seenRalph.has(id)) {
         throw new Error(`Duplicate Ralph id detected: ${id}`);
       }
       seenRalph.add(id);
-      const until = parseBool((node.props as any).until);
-      const maxIterations = parseNum((node.props as any).maxIterations, 5);
+      const until = parseBool(node.props.until);
+      const maxIterations = parseNum(node.props.maxIterations, 5);
       const onMaxReached =
-        ((node.props as any).onMaxReached as "fail" | "return-last") ??
+        (node.props.onMaxReached as "fail" | "return-last") ??
         "return-last";
       const meta: RalphMeta = { id, until, maxIterations, onMaxReached };
       ralphs.push(meta);
