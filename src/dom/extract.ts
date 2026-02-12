@@ -88,15 +88,22 @@ export function extractFromHost(
     // Coerce numeric strings (e.g. from MDX) in line with scheduler.parseNum
     const n = Number(raw?.maxConcurrency);
     const rawMax = Number.isFinite(n) ? Math.floor(n) : undefined;
-    // Clamp to positive integers to avoid stalling groups with 0/negative.
+    // Concurrency semantics:
     // - merge-queue: default to 1 and always clamp to >= 1
-    // - parallel: only clamp if provided (undefined => unlimited)
-    const max =
-      tag === "merge-queue"
-        ? Math.max(1, rawMax ?? DEFAULT_MERGE_QUEUE_CONCURRENCY)
-        : rawMax != null
-          ? Math.max(1, rawMax)
-          : undefined;
+    // - parallel: undefined => unlimited; <= 0 => unlimited; fractional floored
+    let max: number | undefined;
+    if (tag === "merge-queue") {
+      const base = rawMax ?? DEFAULT_MERGE_QUEUE_CONCURRENCY;
+      max = Math.max(1, base);
+    } else {
+      if (rawMax == null) {
+        max = undefined;
+      } else if (rawMax <= 0) {
+        max = undefined; // unbounded for non-positive values
+      } else {
+        max = rawMax; // positive integer; fractional already floored
+      }
+    }
     return [...stack, { id, max }];
   }
 

@@ -190,4 +190,84 @@ describe("<MergeQueue>", () => {
     expect(outsideMax).toBeGreaterThanOrEqual(1);
     cleanup();
   });
+
+  test("edge maxConcurrency values clamp to 1 at extract time", async () => {
+    const renderer = new SmithersRenderer();
+    const baseChildren = (
+      <>
+        <Task id="e1" output={outputC}>
+          {{ value: 1 }}
+        </Task>
+        <Task id="e2" output={outputC}>
+          {{ value: 2 }}
+        </Task>
+      </>
+    );
+
+    // 0 -> 1
+    let res = await renderer.render(
+      <Workflow name="mq-edge-0">
+        <MergeQueue maxConcurrency={0}>{baseChildren}</MergeQueue>
+      </Workflow>,
+    );
+    expect(res.tasks[0]!.parallelMaxConcurrency).toBe(1);
+    expect(res.tasks[1]!.parallelMaxConcurrency).toBe(1);
+
+    // -1 -> 1
+    res = await renderer.render(
+      <Workflow name="mq-edge-neg">
+        <MergeQueue maxConcurrency={-1}>{baseChildren}</MergeQueue>
+      </Workflow>,
+    );
+    expect(res.tasks[0]!.parallelMaxConcurrency).toBe(1);
+    expect(res.tasks[1]!.parallelMaxConcurrency).toBe(1);
+
+    // 1.7 -> floor(1.7) = 1
+    res = await renderer.render(
+      <Workflow name="mq-edge-fraction">
+        <MergeQueue maxConcurrency={1.7}>{baseChildren}</MergeQueue>
+      </Workflow>,
+    );
+    expect(res.tasks[0]!.parallelMaxConcurrency).toBe(1);
+    expect(res.tasks[1]!.parallelMaxConcurrency).toBe(1);
+  });
+
+  test("engine clamps non-positive and fractional to 1 for MergeQueue", async () => {
+    const { db, cleanup } = buildDb();
+    let concurrent = 0;
+    let peak = 0;
+    const agent: any = {
+      id: "fake",
+      generate: async () => {
+        concurrent += 1;
+        peak = Math.max(peak, concurrent);
+        await sleep(20);
+        concurrent -= 1;
+        return { output: { value: 1 } };
+      },
+    };
+
+    const runCase = async (mc: any) => {
+      peak = 0;
+      const wf = smithers(db as any, (_ctx) => (
+        <Workflow name={`mq-edge-run-${String(mc)}`}>
+          <MergeQueue maxConcurrency={mc}>
+            {Array.from({ length: 3 }, (_, i) => (
+              <Task key={`t${i}`} id={`t${mc}-${i}`} output={outputC} agent={agent}>
+                {{ value: i }}
+              </Task>
+            ))}
+          </MergeQueue>
+        </Workflow>
+      ));
+      const result = await runWorkflow(wf, { input: {}, maxConcurrency: 3 });
+      expect(result.status).toBe("finished");
+      expect(peak).toBeLessThanOrEqual(1);
+    };
+
+    await runCase(0);
+    await runCase(-1);
+    await runCase(1.7);
+    cleanup();
+  });
 });
