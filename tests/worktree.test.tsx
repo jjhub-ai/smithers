@@ -72,7 +72,6 @@ describe("<Worktree>", () => {
       "<Worktree> requires a non-empty path prop",
     );
   });
-});
 
 
   test("resolves relative path against baseRootDir", async () => {
@@ -133,3 +132,5 @@ describe("<Worktree>", () => {
     expect(t.worktreeId).toBe("inner");
     expect(t.worktreePath).toBe(expectedInner);
   });
+
+});
