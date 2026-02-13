@@ -1,4 +1,4 @@
-\\ import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
  import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
  import { join } from "node:path";
  import { tmpdir } from "node:os";
@@ -230,7 +230,7 @@
        });
  
        expect(result.text).toBe("Done");
-       expect(requestSeen?.method).toBe("input");
+       expect((requestSeen as { id: string; method: string } | null)?.method).toBe("input");
  
        const promptPayload = JSON.parse(await readFile(argsFile, "utf8")) as { type: string; message: string };
        expect(promptPayload.type).toBe("prompt");
