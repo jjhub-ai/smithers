@@ -17,7 +17,8 @@
     "./server": "./src/server/index.ts",
     "./pi-plugin": "./src/pi-plugin/index.ts",
     "./mdx-plugin": "./src/mdx-plugin.ts",
-    "./dom/renderer": "./src/dom/renderer.ts"
+    "./dom/renderer": "./src/dom/renderer.ts",
+    "./agents/cli": "./src/agents/cli.ts"
   },
   "files": [
     "src/",
