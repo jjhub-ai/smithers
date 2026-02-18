@@ -1,12 +1,12 @@
 /** @jsxImportSource smithers */
 import { describe, expect, test } from "bun:test";
 import { SmithersRenderer } from "../src/dom/renderer";
-import { Parallel, Task, Workflow, runWorkflow, smithers } from "../src/index.ts";
-import { createTestDb, sleep } from "./helpers";
-import { ddl, outputC, schema } from "./schema";
+import { Parallel, Task, Workflow, runWorkflow } from "../src/index.ts";
+import { createTestSmithers, sleep } from "./helpers";
+import { outputSchemas, outputC } from "./schema";
 
-function buildDb() {
-  return createTestDb(schema, ddl);
+function buildSmithers() {
+  return createTestSmithers(outputSchemas);
 }
 
 describe("<Parallel> edge maxConcurrency semantics", () => {
@@ -52,7 +52,7 @@ describe("<Parallel> edge maxConcurrency semantics", () => {
   });
 
   test("engine: non-positive => only global limit applies (unbounded group)", async () => {
-    const { db, cleanup } = buildDb();
+    const { smithers, cleanup } = buildSmithers();
     let current = 0, peak = 0;
     const agent: any = {
       id: "fake",
@@ -67,12 +67,12 @@ describe("<Parallel> edge maxConcurrency semantics", () => {
 
     async function runWith(mc: any) {
       peak = 0;
-      const wf = smithers(db as any, (_ctx) => (
+      const wf = smithers((_ctx) => (
         <Workflow name={`par-edge-run-${String(mc)}`}>
           <Parallel maxConcurrency={mc}>
             {Array.from({ length: 6 }, (_, i) => (
-              <Task key={`p${i}`} id={`p${mc}-${i}`} output={outputC} agent={agent}>
-                {{ value: i }}
+              <Task key={`p${i}`} id={`p${mc}-${i}`} output="outputC" agent={agent}>
+                run task
               </Task>
             ))}
           </Parallel>
@@ -91,7 +91,7 @@ describe("<Parallel> edge maxConcurrency semantics", () => {
   });
 
   test("engine: fractional floors to integer cap", async () => {
-    const { db, cleanup } = buildDb();
+    const { smithers, cleanup } = buildSmithers();
     let current = 0, peak = 0;
     const agent: any = {
       id: "fake",
@@ -104,12 +104,12 @@ describe("<Parallel> edge maxConcurrency semantics", () => {
       },
     };
 
-    const wf = smithers(db as any, (_ctx) => (
+    const wf = smithers((_ctx) => (
       <Workflow name="par-frac">
         <Parallel maxConcurrency={2.9}>
           {Array.from({ length: 5 }, (_, i) => (
-            <Task key={`pf${i}`} id={`pf${i}`} output={outputC} agent={agent}>
-              {{ value: i }}
+            <Task key={`pf${i}`} id={`pf${i}`} output="outputC" agent={agent}>
+              run task
             </Task>
           ))}
         </Parallel>

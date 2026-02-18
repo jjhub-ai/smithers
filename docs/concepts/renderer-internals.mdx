@@ -34,7 +34,7 @@ Smithers JSX components are thin wrappers that emit host elements with `smithers
 | JSX Component | Host Tag | Behavior |
 | --- | --- | --- |
 | `<Workflow>` | `smithers:workflow` | Passes all props through. Children are rendered as implicit sequence. |
-| `<Task>` | `smithers:task` | Agent tasks: renders children to a prompt string via `renderToStaticMarkup`. Static tasks: attaches payload as `__smithersPayload`. Adds `__smithersKind` as `"agent"` or `"static"`. |
+| `<Task>` | `smithers:task` | Agent tasks: renders children to a prompt string via `renderToStaticMarkup`. Compute tasks: attaches callback as `__smithersComputeFn`. Static tasks: attaches payload as `__smithersPayload`. Adds `__smithersKind` as `"agent"`, `"compute"`, or `"static"`. |
 | `<Sequence>` | `smithers:sequence` | Returns `null` if `skipIf` is true. Otherwise passes children through. |
 | `<Parallel>` | `smithers:parallel` | Returns `null` if `skipIf` is true. Otherwise passes children through. |
 | `<Branch>` | `smithers:branch` | Evaluates `if` prop and renders either `then` or `else` as children. |
@@ -147,6 +147,7 @@ type TaskDescriptor = {
   agent?: AgentLike;
   prompt?: string;           // For agent tasks
   staticPayload?: unknown;   // For static tasks
+  computeFn?: () => unknown | Promise<unknown>;  // For compute tasks
 
   label?: string;
   meta?: Record<string, unknown>;

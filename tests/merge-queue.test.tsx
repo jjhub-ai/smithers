@@ -7,13 +7,12 @@ import {
   Task,
   Workflow,
   runWorkflow,
-  smithers,
 } from "../src/index.ts";
-import { createTestDb, sleep } from "./helpers";
-import { ddl, outputC, schema } from "./schema";
+import { createTestSmithers, sleep } from "./helpers";
+import { outputSchemas, outputC } from "./schema";
 
-function buildDb() {
-  return createTestDb(schema, ddl);
+function buildSmithers() {
+  return createTestSmithers(outputSchemas);
 }
 
 describe("<MergeQueue>", () => {
@@ -75,7 +74,7 @@ describe("<MergeQueue>", () => {
   });
 
   test("engine enforces default concurrency = 1 within queue", async () => {
-    const { db, cleanup } = buildDb();
+    const { smithers, cleanup } = buildSmithers();
     let current = 0;
     let max = 0;
     const agent: any = {
@@ -85,16 +84,15 @@ describe("<MergeQueue>", () => {
         if (current > max) max = current;
         await sleep(30);
         current -= 1;
-        const value = Number((prompt ?? "").split(":")[1] ?? 0);
-        return { output: { value } };
+        return { output: { value: 1 } };
       },
     };
 
-    const wf = smithers(db as any, (_ctx) => (
+    const wf = smithers((_ctx) => (
       <Workflow name="mq-run">
         <MergeQueue>
           {Array.from({ length: 4 }, (_, i) => (
-            <Task key={`m${i}`} id={`m${i}`} output={outputC} agent={agent}>
+            <Task key={`m${i}`} id={`m${i}`} output="outputC" agent={agent}>
               {`v:${i}`}
             </Task>
           ))}
@@ -109,7 +107,7 @@ describe("<MergeQueue>", () => {
   });
 
   test("engine respects provided maxConcurrency on queue", async () => {
-    const { db, cleanup } = buildDb();
+    const { smithers, cleanup } = buildSmithers();
     let current = 0;
     let max = 0;
     const agent: any = {
@@ -119,16 +117,15 @@ describe("<MergeQueue>", () => {
         if (current > max) max = current;
         await sleep(20);
         current -= 1;
-        const value = Number((prompt ?? "").split(":")[1] ?? 0);
-        return { output: { value } };
+        return { output: { value: 1 } };
       },
     };
 
-    const wf = smithers(db as any, (_ctx) => (
+    const wf = smithers((_ctx) => (
       <Workflow name="mq-2">
         <MergeQueue maxConcurrency={2}>
           {Array.from({ length: 5 }, (_, i) => (
-            <Task key={`m${i}`} id={`mm${i}`} output={outputC} agent={agent}>
+            <Task key={`m${i}`} id={`mm${i}`} output="outputC" agent={agent}>
               {`v:${i}`}
             </Task>
           ))}
@@ -142,7 +139,7 @@ describe("<MergeQueue>", () => {
     cleanup();
   });
   test("innermost group controls concurrency when nested inside Parallel", async () => {
-    const { db, cleanup } = buildDb();
+    const { smithers, cleanup } = buildSmithers();
     let queueCurrent = 0, queueMax = 0;
     let outsideCurrent = 0, outsideMax = 0;
     const agent: any = {
@@ -164,20 +161,20 @@ describe("<MergeQueue>", () => {
       },
     };
 
-    const wf = smithers(db as any, (_ctx) => (
+    const wf = smithers((_ctx) => (
       <Workflow name="mq-nest">
         <Parallel maxConcurrency={3}>
           <MergeQueue>
             {Array.from({ length: 3 }, (_, i) => (
-              <Task key={`q${i}`} id={`q${i}`} output={outputC} agent={agent}>
+              <Task key={`q${i}`} id={`q${i}`} output="outputC" agent={agent}>
                 {`q:${i}`}
               </Task>
             ))}
           </MergeQueue>
-          <Task id="o0" output={outputC} agent={agent}>
+          <Task id="o0" output="outputC" agent={agent}>
             o:0
           </Task>
-          <Task id="o1" output={outputC} agent={agent}>
+          <Task id="o1" output="outputC" agent={agent}>
             o:1
           </Task>
         </Parallel>
@@ -233,7 +230,7 @@ describe("<MergeQueue>", () => {
   });
 
   test("engine clamps non-positive and fractional to 1 for MergeQueue", async () => {
-    const { db, cleanup } = buildDb();
+    const { smithers, cleanup } = buildSmithers();
     let concurrent = 0;
     let peak = 0;
     const agent: any = {
@@ -249,12 +246,12 @@ describe("<MergeQueue>", () => {
 
     const runCase = async (mc: any) => {
       peak = 0;
-      const wf = smithers(db as any, (_ctx) => (
+      const wf = smithers((_ctx) => (
         <Workflow name={`mq-edge-run-${String(mc)}`}>
           <MergeQueue maxConcurrency={mc}>
             {Array.from({ length: 3 }, (_, i) => (
-              <Task key={`t${i}`} id={`t${mc}-${i}`} output={outputC} agent={agent}>
-                {{ value: i }}
+              <Task key={`t${i}`} id={`t${mc}-${i}`} output="outputC" agent={agent}>
+                run task
               </Task>
             ))}
           </MergeQueue>

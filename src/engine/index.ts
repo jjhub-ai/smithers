@@ -865,6 +865,16 @@ async function executeTask(
         } else {
           payload = output;
         }
+      } else if (desc.computeFn) {
+        const computePromise = Promise.resolve(desc.computeFn());
+        if (desc.timeoutMs) {
+          const timeout = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`Compute callback timed out after ${desc.timeoutMs}ms`)), desc.timeoutMs!),
+          );
+          payload = await Promise.race([computePromise, timeout]);
+        } else {
+          payload = await computePromise;
+        }
       } else {
         payload = desc.staticPayload;
       }

@@ -49,6 +49,7 @@ export type TaskDescriptor = {
   agent?: AgentLike;
   prompt?: string;
   staticPayload?: unknown;
+  computeFn?: () => unknown | Promise<unknown>;
 
   label?: string;
   meta?: Record<string, unknown>;
@@ -371,7 +372,7 @@ export type TaskProps<Row> = {
   continueOnFail?: boolean;
   label?: string;
   meta?: Record<string, unknown>;
-  children: string | Row | React.ReactNode;
+  children: string | Row | (() => Row | Promise<Row>) | React.ReactNode;
 };
 
 export type SequenceProps = {

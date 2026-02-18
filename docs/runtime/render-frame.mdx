@@ -109,6 +109,7 @@ type TaskDescriptor = {
   agent?: AgentLike;
   prompt?: string;
   staticPayload?: unknown;
+  computeFn?: () => unknown | Promise<unknown>;
 
   label?: string;
   meta?: Record<string, unknown>;
@@ -134,6 +135,7 @@ type TaskDescriptor = {
 | `agent` | The AI agent assigned to this task. |
 | `prompt` | The resolved prompt string (from `<Task>` children). |
 | `staticPayload` | Static output data (for tasks without an agent). |
+| `computeFn` | Callback function invoked at execution time (for compute tasks). |
 | `label` | Human-readable label for display. |
 | `meta` | Arbitrary metadata attached to the task. |
 

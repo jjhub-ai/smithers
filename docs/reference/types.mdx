@@ -262,6 +262,7 @@ type TaskDescriptor = {
   agent?: AgentLike;
   prompt?: string;
   staticPayload?: unknown;
+  computeFn?: () => unknown | Promise<unknown>;
 
   label?: string;
   meta?: Record<string, unknown>;
@@ -287,6 +288,7 @@ type TaskDescriptor = {
 | `agent` | `AgentLike` | The AI agent assigned to execute this task |
 | `prompt` | `string` | The prompt text for the agent (from task children) |
 | `staticPayload` | `unknown` | Pre-computed payload (for non-agent tasks) |
+| `computeFn` | `() => unknown \| Promise<unknown>` | Callback invoked at execution time (for compute tasks) |
 | `label` | `string` | Human-readable label for display |
 | `meta` | `Record<string, unknown>` | Arbitrary metadata attached to the task |
 
@@ -507,7 +509,7 @@ type TaskProps<Row> = {
   continueOnFail?: boolean;
   label?: string;
   meta?: Record<string, unknown>;
-  children: string | Row | React.ReactNode;
+  children: string | Row | (() => Row | Promise<Row>) | React.ReactNode;
 };
 ```
 
@@ -524,7 +526,7 @@ type TaskProps<Row> = {
 | `continueOnFail` | `boolean` | No | Continue the workflow even if this task fails |
 | `label` | `string` | No | Human-readable label |
 | `meta` | `Record<string, unknown>` | No | Arbitrary metadata |
-| `children` | `string \| Row \| ReactNode` | Yes | Prompt text, static payload, or nested elements |
+| `children` | `string \| Row \| (() => Row \| Promise<Row>) \| ReactNode` | Yes | Prompt text, compute callback, static payload, or nested elements |
 
 ---
 

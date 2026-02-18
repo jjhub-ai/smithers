@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import type { XmlElement } from "../src/types";
+import { createSmithers } from "../src/index";
+import type { z } from "zod";
+
 export function createTestDb<Schema>(schema: Schema, ddl: string) {
   const dir = mkdtempSync(join(tmpdir(), "smithers-"));
   const path = join(dir, "db.sqlite");
@@ -15,6 +18,19 @@ export function createTestDb<Schema>(schema: Schema, ddl: string) {
     sqlite,
     path,
     cleanup: () => sqlite.close(),
+  };
+}
+
+export function createTestSmithers<S extends Record<string, z.ZodObject<any>>>(schemas: S) {
+  const dir = mkdtempSync(join(tmpdir(), "smithers-"));
+  const dbPath = join(dir, "db.sqlite");
+  const api = createSmithers(schemas, { dbPath });
+  return {
+    ...api,
+    dbPath,
+    cleanup: () => {
+      try { (api.db as any).$client?.close?.(); } catch {}
+    },
   };
 }
 

@@ -5,6 +5,7 @@ import { startServer, type ServerOptions } from "../src/server/index";
 import { ensureSmithersTables } from "../src/db/ensure";
 import { createTestDb, sleep } from "./helpers";
 import { ddl, schema } from "./schema";
+
 import { resolve } from "node:path";
 import { writeFileSync, mkdirSync, rmSync } from "node:fs";
 
@@ -80,47 +81,19 @@ const fakeAgent = {
     writeFileSync(
       workflowPath,
       `/** @jsxImportSource smithers */
-import { smithers, Workflow, Task, Sequence } from "smithers";
-import { drizzle } from "drizzle-orm/bun-sqlite";
-import { Database } from "bun:sqlite";
-import { sqliteTable, text, integer, primaryKey } from "drizzle-orm/sqlite-core";
-
-const input = sqliteTable("input", {
-  runId: text("run_id").primaryKey(),
-  description: text("description"),
-});
-
-const outputA = sqliteTable("output_a", {
-  runId: text("run_id").notNull(),
-  nodeId: text("node_id").notNull(),
-  iteration: integer("iteration").notNull().default(0),
-  value: integer("value"),
-}, (t) => ({
-  pk: primaryKey({ columns: [t.runId, t.nodeId, t.iteration] }),
-}));
-
-const schema = { input, outputA };
-const sqlite = new Database("${dbPath}");
-sqlite.exec(\`
-  CREATE TABLE IF NOT EXISTS input (
-    run_id TEXT PRIMARY KEY,
-    description TEXT
-  );
-  CREATE TABLE IF NOT EXISTS output_a (
-    run_id TEXT NOT NULL,
-    node_id TEXT NOT NULL,
-    iteration INTEGER NOT NULL DEFAULT 0,
-    value INTEGER,
-    PRIMARY KEY (run_id, node_id, iteration)
-  );
-\`);
-const db = drizzle(sqlite, { schema });
+import { createSmithers, Workflow, Task, Sequence } from "smithers";
+import { z } from "zod";
 ${slowAgent}
 
-export default smithers(db, (ctx) => (
+const { smithers } = createSmithers(
+  { outputA: z.object({ value: z.number() }) },
+  { dbPath: "${dbPath}" },
+);
+
+export default smithers((ctx) => (
   <Workflow name="${name}">
-    <Task id="task1" output={outputA}${agentProp}${approvalProp}>
-      {{ value: 42 }}
+    <Task id="task1" output="outputA"${agentProp}${approvalProp}>
+      ${options.slow ? "run task" : "{{ value: 42 }}"}
     </Task>
   </Workflow>
 ));

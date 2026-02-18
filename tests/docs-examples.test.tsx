@@ -9,11 +9,10 @@ import {
   Workflow,
 } from "../src/components";
 import { SmithersRenderer } from "../src/dom/renderer";
-import { createSmithers, runWorkflow, smithers } from "../src/index";
-import { createTestDb } from "./helpers";
-import { ddl, outputA, outputB, schema as testSchema } from "./schema";
+import { createSmithers, runWorkflow } from "../src/index";
+import { createTestSmithers } from "./helpers";
+import { outputA, outputB, outputSchemas } from "./schema";
 import { SmithersDb } from "../src/db/adapter";
-import { loadOutputs } from "../src/db/snapshot";
 import { read } from "../src/tools";
 import { buildContext } from "../src/context";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -154,7 +153,7 @@ describe("docs examples (engine)", () => {
   });
 
   test("retries re-run a failing agent", async () => {
-    const { db, cleanup } = createTestDb(testSchema, ddl);
+    const { smithers, cleanup } = createTestSmithers(outputSchemas);
     let calls = 0;
     const flakyAgent = {
       id: "flaky",
@@ -169,9 +168,9 @@ describe("docs examples (engine)", () => {
     };
 
     try {
-      const workflow = smithers(db, () => (
+      const workflow = smithers(() => (
         <Workflow name="retries">
-          <Task id="flaky" output={outputA} agent={flakyAgent} retries={1}>
+          <Task id="flaky" output="outputA" agent={flakyAgent} retries={1}>
             Retry me
           </Task>
         </Workflow>
@@ -184,7 +183,7 @@ describe("docs examples (engine)", () => {
       expect(result.status).toBe("finished");
       expect(calls).toBe(2);
 
-      const adapter = new SmithersDb(db as any);
+      const adapter = new SmithersDb(workflow.db as any);
       const attempts = await adapter.listAttempts(result.runId, "flaky", 0);
       expect(attempts.length).toBe(2);
     } finally {
@@ -193,7 +192,7 @@ describe("docs examples (engine)", () => {
   });
 
   test("continueOnFail allows downstream tasks to execute", async () => {
-    const { db, cleanup } = createTestDb(testSchema, ddl);
+    const { smithers, tables, db, cleanup } = createTestSmithers(outputSchemas);
     const failingAgent = {
       id: "fail",
       tools: {},
@@ -203,18 +202,18 @@ describe("docs examples (engine)", () => {
     };
 
     try {
-      const workflow = smithers(db, () => (
+      const workflow = smithers(() => (
         <Workflow name="continue">
           <Sequence>
             <Task
               id="fail"
-              output={outputA}
+              output="outputA"
               agent={failingAgent}
               continueOnFail
             >
               Fail
             </Task>
-            <Task id="ok" output={outputB}>
+            <Task id="ok" output="outputB">
               {{ value: 2 }}
             </Task>
           </Sequence>
@@ -227,15 +226,15 @@ describe("docs examples (engine)", () => {
       });
       expect(result.status).toBe("finished");
 
-      const outputs = await loadOutputs(db as any, testSchema, result.runId);
-      expect(outputs.outputB?.[0]?.value).toBe(2);
+      const rows = await (db as any).select().from(tables.outputB);
+      expect(rows?.[0]?.value).toBe(2);
     } finally {
       cleanup();
     }
   });
 
   test("timeoutMs is forwarded to agent.generate", async () => {
-    const { db, cleanup } = createTestDb(testSchema, ddl);
+    const { smithers, cleanup } = createTestSmithers(outputSchemas);
     let seenTimeout: number | undefined;
     const timedAgent = {
       id: "timed",
@@ -247,9 +246,9 @@ describe("docs examples (engine)", () => {
     };
 
     try {
-      const workflow = smithers(db, () => (
+      const workflow = smithers(() => (
         <Workflow name="timeout">
-          <Task id="timed" output={outputA} agent={timedAgent} timeoutMs={1234}>
+          <Task id="timed" output="outputA" agent={timedAgent} timeoutMs={1234}>
             Timing
           </Task>
         </Workflow>
@@ -267,7 +266,7 @@ describe("docs examples (engine)", () => {
   });
 
   test("tool context allows built-in tools to run", async () => {
-    const { db, cleanup } = createTestDb(testSchema, ddl);
+    const { smithers, tables, db, cleanup } = createTestSmithers(outputSchemas);
     const dir = mkdtempSync(join(tmpdir(), "smithers-tools-"));
     const filePath = join(dir, "sample.txt");
     writeFileSync(filePath, "hello", "utf8");
@@ -282,9 +281,9 @@ describe("docs examples (engine)", () => {
     };
 
     try {
-      const workflow = smithers(db, () => (
+      const workflow = smithers(() => (
         <Workflow name="tools">
-          <Task id="read" output={outputA} agent={toolAgent}>
+          <Task id="read" output="outputA" agent={toolAgent}>
             Read file
           </Task>
         </Workflow>
@@ -297,8 +296,8 @@ describe("docs examples (engine)", () => {
       });
       expect(result.status).toBe("finished");
 
-      const outputs = await loadOutputs(db as any, testSchema, result.runId);
-      expect(outputs.outputA?.[0]?.value).toBe(5);
+      const rows = await (db as any).select().from(tables.outputA);
+      expect(rows?.[0]?.value).toBe(5);
     } finally {
       cleanup();
       try {

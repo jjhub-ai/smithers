@@ -225,7 +225,9 @@ export function extractFromHost(
             `Check that bunfig.toml has a top-level preload (not under [run]) and mdxPlugin() is registered.`,
         );
       }
-      const staticPayload = isAgent
+      const isCompute = kind === "compute" && typeof raw.__smithersComputeFn === "function";
+      const computeFn = isCompute ? raw.__smithersComputeFn : undefined;
+      const staticPayload = isAgent || isCompute
         ? undefined
         : (raw.__smithersPayload ?? raw.__payload ?? raw.children);
 
@@ -250,6 +252,7 @@ export function extractFromHost(
         agent,
         prompt,
         staticPayload,
+        computeFn,
         label: raw.label,
         meta: raw.meta,
         parallelGroupId: parallelGroup?.id,

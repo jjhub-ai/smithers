@@ -95,7 +95,7 @@ bunx smithers run workflow.tsx --input '{"description": "Auth tokens expire sile
 ## Core Concepts
 
 - **Workflow**: JSX tree defining the execution graph. Re-renders after each task completes.
-- **Task**: Single unit of work (AI agent call or static data). Identified by `id` prop.
+- **Task**: Single unit of work (AI agent call, compute callback, or static data). Identified by `id` prop.
 - **Sequence**: Tasks run top-to-bottom. Default behavior inside `<Workflow>`.
 - **Parallel**: Tasks run concurrently with optional `maxConcurrency`.
 - **Branch**: Conditional execution based on a boolean (`if`/`then`/`else`).
@@ -829,7 +829,7 @@ Base URL: `https://github.com/evmts/smithers/blob/main/`
 
 ### Components
 - [Workflow](https://smithers.sh/components/workflow): Root container with implicit sequencing and optional caching.
-- [Task](https://smithers.sh/components/task): Agent mode (prompt -> AI -> structured output) or static mode (direct data).
+- [Task](https://smithers.sh/components/task): Agent mode (prompt -> AI -> structured output), compute mode (callback function), or static mode (direct data).
 - [Sequence](https://smithers.sh/components/sequence): Sequential execution of children.
 - [Parallel](https://smithers.sh/components/parallel): Concurrent execution with optional `maxConcurrency`.
 - [Branch](https://smithers.sh/components/branch): Conditional `if`/`then`/`else` routing.

@@ -77,6 +77,14 @@ export function Task<Row>(props: TaskProps<Row>) {
       prompt,
     );
   }
+  if (typeof children === "function") {
+    const nextProps = {
+      ...rest,
+      __smithersKind: "compute",
+      __smithersComputeFn: children,
+    } as any;
+    return React.createElement("smithers:task", nextProps, null);
+  }
   const nextProps = {
     ...rest,
     __smithersKind: "static",
