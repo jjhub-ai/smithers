@@ -886,6 +886,9 @@ abstract class BaseCliAgent implements Agent<any, any, any> {
       const benignPatterns = [
         /^.*state db missing rollout path.*$/gm,
         /^.*codex_core::rollout::list.*$/gm,
+        /^.*failed to record rollout items: failed to queue rollout items: channel closed.*$/gim,
+        /^.*Failed to shutdown rollout recorder.*$/gm,
+        /^.*failed to renew cache TTL: Operation not permitted.*$/gim,
       ];
       let filtered = stderr;
       for (const pattern of benignPatterns) {
@@ -897,11 +900,13 @@ abstract class BaseCliAgent implements Agent<any, any, any> {
 
     if (result.exitCode && result.exitCode !== 0) {
       const filteredStderr = filterBenignStderr(result.stderr);
-      const errorText =
-        filteredStderr ||
-        result.stdout.trim() ||
-        `CLI exited with code ${result.exitCode}`;
-      throw new Error(errorText);
+      if (!(commandSpec.command === "codex" && filteredStderr.length === 0)) {
+        const errorText =
+          filteredStderr ||
+          result.stdout.trim() ||
+          `CLI exited with code ${result.exitCode}`;
+        throw new Error(errorText);
+      }
     }
 
     const rawText = stdout.trim();
