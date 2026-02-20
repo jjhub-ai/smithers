@@ -1,33 +1,19 @@
 // Types
-export type {
-  XmlNode,
-  XmlElement,
-  XmlText,
-  TaskDescriptor,
-  AgentLike,
-  GraphSnapshot,
-  RunStatus,
-  RunOptions,
-  RunResult,
-  OutputKey,
-  SmithersWorkflowOptions,
-  SchemaRegistryEntry,
-  SmithersWorkflow,
-  SmithersCtx,
-  OutputAccessor,
-  InferRow,
-  InferOutputEntry,
-  SmithersEvent,
-  WorkflowProps,
-  TaskProps,
-  SequenceProps,
-  ParallelProps,
-  MergeQueueProps,
-  BranchProps,
-  RalphProps,
-  WorktreeProps,
-  SmithersError,
-} from "./types";
+export type { XmlNode, XmlElement, XmlText } from "./XmlNode";
+export type { AgentLike } from "./AgentLike";
+export type { TaskDescriptor } from "./TaskDescriptor";
+export type { GraphSnapshot } from "./GraphSnapshot";
+export type { RunStatus } from "./RunStatus";
+export type { RunOptions } from "./RunOptions";
+export type { RunResult } from "./RunResult";
+export type { OutputKey } from "./OutputKey";
+export type { SmithersWorkflowOptions } from "./SmithersWorkflowOptions";
+export type { SchemaRegistryEntry } from "./SchemaRegistryEntry";
+export type { SmithersWorkflow } from "./SmithersWorkflow";
+export type { SmithersCtx } from "./SmithersCtx";
+export type { OutputAccessor, InferRow, InferOutputEntry } from "./OutputAccessor";
+export type { SmithersEvent } from "./SmithersEvent";
+export type { SmithersError } from "./SmithersError";
 
 // Components
 export {
@@ -47,12 +33,12 @@ export {
   CodexAgent,
   GeminiAgent,
   PiAgent,
-} from "./agents/cli";
+} from "./agents";
 export type {
   PiExtensionUiRequest,
   PiExtensionUiResponse,
   PiAgentOptions,
-} from "./agents/cli";
+} from "./agents";
 
 // VCS
 export {
@@ -99,11 +85,10 @@ export type { RevertOptions, RevertResult } from "./revert";
 
 // Utilities
 export { mdxPlugin } from "./mdx-plugin";
-export { markdownComponents, renderMdx } from "./mdx-components";
-export {
-  zodToTable,
-  zodToCreateTableSQL,
-  camelToSnake,
-  unwrapZodType,
-} from "./zod-to-table";
+export { markdownComponents } from "./markdownComponents";
+export { renderMdx } from "./renderMdx";
+export { zodToTable } from "./zodToTable";
+export { zodToCreateTableSQL } from "./zodToCreateTableSQL";
+export { camelToSnake } from "./camelToSnake";
+export { unwrapZodType } from "./unwrapZodType";
 export { zodSchemaToJsonExample } from "./zod-to-example";

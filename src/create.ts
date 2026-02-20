@@ -1,17 +1,18 @@
-import type {
-  SmithersWorkflow,
-  SmithersWorkflowOptions,
-  SchemaRegistryEntry,
-} from "./types";
-import type { SmithersCtx, WorkflowProps } from "./types";
+import type { SmithersWorkflow } from "./SmithersWorkflow";
+import type { SmithersWorkflowOptions } from "./SmithersWorkflowOptions";
+import type { SchemaRegistryEntry } from "./SchemaRegistryEntry";
+import type { SmithersCtx } from "./SmithersCtx";
 import { Database } from "bun:sqlite";
 import { drizzle, type BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 import React from "react";
 import { createSmithersContext } from "./context";
 import { Workflow as BaseWorkflow, Task as BaseTask } from "./components";
-import type { TaskProps } from "./types";
-import { zodToTable, zodToCreateTableSQL, camelToSnake } from "./zod-to-table";
+import type { WorkflowProps, TaskProps } from "./components";
+
+import { zodToTable } from "./zodToTable";
+import { zodToCreateTableSQL } from "./zodToCreateTableSQL";
+import { camelToSnake } from "./camelToSnake";
 import type { z } from "zod";
 
 export type CreateSmithersApi<Schema = any> = {
