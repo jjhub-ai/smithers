@@ -9,17 +9,17 @@ export interface SmithersCtx<Schema> {
   outputs: OutputAccessor<Schema>;
 
   output<K extends keyof Schema & string>(
-    table: K,
+    table: K | Schema[K],
     key: OutputKey,
   ): InferOutputEntry<Schema[K]>;
 
   outputMaybe<K extends keyof Schema & string>(
-    table: K,
+    table: K | Schema[K],
     key: OutputKey,
   ): InferOutputEntry<Schema[K]> | undefined;
 
   latest<K extends keyof Schema & string>(
-    table: K,
+    table: K | Schema[K],
     nodeId: string,
   ): InferOutputEntry<Schema[K]> | undefined;
 
