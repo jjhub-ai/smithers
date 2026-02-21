@@ -147,3 +147,19 @@ describe("BaseCliAgent banner handling (opt-in)", () => {
     expect(result.text).toBe("Here is the actual response from the model.");
   });
 });
+
+describe("BaseCliAgent Codex banner stripping (opt-in)", () => {
+  const codexBanner = /^OpenAI Codex v[^\n]*$/gm;
+
+  test("strips Codex startup banner and keeps JSON payload", async () => {
+    const content = [
+      "OpenAI Codex v0.99.0-alpha.13 (research preview)",
+      '{"tickets":[{"id":"t1"}]}',
+    ].join("\n");
+    const agent = new StdoutAgent(content, {
+      stdoutBannerPatterns: [codexBanner],
+    });
+    const result = await agent.generate({ prompt: "test" });
+    expect(result.text).toBe('{"tickets":[{"id":"t1"}]}');
+  });
+});

@@ -106,6 +106,11 @@ export class CodexAgent extends BaseCliAgent {
       args,
       stdin: fullPrompt,
       outputFile,
+      stdoutBannerPatterns: [
+        // Codex CLI prints a startup banner like:
+        // "OpenAI Codex v0.99.0-alpha.13 (research preview)"
+        /^OpenAI Codex v[^\n]*$/gm,
+      ],
       cleanup: async () => {
         if (!this.opts.outputLastMessage) {
           await fs.rm(outputFile, { force: true }).catch(() => undefined);
