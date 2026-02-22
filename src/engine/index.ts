@@ -722,6 +722,7 @@ async function executeTask(
   workflowName: string,
   cacheEnabled: boolean,
   signal?: AbortSignal,
+  disabledAgents?: Set<any>,
 ) {
   const attempts = await adapter.listAttempts(
     runId,
@@ -777,6 +778,7 @@ async function executeTask(
   let cacheKey: string | null = null;
   let cacheJjBase: string | null = null;
   let responseText: string | null = null;
+  let effectiveAgent: any = null;
   // Resolve effective root once so both caching and execution share it.
   const taskRoot = desc.worktreePath ?? toolConfig.rootDir;
 
@@ -823,8 +825,11 @@ async function executeTask(
     }
 
     if (!payload) {
-      const agents = Array.isArray(desc.agent) ? desc.agent : (desc.agent ? [desc.agent] : []);
-      const effectiveAgent = agents[Math.min(attemptNo - 1, agents.length - 1)];
+      const allAgents = Array.isArray(desc.agent) ? desc.agent : (desc.agent ? [desc.agent] : []);
+      const agents = disabledAgents ? allAgents.filter((a: any) => !disabledAgents.has(a)) : allAgents;
+      effectiveAgent = agents.length > 0
+        ? agents[Math.min(attemptNo - 1, agents.length - 1)]
+        : allAgents[Math.min(attemptNo - 1, allAgents.length - 1)]; // fallback to disabled agent if all disabled
       if (effectiveAgent) {
         // Use fallback agent on retry attempts when available
         const result = await runWithToolContext(
@@ -1365,6 +1370,17 @@ async function executeTask(
       label: desc.label ?? null,
     });
 
+    // Circuit-breaker: disable agents that fail with auth errors
+    if (disabledAgents && effectiveAgent) {
+      const errStr = String((err as any)?.message ?? err ?? "") + (responseText ?? "");
+      const isAuthError = /invalid_authentication|401|api.key.*invalid|expired.*credentials|authentication.*failed/i.test(errStr);
+      if (isAuthError) {
+        disabledAgents.add(effectiveAgent);
+        const agentName = effectiveAgent?.model ?? effectiveAgent?.id ?? "unknown";
+        console.log(`[smithers] Circuit-breaker: disabled agent ${agentName} due to auth failure`);
+      }
+    }
+
     await eventBus.emitEventWithPersist({
       type: "NodeFailed",
       runId,
@@ -1540,6 +1556,25 @@ export async function runWorkflow<Schema>(
 
     await cancelStaleAttempts(adapter, runId);
 
+    // Cancel orphaned in-progress attempts from previous runs (killed processes)
+    {
+      const allInProgress = await adapter.listAllInProgressAttempts();
+      const now = nowMs();
+      for (const attempt of allInProgress) {
+        if (attempt.runId === runId) continue;
+        await adapter.updateAttempt(
+          attempt.runId,
+          attempt.nodeId,
+          attempt.iteration,
+          attempt.attempt,
+          {
+            state: "cancelled",
+            finishedAtMs: now,
+          },
+        );
+      }
+    }
+
     if (opts.resume) {
       // On resume, cancel ALL in-progress attempts since the previous process is dead
       const staleInProgress = await adapter.listInProgressAttempts(runId);
@@ -1568,6 +1603,7 @@ export async function runWorkflow<Schema>(
       }
     }
 
+    const disabledAgents = new Set<any>();
     const renderer = new SmithersRenderer();
     let frameNo = (await adapter.getLastFrame(runId))?.frameNo ?? 0;
     let defaultIteration = 0;
@@ -1846,6 +1882,7 @@ export async function runWorkflow<Schema>(
             workflowName,
             cacheEnabled,
             opts.signal,
+            disabledAgents,
           ),
         ),
       );
