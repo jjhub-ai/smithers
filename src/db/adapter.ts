@@ -155,6 +155,13 @@ export class SmithersDb {
       );
   }
 
+  async listAllInProgressAttempts() {
+    return this.db
+      .select()
+      .from(smithersAttempts)
+      .where(eq(smithersAttempts.state, "in-progress"));
+  }
+
   async insertFrame(row: any) {
     await this.db
       .insert(smithersFrames)
