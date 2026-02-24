@@ -5,10 +5,7 @@ import {
 import type { BaseCliAgentOptions } from "./BaseCliAgent";
 
 type AmpAgentOptions = BaseCliAgentOptions & {
-  workDir?: string;
-  thread?: string;
   visibility?: "private" | "public" | "workspace" | "group";
-  quiet?: boolean;
   mcpConfig?: string;
   settingsFile?: string;
   logLevel?: "error" | "warn" | "info" | "debug" | "audit";
@@ -32,23 +29,19 @@ export class AmpAgent extends BaseCliAgent {
     cwd: string;
     options: any;
   }) {
-    const args: string[] = ["threads", "continue"];
+    const args: string[] = [];
     const yoloEnabled = this.opts.yolo ?? this.yolo;
 
-    // Working directory
-    pushFlag(args, "--work-dir", this.opts.workDir ?? params.cwd);
+    // Dangerous allow all (yolo mode) — must come before --execute
+    if (this.opts.dangerouslyAllowAll || yoloEnabled) {
+      args.push("--dangerously-allow-all");
+    }
 
-    // Thread ID (if continuing existing thread)
-    pushFlag(args, "--thread", this.opts.thread);
+    // Model / mode
+    pushFlag(args, "--model", this.opts.model ?? this.model);
 
     // Visibility for new threads
     pushFlag(args, "--visibility", this.opts.visibility);
-
-    // Model
-    pushFlag(args, "--model", this.opts.model ?? this.model);
-
-    // Quiet mode
-    if (this.opts.quiet) args.push("--quiet");
 
     // MCP config
     pushFlag(args, "--mcp-config", this.opts.mcpConfig);
@@ -62,17 +55,15 @@ export class AmpAgent extends BaseCliAgent {
     // Log file
     pushFlag(args, "--log-file", this.opts.logFile);
 
-    // Dangerous allow all (yolo mode)
-    if (this.opts.dangerouslyAllowAll || yoloEnabled) {
-      args.push("--dangerously-allow-all");
-    }
-
-    // IDE integration
-    if (this.opts.ide === false) args.push("--no-ide");
-    if (this.opts.jetbrains === false) args.push("--no-jetbrains");
+    // IDE integration — disable by default for headless execution
+    args.push("--no-ide");
+    args.push("--no-jetbrains");
 
     // Color handling
-    args.push("--no-color"); // Disable color for clean output parsing
+    args.push("--no-color");
+
+    // Archive thread after execution to keep things clean
+    args.push("--archive");
 
     if (this.extraArgs?.length) args.push(...this.extraArgs);
 
@@ -82,8 +73,8 @@ export class AmpAgent extends BaseCliAgent {
       : "";
     const fullPrompt = `${systemPrefix}${params.prompt ?? ""}`;
 
-    // Amp accepts prompt as final argument
-    args.push(fullPrompt);
+    // Execute mode with prompt as argument
+    args.push("--execute", fullPrompt);
 
     return {
       command: "amp",
