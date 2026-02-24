@@ -132,6 +132,24 @@ Run options:
     const resolvedWorkflowPath = resolve(process.cwd(), workflowPath);
     const workflow = await loadWorkflow(workflowPath);
     ensureSmithersTables(workflow.db as any);
+
+    // Register cleanup to close the SQLite connection before process exit.
+    // This prevents libsqlite3 fatal "unfinalized statement" errors that
+    // crash the process when bun's GC tries to close the Database while
+    // Drizzle's prepared statements are still alive.
+    const closeSqlite = () => {
+      try {
+        const client: any = (workflow.db as any)?.$client;
+        if (client && typeof client.close === "function") {
+          client.close();
+        }
+      } catch {
+        // Best-effort — ignore errors during cleanup
+      }
+    };
+    process.on("exit", closeSqlite);
+    process.on("SIGINT", () => { closeSqlite(); process.exit(130); });
+    process.on("SIGTERM", () => { closeSqlite(); process.exit(143); });
     const input = args.input ? parseJsonOrExit(args.input, "input") : {};
     const runId = args["run-id"];
     const resume = cmd === "resume" || Boolean(args.resume);

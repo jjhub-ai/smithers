@@ -69,6 +69,18 @@ export function createSmithers<
   sqlite.exec(`PRAGMA journal_mode = ${opts?.journalMode ?? "WAL"}`);
   sqlite.exec("PRAGMA foreign_keys = ON");
 
+  // Register a process-exit hook to explicitly close the Database.
+  // bun:sqlite's GC finalizer calls sqlite3_close() which fatally aborts if
+  // Drizzle's cached prepared statements haven't been finalized first.
+  // Calling close() ourselves lets sqlite3 finalize everything gracefully.
+  let dbClosed = false;
+  const closeDb = () => {
+    if (dbClosed) return;
+    dbClosed = true;
+    try { sqlite.close(); } catch {}
+  };
+  process.on("exit", closeDb);
+
   // 3. Auto-create tables using CREATE TABLE IF NOT EXISTS
   sqlite.exec(
     `CREATE TABLE IF NOT EXISTS "input" (run_id TEXT PRIMARY KEY, payload TEXT)`,
