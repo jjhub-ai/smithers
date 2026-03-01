@@ -457,7 +457,21 @@ Run options:
     const resolvedWorkflowPath = resolve(process.cwd(), workflowPath);
     const baseRootDir = dirname(resolvedWorkflowPath);
     const snap = await renderFrame(workflow, ctx, { baseRootDir });
-    console.log(JSON.stringify(snap, null, 2));
+    const seen = new WeakSet<object>();
+    console.log(
+      JSON.stringify(
+        snap,
+        (_key, value) => {
+          if (typeof value === "function") return undefined;
+          if (typeof value === "object" && value !== null) {
+            if (seen.has(value)) return undefined;
+            seen.add(value);
+          }
+          return value;
+        },
+        2,
+      ),
+    );
     process.exit(0);
   }
 
