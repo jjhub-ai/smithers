@@ -85,7 +85,10 @@ export class SmithersDb {
   }
 
   async insertAttempt(row: any) {
-    await this.db.insert(smithersAttempts).values(row);
+    await this.db.insert(smithersAttempts).values(row).onConflictDoUpdate({
+      target: [smithersAttempts.runId, smithersAttempts.nodeId, smithersAttempts.iteration, smithersAttempts.attempt],
+      set: row,
+    });
   }
 
   async updateAttempt(

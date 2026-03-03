@@ -1090,7 +1090,7 @@ async function executeTask(
               options: undefined as any,
               abortSignal: signal,
               prompt: jsonPrompt,
-              timeout: { totalMs: Math.max(desc.timeoutMs ?? 300000, 300000) },
+              timeout: desc.timeoutMs ? { totalMs: desc.timeoutMs } : undefined,
             });
             const retryText = (retryResult as any).text ?? "";
             try {
@@ -1233,11 +1233,11 @@ async function executeTask(
           `Output ONLY the JSON object, no other text.`,
         ].join("\n");
 
-        const schemaRetryResult = await (desc.agent as any).generate({
+        const schemaRetryResult = await (effectiveAgent as any).generate({
           options: undefined as any,
           abortSignal: signal,
           prompt: schemaRetryPrompt,
-          timeout: { totalMs: Math.max(desc.timeoutMs ?? 300000, 300000) },
+          timeout: desc.timeoutMs ? { totalMs: desc.timeoutMs } : undefined,
         });
         const retryText = ((schemaRetryResult as any).text ?? "").trim();
 
@@ -1854,6 +1854,43 @@ export async function runWorkflow<Schema>(
             if (waitables.length > 0) {
               await Promise.race(waitables);
             }
+          }
+          continue;
+        }
+
+        // Detect orphaned in-progress tasks: tasks the DB thinks are running
+        // but have no corresponding inflight promise (process died).
+        // Cancel their attempts and reset to pending so they can be retried.
+        const orphanedInProgress: TaskDescriptor[] = [];
+        for (const task of tasks) {
+          const state = stateMap.get(buildStateKey(task.nodeId, task.iteration));
+          if (state === "in-progress") {
+            orphanedInProgress.push(task);
+          }
+        }
+        if (orphanedInProgress.length > 0) {
+          const now = nowMs();
+          for (const task of orphanedInProgress) {
+            const attempts = await adapter.listAttempts(runId, task.nodeId, task.iteration);
+            for (const attempt of attempts) {
+              if (attempt.state === "in-progress") {
+                await adapter.updateAttempt(runId, task.nodeId, task.iteration, attempt.attempt, {
+                  state: "cancelled",
+                  finishedAtMs: now,
+                });
+              }
+            }
+            await adapter.insertNode({
+              runId,
+              nodeId: task.nodeId,
+              iteration: task.iteration,
+              state: "pending",
+              lastAttempt: null,
+              updatedAtMs: now,
+              outputTable: task.outputTableName,
+              label: task.label ?? null,
+            });
+            process.stderr.write(`[smithers] Recovered orphaned in-progress task: ${task.nodeId}\n`);
           }
           continue;
         }

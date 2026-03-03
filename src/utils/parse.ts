@@ -5,5 +5,5 @@ export function parseBool(value: string | undefined): boolean {
 
 export function parseNum(value: string | undefined, fallback: number): number {
   const num = value ? Number(value) : NaN;
-  return Number.isFinite(num) ? num : fallback;
+  return !Number.isNaN(num) ? num : fallback;
 }
