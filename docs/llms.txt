@@ -4,6 +4,8 @@
 
 Smithers is a TypeScript framework for building deterministic, resumable AI workflows using JSX. You define your workflow as a tree of React components, and Smithers handles execution ordering, durable state persistence in SQLite, structured output validation, and crash recovery.
 
+**The core value of Smithers is iterative refinement via `<Ralph>` loops.** Unlike simple sequential task runners, Smithers workflows loop: an agent implements, a reviewer checks the work, and if issues are found, the loop repeats with feedback until the reviewer approves. This implement-review loop is what makes Smithers workflows self-correcting and production-quality. **Always use Ralph loops** — a workflow without them is just a sequential script.
+
 - Package: `smithers-orchestrator` on npm
 - Runtime: Bun >= 1.3 (uses Bun's native SQLite driver)
 - Language: TypeScript with JSX
@@ -92,15 +94,55 @@ export default smithers((ctx) => (
 bunx smithers run workflow.tsx --input '{"description": "Auth tokens expire silently"}'
 ```
 
+### Adding a review loop with `<Ralph>`
+
+The example above runs each task once — fine for a quick script, but in practice you want the workflow to **self-correct**. Wrap implementation tasks in a `<Ralph>` loop so a reviewer checks the work and the loop repeats with feedback until approved:
+
+```tsx
+import { createSmithers, Ralph, Sequence } from "smithers-orchestrator";
+
+const fixResult = z.object({ summary: z.string(), filesChanged: z.array(z.string()) });
+const reviewResult = z.object({ approved: z.boolean(), issues: z.array(z.string()) });
+
+const { Workflow, Task, smithers } = createSmithers({
+  fix: fixResult,
+  review: reviewResult,
+});
+
+export default smithers((ctx) => (
+  <Workflow name="bugfix">
+    <Ralph
+      until={ctx.latest(reviewResult, "review")?.approved === true}
+      maxIterations={3}
+      onMaxReached="return-last"
+    >
+      <Sequence>
+        <Task id="fix" output={fixResult} agent={coder}>
+          {`Fix this bug: ${ctx.input.description}
+${ctx.latest(reviewResult, "review")?.issues?.length
+  ? `\nPrevious review found issues:\n${ctx.latest(reviewResult, "review")!.issues.join("\n")}`
+  : ""}`}
+        </Task>
+        <Task id="review" output={reviewResult} agent={reviewer}>
+          Review the changes. If correct, return approved: true. If issues remain, return approved: false with a list of issues.
+        </Task>
+      </Sequence>
+    </Ralph>
+  </Workflow>
+));
+```
+
+This is the fundamental Smithers pattern: **implement → review → loop until approved.** The reviewer's issues are fed back into the next attempt. **Every non-trivial workflow should use Ralph loops** — without them, you're just running a linear script with no quality checks.
+
 ## Core Concepts
 
+- **Ralph** (most important): Iterative implement-review loop. Repeats children until `until` condition is true or `maxIterations` is reached. This is the core primitive that makes Smithers workflows self-correcting. **Every non-trivial workflow should use Ralph.** Use `ctx.latest()` to read the reviewer's output and feed issues back into the next iteration.
 - **Workflow**: JSX tree defining the execution graph. Re-renders after each task completes.
 - **Task**: Single unit of work (AI agent call, compute callback, or static data). Identified by `id` prop.
 - **Sequence**: Tasks run top-to-bottom. Default behavior inside `<Workflow>`.
 - **Parallel**: Tasks run concurrently with optional `maxConcurrency`.
 - **Branch**: Conditional execution based on a boolean (`if`/`then`/`else`).
-- **Ralph**: Iterative loop with `until` condition and `maxIterations` safety cap.
-- **Context (`ctx`)**: Access `input`, completed `output` rows, `runId`, `iteration`.
+- **Context (`ctx`)**: Access `input`, completed `output` rows, `runId`, `iteration`. Use `ctx.latest(schema, nodeId)` to read the most recent output of a task (critical for Ralph loop feedback).
 - **Resume**: Re-running with same `runId` skips completed tasks automatically.
 - **Schema Registry**: Zod schemas passed to `createSmithers()` auto-create SQLite tables.
 
@@ -346,6 +388,8 @@ The `{props.schema}` variable is auto-injected by Smithers with the Zod schema d
 
 ### Pattern 1: Dynamic Ticket Discovery
 
+> **Note:** This pattern should always be combined with Pattern 2 (Ralph loops). Without review loops, discovered tickets are implemented once with no quality checks.
+
 **For large projects (>20 tasks)**, prefer dynamic ticket discovery over hardcoding a task list. An agent explores the codebase, compares current state to specs, and generates tickets at runtime. This lets the project evolve naturally as tickets are completed.
 
 ```tsx
@@ -400,9 +444,11 @@ export default smithers((ctx) => (
 ));
 ```
 
-### Pattern 2: Implement-Review Ralph Loop
+### Pattern 2: Implement-Review Ralph Loop (ESSENTIAL)
 
-**Strongly recommended.** Wrap implementation in a Ralph loop with validation and review. This catches issues early and forces agents to fix them before moving on.
+> **This is THE pattern that defines Smithers.** Without Ralph loops, you're just running tasks sequentially — no different from a shell script. The Ralph loop is what makes Smithers self-correcting: implement, review, feed issues back, repeat until approved.
+
+**Always use this pattern.** Wrap every implementation in a Ralph loop with validation and review. This catches issues early and forces agents to fix them before moving on.
 
 ```tsx
 // ValidationLoop.tsx
