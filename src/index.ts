@@ -88,7 +88,20 @@ export type { RevertOptions, RevertResult } from "./revert";
 
 // Linear
 export { useLinear, linearTools, getLinearClient } from "./linear/index";
+export {
+  startWebhookServer,
+  useLinearWebhook,
+  LinearWebhookListener,
+} from "./linear/index";
 export type { LinearIssue, LinearTeam, LinearComment } from "./linear/index";
+export type {
+  WebhookServerOptions,
+  WebhookServer,
+  UseLinearWebhookOptions,
+  UseLinearWebhookResult,
+  WebhookIssueEvent,
+  LinearWebhookListenerProps,
+} from "./linear/index";
 
 // Utilities
 export { mdxPlugin } from "./mdx-plugin";

@@ -8,6 +8,19 @@ export {
   linearAddComment,
   linearListTeams,
 } from "./tools";
+export {
+  startWebhookServer,
+  useLinearWebhook,
+  LinearWebhookListener,
+} from "./webhooks";
+export type {
+  WebhookServerOptions,
+  WebhookServer,
+  UseLinearWebhookOptions,
+  UseLinearWebhookResult,
+  WebhookIssueEvent,
+  LinearWebhookListenerProps,
+} from "./webhooks";
 export type {
   LinearIssue,
   LinearTeam,

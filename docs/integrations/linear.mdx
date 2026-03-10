@@ -1,9 +1,9 @@
 ---
 title: Linear Integration
-description: Connect Smithers workflows to Linear for automated issue tracking, status updates, and agent-powered ticket processing.
+description: Connect Smithers workflows to Linear for automated issue tracking, status updates, webhooks, and agent-powered ticket processing.
 ---
 
-Smithers includes a built-in Linear integration that lets workflows read issues, update statuses, post comments, and give agents direct access to your Linear workspace through AI SDK tools.
+Smithers includes a built-in Linear integration that lets workflows read issues, update statuses, post comments, listen for webhooks, and give agents direct access to your Linear workspace through AI SDK tools.
 
 ## Setup
 
@@ -16,9 +16,16 @@ export LINEAR_API_KEY=lin_api_...
 ## Import
 
 ```ts
-import { useLinear, linearTools, getLinearClient } from "smithers-orchestrator";
+import {
+  useLinear,
+  linearTools,
+  getLinearClient,
+  startWebhookServer,
+  useLinearWebhook,
+  LinearWebhookListener,
+} from "smithers-orchestrator";
 // or from the dedicated subpath:
-import { useLinear, linearTools } from "smithers-orchestrator/linear";
+import { useLinear, linearTools, startWebhookServer } from "smithers-orchestrator/linear";
 ```
 
 ## useLinear
@@ -223,6 +230,124 @@ export default smithers((ctx) => (
   </Workflow>
 ));
 ```
+
+## Webhooks
+
+Smithers can listen for Linear webhook events to trigger workflows when issues are updated. Three APIs are available depending on your use case.
+
+### startWebhookServer
+
+The imperative API starts a local HTTP server and auto-registers a webhook with Linear. On shutdown it deregisters the webhook automatically.
+
+```ts
+import { startWebhookServer } from "smithers-orchestrator";
+
+const server = await startWebhookServer({
+  publicUrl: "https://my-tunnel.ngrok.io",  // must be reachable from Linear
+  port: 3456,
+  teamId: "team-uuid",          // optional: scope to one team
+  resourceTypes: ["Issue"],     // default
+  label: "smithers-webhook",    // display name in Linear settings
+});
+
+// Listen for issue events
+server.handler.on("Issue", (payload) => {
+  console.log(payload.action, payload.data.identifier);
+});
+
+// Graceful shutdown — deregisters webhook from Linear and stops server
+await server.shutdown();
+```
+
+**Options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `publicUrl` | `string` | *required* | Public URL that Linear will POST to |
+| `port` | `number` | `3456` | Local server port |
+| `teamId` | `string?` | — | Scope webhook to a specific team |
+| `resourceTypes` | `string[]` | `["Issue"]` | Linear resource types to subscribe to |
+| `label` | `string` | `"smithers-webhook"` | Display name in Linear webhook settings |
+| `signal` | `AbortSignal?` | — | External shutdown signal |
+
+**Returns:** `WebhookServer` with `handler`, `webhookId`, and `shutdown()`.
+
+---
+
+### useLinearWebhook
+
+A React hook for use inside Smithers workflows. Starts a webhook server on mount, accumulates issues that match a trigger label, and cleans up on unmount.
+
+```tsx
+const { issues, ready, dismiss, shutdown } = useLinearWebhook({
+  publicUrl: "https://my-tunnel.ngrok.io",
+  triggerLabel: "smithers",  // fires when this label is newly added
+  teamId: "team-uuid",
+});
+
+// issues: WebhookIssueEvent[] — triggered issues queue
+// dismiss(issueId) — remove from queue after processing
+```
+
+**Options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `publicUrl` | `string` | *required* | Public URL for webhook delivery |
+| `triggerLabel` | `string` | *required* | Label name that triggers processing |
+| `port` | `number` | `3456` | Local server port |
+| `teamId` | `string?` | — | Scope to a specific team |
+| `label` | `string` | `"smithers-webhook"` | Linear webhook display name |
+
+**Returns:** `UseLinearWebhookResult` with `issues`, `ready`, `webhookId`, `dismiss()`, and `shutdown`.
+
+The hook only fires for issues where the trigger label was **newly added** (not already present). Each issue is deduplicated by ID.
+
+---
+
+### LinearWebhookListener
+
+A renderless React component that wraps `useLinearWebhook`. Use it inside JSX workflows to react to Linear events declaratively.
+
+```tsx
+<LinearWebhookListener
+  publicUrl="https://my-tunnel.ngrok.io"
+  triggerLabel="smithers"
+  teamId="team-uuid"
+  onIssue={(event) => {
+    console.log(`New issue: ${event.identifier} — ${event.title}`);
+  }}
+  onReady={({ webhookId, shutdown }) => {
+    console.log(`Webhook ${webhookId} ready`);
+  }}
+/>
+```
+
+**Props:** All `useLinearWebhook` options plus:
+
+| Prop | Type | Description |
+|---|---|---|
+| `onIssue` | `(event: WebhookIssueEvent) => void` | Called for each triggered issue |
+| `onReady` | `(info) => void` | Called when the webhook server is ready |
+
+### WebhookIssueEvent
+
+```ts
+type WebhookIssueEvent = {
+  action: string;
+  issueId: string;
+  identifier: string;    // e.g. "ENG-42"
+  title: string;
+  teamId: string;
+  labelIds: string[];
+  labels: { id: string; name: string; color: string }[];
+  description: string | null;
+  url: string;
+  updatedFrom: Record<string, unknown> | undefined;
+};
+```
+
+---
 
 ## getLinearClient
 
