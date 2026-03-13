@@ -10,6 +10,8 @@ export type TaskProps<Row> = {
   output: import("zod").ZodObject<any>;
   /** Agent or array of agents [primary, fallback1, fallback2, ...]. Tries in order on retries. */
   agent?: AgentLike | AgentLike[];
+  /** Convenience alias for a single retry fallback without exposing array syntax in JSX. */
+  fallbackAgent?: AgentLike;
   skipIf?: boolean;
   needsApproval?: boolean;
   timeoutMs?: number;
@@ -64,7 +66,14 @@ function renderChildrenToText(children: any): string {
 }
 
 export function Task<Row>(props: TaskProps<Row>) {
-  const { children, agent, ...rest } = props as any;
+  const { children, agent, fallbackAgent, ...rest } = props as any;
+  const agentChain = Array.isArray(agent)
+    ? fallbackAgent
+      ? [...agent, fallbackAgent]
+      : agent
+    : agent && fallbackAgent
+      ? [agent, fallbackAgent]
+      : agent;
   if (agent) {
     // Auto-inject `schema` prop into React element children when output is a ZodObject
     let childElement = children;
@@ -77,7 +86,7 @@ export function Task<Row>(props: TaskProps<Row>) {
     const prompt = renderChildrenToText(childElement);
     return React.createElement(
       "smithers:task",
-      { ...rest, agent, __smithersKind: "agent" },
+      { ...rest, agent: agentChain, __smithersKind: "agent" },
       prompt,
     );
   }
