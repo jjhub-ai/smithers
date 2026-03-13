@@ -94,13 +94,15 @@ A record mapping Ralph IDs to their current iteration numbers. Useful when multi
 
 ```tsx
 <Ralph id="outer" until={outerDone}>
-  <Ralph id="inner" until={innerDone}>
-    {/* ctx.iterations is { outer: 2, inner: 1 } */}
-  </Ralph>
+  <Sequence>
+    <Ralph id="inner" until={innerDone}>
+      {/* ctx.iterations is { outer: 2, inner: 1 } */}
+    </Ralph>
+  </Sequence>
 </Ralph>
 ```
 
-Note: nested Ralph is not currently supported, but the `iterations` map is still populated for all Ralph nodes in the tree.
+Nested Ralph loops are supported when the inner `<Ralph>` is wrapped in a `<Sequence>` — see [Nested loops](/components/ralph#nested-loops).
 
 ### `input`
 
