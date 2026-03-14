@@ -15,6 +15,7 @@ import { SmithersDb } from "../src/db/adapter";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { bash } from "../src/tools";
 
 describe("docs: renderFrame", () => {
   test("renderFrame is pure and does not execute tasks", async () => {
@@ -243,6 +244,33 @@ describe("docs: runWorkflow", () => {
     expect(existsSync(logPath)).toBe(true);
 
     rmSync(dir, { recursive: true, force: true });
+    cleanup();
+  });
+
+  test("allowNetwork=false blocks network commands in bash tool", async () => {
+    const { smithers, outputs, cleanup } = createTestSmithers({
+      output: z.object({ value: z.number() }),
+    });
+
+    const agent: any = {
+      id: "network-check",
+      tools: { bash },
+      async generate() {
+        await bash.execute({ cmd: "curl", args: ["https://example.com"] });
+        return { output: { value: 1 } };
+      },
+    };
+
+    const workflow = smithers(() => (
+      <Workflow name="allow-network">
+        <Task id="net" output={outputs.output} agent={agent}>
+          Try network.
+        </Task>
+      </Workflow>
+    ));
+
+    const result = await runWorkflow(workflow, { input: {}, allowNetwork: false });
+    expect(result.status).toBe("failed");
     cleanup();
   });
 
