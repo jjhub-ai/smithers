@@ -276,20 +276,19 @@ describe("docs: runWorkflow", () => {
   });
 
   test("maxOutputBytes propagates to tool execution", async () => {
-    const root = mkdtempSync(join(tmpdir(), "smithers-max-bytes-"));
-    const bigPath = join(root, "big.txt");
-    await Bun.write(bigPath, "x".repeat(64));
-
     const { smithers, outputs, cleanup } = createTestSmithers({
       output: z.object({ value: z.number() }),
     });
 
     const agent: any = {
       id: "max-bytes",
-      tools: { read },
+      tools: { bash },
       async generate() {
-        const content = await read.execute({ path: "big.txt" });
-        return { output: { value: content.length } };
+        const output = await bash.execute({
+          cmd: "printf",
+          args: ["x".repeat(64)],
+        });
+        return { output: { value: output.length } };
       },
     };
 
@@ -303,12 +302,47 @@ describe("docs: runWorkflow", () => {
 
     const result = await runWorkflow(workflow, {
       input: {},
-      rootDir: root,
       maxOutputBytes: 16,
     });
     expect(result.status).toBe("finished");
     const rows = result.output as Array<{ value: number }>;
     expect(rows[0]?.value).toBe(16);
+
+    cleanup();
+  });
+
+  test("read rejects files larger than maxOutputBytes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "smithers-read-limit-"));
+    const bigPath = join(root, "big.txt");
+    await Bun.write(bigPath, "x".repeat(64));
+
+    const { smithers, outputs, cleanup } = createTestSmithers({
+      output: z.object({ value: z.number() }),
+    });
+
+    const agent: any = {
+      id: "read-limit",
+      tools: { read },
+      async generate() {
+        await read.execute({ path: "big.txt" });
+        return { output: { value: 1 } };
+      },
+    };
+
+    const workflow = smithers(() => (
+      <Workflow name="read-limit">
+        <Task id="read" output={outputs.output} agent={agent}>
+          Read file.
+        </Task>
+      </Workflow>
+    ));
+
+    const result = await runWorkflow(workflow, {
+      input: {},
+      rootDir: root,
+      maxOutputBytes: 16,
+    });
+    expect(result.status).toBe("failed");
 
     rmSync(root, { recursive: true, force: true });
     cleanup();
