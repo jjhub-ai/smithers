@@ -229,6 +229,40 @@ describe("docs: <Task>", () => {
   });
 });
 
+describe("docs: <Workflow>", () => {
+  test("cache reuses task outputs across runs", async () => {
+    const { smithers, outputs, cleanup } = createTestSmithers({
+      output: z.object({ value: z.number() }),
+    });
+
+    let calls = 0;
+    const agent: any = {
+      id: "cache-agent",
+      tools: {},
+      async generate() {
+        calls += 1;
+        return { output: { value: calls } };
+      },
+    };
+
+    const workflow = smithers(() => (
+      <Workflow name="cache-workflow" cache>
+        <Task id="cached" output={outputs.output} agent={agent}>
+          Cached prompt
+        </Task>
+      </Workflow>
+    ));
+
+    const first = await runWorkflow(workflow, { input: {}, runId: "cache-1" });
+    expect(first.status).toBe("finished");
+
+    const second = await runWorkflow(workflow, { input: {}, runId: "cache-2" });
+    expect(second.status).toBe("finished");
+    expect(calls).toBe(1);
+    cleanup();
+  });
+});
+
 describe("docs: control flow components", () => {
   test("<Sequence> skipIf removes all child tasks", async () => {
     const { smithers, outputs, cleanup } = createTestSmithers(outputSchemas);
