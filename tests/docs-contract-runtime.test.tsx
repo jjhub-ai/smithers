@@ -16,6 +16,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { bash, read } from "../src/tools";
+import { getToolContext } from "../src/tools/context";
 
 describe("docs: renderFrame", () => {
   test("renderFrame is pure and does not execute tasks", async () => {
@@ -287,8 +288,8 @@ describe("docs: runWorkflow", () => {
       id: "max-bytes",
       tools: { read },
       async generate() {
-        await read.execute({ path: "big.txt" });
-        return { output: { value: 1 } };
+        const content = await read.execute({ path: "big.txt" });
+        return { output: { value: content.length } };
       },
     };
 
@@ -305,7 +306,9 @@ describe("docs: runWorkflow", () => {
       rootDir: root,
       maxOutputBytes: 16,
     });
-    expect(result.status).toBe("failed");
+    expect(result.status).toBe("finished");
+    const rows = result.output as Array<{ value: number }>;
+    expect(rows[0]?.value).toBe(16);
 
     rmSync(root, { recursive: true, force: true });
     cleanup();
@@ -338,6 +341,34 @@ describe("docs: runWorkflow", () => {
       toolTimeoutMs: 10,
     });
     expect(result.status).toBe("failed");
+    cleanup();
+  });
+
+  test("toolTimeoutMs defaults to 60000", async () => {
+    const { smithers, outputs, cleanup } = createTestSmithers({
+      output: z.object({ value: z.number() }),
+    });
+
+    const agent: any = {
+      id: "timeout-default",
+      async generate() {
+        const ctx = getToolContext();
+        return { output: { value: ctx?.timeoutMs ?? -1 } };
+      },
+    };
+
+    const workflow = smithers(() => (
+      <Workflow name="timeout-default">
+        <Task id="t" output={outputs.output} agent={agent}>
+          Check timeout.
+        </Task>
+      </Workflow>
+    ));
+
+    const result = await runWorkflow(workflow, { input: {} });
+    expect(result.status).toBe("finished");
+    const rows = result.output as Array<{ value: number }>;
+    expect(rows[0]?.value).toBe(60000);
     cleanup();
   });
 
