@@ -422,4 +422,80 @@ describe("docs: events", () => {
     expect(events).toContain("RunStatusChanged");
     cleanup();
   });
+
+  test("NodePending and NodeSkipped events are emitted", async () => {
+    const { smithers, outputs, cleanup } = createTestSmithers({
+      outputA: z.object({ value: z.number() }),
+      outputB: z.object({ value: z.number() }),
+    });
+
+    const events: string[] = [];
+    const workflow = smithers(() => (
+      <Workflow name="pending-skipped">
+        <Task id="skip" output={outputs.outputA} skipIf>
+          {{ value: 1 }}
+        </Task>
+        <Task id="run" output={outputs.outputB}>
+          {{ value: 2 }}
+        </Task>
+      </Workflow>
+    ));
+
+    const result = await runWorkflow(workflow, {
+      input: {},
+      onProgress: (event) => events.push(event.type),
+    });
+
+    expect(result.status).toBe("finished");
+    expect(events).toContain("NodePending");
+    expect(events).toContain("NodeSkipped");
+    cleanup();
+  });
+
+  test("tool calls emit ToolCallStarted and ToolCallFinished", async () => {
+    const root = mkdtempSync(join(tmpdir(), "smithers-tool-events-"));
+    const filePath = join(root, "sample.txt");
+    await Bun.write(filePath, "hello");
+
+    const { smithers, outputs, cleanup } = createTestSmithers({
+      output: z.object({ value: z.number() }),
+    });
+
+    const events: any[] = [];
+    const agent: any = {
+      id: "tool-events",
+      tools: { read },
+      async generate() {
+        await read.execute({ path: "sample.txt" });
+        return { output: { value: 1 } };
+      },
+    };
+
+    const workflow = smithers(() => (
+      <Workflow name="tool-events">
+        <Task id="read" output={outputs.output} agent={agent}>
+          Read.
+        </Task>
+      </Workflow>
+    ));
+
+    const result = await runWorkflow(workflow, {
+      input: {},
+      rootDir: root,
+      onProgress: (event) => events.push(event),
+    });
+
+    expect(result.status).toBe("finished");
+    const start = events.find((e) => e.type === "ToolCallStarted");
+    const finish = events.find((e) => e.type === "ToolCallFinished");
+    expect(start).toBeTruthy();
+    expect(finish).toBeTruthy();
+    expect(start.seq).toBe(finish.seq);
+    expect(finish.status).toBe("success");
+    expect(start.toolName).toBe("read");
+    expect(finish.toolName).toBe("read");
+
+    rmSync(root, { recursive: true, force: true });
+    cleanup();
+  });
 });
