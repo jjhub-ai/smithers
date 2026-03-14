@@ -3,6 +3,10 @@ title: <Parallel>
 description: Execute child tasks concurrently with optional concurrency limits.
 ---
 
+<Warning>
+  **JSX API** — This page documents the JSX-based API. For alternative approaches, see [TOON](/toon/overview) (declarative) or the [Effect builder](/effect/overview) (TypeScript).
+</Warning>
+
 `<Parallel>` groups its children and executes them **concurrently**. All children start at the same time (subject to the concurrency limit) rather than waiting for the previous child to complete.
 
 ## Import
@@ -102,5 +106,5 @@ Internally, `<Parallel>` renders as a `<smithers:parallel>` host element (or `nu
 
 - When `maxConcurrency` is omitted or set to `Infinity`, all children start at the same time with no limit.
 - The parallel group completes when **all** children have finished (or failed, if `continueOnFail` is set on individual tasks).
-- `<Parallel>` can be nested inside `<Sequence>`, `<Branch>`, `<Ralph>`, or another `<Parallel>`.
+- `<Parallel>` can be nested inside `<Sequence>`, `<Branch>`, `<Loop>`, or another `<Parallel>`.
 - An empty `<Parallel>` (no children) is valid and completes immediately.

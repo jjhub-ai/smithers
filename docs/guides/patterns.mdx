@@ -149,14 +149,14 @@ Task IDs must be unique within a workflow and should be descriptive. Follow thes
 ))}
 ```
 
-**Iteration-aware tasks** (inside Ralph): the task ID stays the same across iterations. Smithers differentiates them by the `iteration` column.
+**Iteration-aware tasks** (inside Loop): the task ID stays the same across iterations. Smithers differentiates them by the `iteration` column.
 
 ```tsx
-<Ralph until={approved} maxIterations={3}>
+<Loop until={approved} maxIterations={3}>
   <Task id="review" output="review" agent={reviewer}>
     Review the implementation.
   </Task>
-</Ralph>
+</Loop>
 ```
 
 **Naming pattern**: `{entity}:{action}` for dynamic tasks, plain `{action}` for single tasks.

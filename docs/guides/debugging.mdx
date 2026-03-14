@@ -119,7 +119,7 @@ Smithers stores all internal state in tables prefixed with `_smithers_`. You can
 | `_smithers_cache` | Cached task results (when caching is enabled) |
 | `_smithers_tool_calls` | Tool invocations: tool name, arguments, result, duration |
 | `_smithers_events` | All events with sequence numbers and JSON payloads |
-| `_smithers_ralph` | Ralph loop state: iteration counts, termination reasons |
+| `_smithers_ralph` | Loop iteration state: iteration counts, termination reasons |
 
 ### Useful Queries
 
@@ -159,7 +159,7 @@ sqlite3 smithers.db "SELECT seq, type, payload_json FROM _smithers_events WHERE 
 sqlite3 smithers.db "SELECT node_id, approved, decided_by, note FROM _smithers_approvals WHERE run_id = '<id>';"
 ```
 
-**View Ralph loop state:**
+**View loop iteration state:**
 
 ```bash
 sqlite3 smithers.db "SELECT * FROM _smithers_ralph WHERE run_id = '<id>';"
@@ -209,7 +209,7 @@ Common causes:
 
 - Two `<Task>` elements with the same `id` prop.
 - Dynamic tasks generated from an array where the IDs collide (e.g., using array indices).
-- A task inside a `<Ralph>` loop that should be outside (or vice versa).
+- A task inside a `<Loop>` that should be outside (or vice versa).
 
 Fix: ensure every `<Task>` has a globally unique `id` within the workflow. For dynamic tasks, derive IDs from unique identifiers: `id={`${item.id}:process`}`.
 

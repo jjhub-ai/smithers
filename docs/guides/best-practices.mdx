@@ -31,9 +31,9 @@ fix them, and write the corrected files. Return a summary of changes.`}
 
 The second approach gives the agent full context and lets it use tools (`read`, `edit`, `bash`) to accomplish everything in one pass.
 
-## Use Measurable Stop Conditions for Ralph Loops
+## Use Measurable Stop Conditions for Loops
 
-`<Ralph>` loops should stop based on a concrete, measurable signal -- not a subjective judgment. Good stop conditions:
+`<Loop>` should stop based on a concrete, measurable signal -- not a subjective judgment. Good stop conditions:
 
 - Tests passing (boolean)
 - Approval flag from a reviewer (boolean)
@@ -42,7 +42,7 @@ The second approach gives the agent full context and lets it use tools (`read`, 
 
 ```tsx
 // Good: concrete stop condition
-<Ralph
+<Loop
   until={ctx.outputMaybe("review", { nodeId: "review" })?.approved === true}
   maxIterations={5}
   onMaxReached="return-last"
@@ -58,7 +58,7 @@ The second approach gives the agent full context and lets it use tools (`read`, 
 Return JSON with approved (boolean) and feedback (string).`}
     </Task>
   </Sequence>
-</Ralph>
+</Loop>
 ```
 
 Always set `maxIterations` to prevent infinite loops. Use `onMaxReached: "return-last"` to gracefully accept the last result if the loop does not converge.
@@ -226,7 +226,7 @@ Disable caching in production if you need fresh results on every run.
 Here is a full example combining these practices -- a review loop with structured output, measurable stop conditions, explicit validation instructions, and reasonable error handling:
 
 ```tsx
-import { createSmithers, Task, Sequence, Ralph } from "smithers-orchestrator";
+import { createSmithers, Task, Sequence, Loop } from "smithers-orchestrator";
 import { ToolLoopAgent as Agent } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { read, grep, bash, edit, write } from "smithers-orchestrator";
@@ -271,7 +271,7 @@ export default smithers((ctx) => {
   return (
     <Workflow name="review-loop">
       <Sequence>
-        <Ralph
+        <Loop
           until={review?.approved === true}
           maxIterations={3}
           onMaxReached="return-last"
@@ -311,7 +311,7 @@ Approve only if tests pass and the code is clean.
 Return JSON with approved (boolean), feedback (string), score (1-10).`}
             </Task>
           </Sequence>
-        </Ralph>
+        </Loop>
 
         {review ? (
           <Task id="report" output="report">

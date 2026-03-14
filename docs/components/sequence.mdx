@@ -3,6 +3,10 @@ title: <Sequence>
 description: Execute child tasks one after another in the order they appear.
 ---
 
+<Warning>
+  **JSX API** — This page documents the JSX-based API. For alternative approaches, see [TOON](/toon/overview) (declarative) or the [Effect builder](/effect/overview) (TypeScript).
+</Warning>
+
 `<Sequence>` groups its children and executes them **one at a time, in order**, from top to bottom. Each child must complete before the next one starts.
 
 ## Import
@@ -92,5 +96,5 @@ Internally, `<Sequence>` renders as a `<smithers:sequence>` host element (or `nu
 ## Notes
 
 - Child ordering matches JSX source order. The first child in the JSX runs first.
-- `<Sequence>` can be nested inside `<Parallel>`, `<Branch>`, `<Ralph>`, or another `<Sequence>`.
+- `<Sequence>` can be nested inside `<Parallel>`, `<Branch>`, `<Loop>`, or another `<Sequence>`.
 - An empty `<Sequence>` (no children) is valid and produces no tasks.

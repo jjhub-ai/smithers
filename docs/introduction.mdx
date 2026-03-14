@@ -1,111 +1,32 @@
 ---
 title: Introduction
-description: Deterministic, resumable AI workflow orchestration using JSX.
+description: Choose the Smithers API that matches how you want to author workflows.
 ---
 
-Smithers is a TypeScript framework for building deterministic, resumable AI workflows using JSX. You define your workflow as a tree of React components, and Smithers handles execution ordering, durable state persistence in SQLite, structured output validation, and crash recovery -- all without you writing any orchestration plumbing.
+Smithers supports three authoring APIs. They all compile to the same durable execution engine, but they optimize for different ways of building workflows.
 
-```tsx
-import { createSmithers, Task, runWorkflow } from "smithers-orchestrator";
-import { ToolLoopAgent as Agent } from "ai";
-import { anthropic } from "@ai-sdk/anthropic";
-import { z } from "zod";
+## Choose an API
 
-const { Workflow, smithers } = createSmithers({
-  analysis: z.object({ summary: z.string(), severity: z.enum(["low", "medium", "high"]) }),
-  fix:      z.object({ patch: z.string(), explanation: z.string() }),
-});
+| API | Best for | Start here |
+| --- | --- | --- |
+| **TOON** | Prompt-first workflows and the fastest path to a working flow | [Overview](/toon/overview), [Installation](/toon/installation), [Quickstart](/toon/quickstart) |
+| **JSX** | TSX composition, render-time branching, and MDX prompts | [Overview](/jsx/overview), [Installation](/jsx/installation), [Quickstart](/jsx/quickstart) |
+| **Effect Builder** | Typed step handles, `Layer` composition, and low-level control | [Overview](/effect/overview), [Installation](/effect/installation), [Quickstart](/effect/quickstart) |
 
-const analyst = new Agent({
-  model: anthropic("claude-sonnet-4-20250514"),
-  instructions: "You are a code analyst. Return structured JSON.",
-});
+## Shared Runtime
 
-const fixer = new Agent({
-  model: anthropic("claude-sonnet-4-20250514"),
-  instructions: "You are a senior engineer who writes minimal, correct fixes.",
-});
+No matter which API you choose, Smithers handles the same runtime concerns:
 
-export default smithers((ctx) => (
-  <Workflow name="bugfix">
-    <Task id="analyze" output="analysis" agent={analyst}>
-      {`Analyze this bug: ${ctx.input.description}`}
-    </Task>
-    <Task id="fix" output="fix" agent={fixer}>
-      {`Fix this issue: ${ctx.output("analysis", { nodeId: "analyze" }).summary}`}
-    </Task>
-  </Workflow>
-));
-```
+- durable execution and resumability
+- retries, timeouts, and approval gates
+- SQLite persistence
+- parallel execution and loops
+- structured events, metrics, and observability
 
-Run it from the command line or programmatically:
-
-```bash
-bunx smithers run workflow.tsx --input '{"description": "Auth tokens expire silently"}'
-```
-
-```ts
-const result = await runWorkflow(workflow, {
-  input: { description: "Auth tokens expire silently" },
-});
-// result.status === "finished" | "failed" | "cancelled" | "waiting-approval"
-```
-
-## Key Features
-
-**Deterministic execution.** The workflow tree is rendered, tasks are identified, executed, and their outputs are persisted. Then the tree re-renders with updated context, revealing newly unblocked tasks. The same inputs always produce the same execution graph.
-
-**Durable SQLite state.** Every task output is written to SQLite (via Drizzle ORM) keyed by `(runId, nodeId, iteration)`. Durable checkpoints, attempts, approvals, events, and frames are persisted there so a crashed process can resume from the last committed state.
-
-**Resumable runs.** Call `runWorkflow` with `resume: true` and the same `runId`. Smithers skips completed tasks and picks up from the last checkpoint.
-
-**Human-in-the-loop approvals.** Mark any task with `needsApproval`. The workflow pauses with status `"waiting-approval"` until a human approves or denies the node via the CLI or REST API.
-
-**Parallel execution.** Wrap tasks in `<Parallel>` to run them concurrently, with optional `maxConcurrency` limits per group and globally.
-
-**Loops with Ralph.** The `<Ralph>` component re-executes its children until a condition is met. Each iteration is tracked separately in the database. Set `maxIterations` and `onMaxReached` to control termination.
-
-**Automatic retries.** Set `retries={N}` on any `<Task>`. Failed attempts are recorded and the task re-runs up to N additional times.
-
-**Tool sandbox.** Built-in tools (`read`, `edit`, `bash`, `grep`, `write`) are sandboxed to the workflow root directory. Network access and output size are configurable.
-
-**Event streaming.** Subscribe to fine-grained lifecycle events (`NodeStarted`, `NodeFinished`, `NodeFailed`, `ApprovalRequested`, `ToolCallStarted`, and more) via the `onProgress` callback.
-
-**Schema validation.** Every task output is validated against its Zod schema. If the agent returns invalid JSON, Smithers automatically retries with the validation errors appended to the prompt so the agent can self-correct.
-
-**REST API and CLI.** Run, resume, approve, deny, list, and inspect workflows from the command line (`bunx smithers`) or via the built-in HTTP server (`smithers-orchestrator/server`).
-
-## Architecture
-
-| Layer | What it does |
-|---|---|
-| **JSX Components** | `<Workflow>`, `<Task>`, `<Sequence>`, `<Parallel>`, `<Branch>`, `<Ralph>` define the execution graph declaratively. Standard React composition and conditionals work. |
-| **React Renderer** | A custom React reconciler converts the JSX tree into an internal XML representation and extracts an ordered list of `TaskDescriptor` objects. |
-| **Engine** | The core loop: render the tree, compute task states, schedule runnable tasks respecting dependencies and concurrency limits, execute them, persist results, and re-render. Manages Ralph iteration, approval gates, retries, and cancellation. |
-| **Tools** | Sandboxed filesystem and shell tools (`read`, `edit`, `bash`, `grep`, `write`) provided to AI agents. Configurable timeouts, output limits, and network policy. |
-| **Database** | SQLite via Drizzle ORM. Stores workflow runs, render frames, task attempts, outputs, approvals, Ralph state, events, and cache entries. Schema-driven mode auto-creates tables from Zod schemas. |
-| **Events** | A typed event bus that persists every lifecycle event to the database and optionally streams to log files and the `onProgress` callback. |
-
-## How It Works
-
-1. **Define** -- You declare Zod schemas for each task output. `createSmithers` auto-creates a SQLite database and Drizzle tables.
-2. **Render** -- Smithers renders your JSX tree using a custom React reconciler, producing an ordered list of tasks with their dependencies.
-3. **Schedule** -- The engine walks the plan tree (depth-first, left-to-right within sequences; all children within parallels) and determines which tasks are runnable.
-4. **Execute** -- Runnable tasks are dispatched concurrently up to `maxConcurrency`. Each task calls its agent, validates the output against the Zod schema, and writes the result to SQLite.
-5. **Re-render** -- The tree re-renders with updated context (completed outputs now available via `ctx.output()`). Newly unblocked tasks become runnable.
-6. **Repeat** -- The loop continues until no runnable tasks remain. The final status is `"finished"`, `"failed"`, `"waiting-approval"`, or `"cancelled"`.
-
-Every task result is a row in SQLite. Crash at any point, and resume picks up from the last persisted state.
-
-## Requirements
-
-- **Bun** >= 1.3 (Smithers uses Bun's native SQLite driver and runtime APIs)
-- **TypeScript** >= 5
-- An AI provider API key (e.g., `ANTHROPIC_API_KEY` for Claude models)
+The sidebar sections for Core Concepts, Runtime, CLI, and Integrations are shared across all three API tabs because they describe the common engine underneath the authoring layers.
 
 ## Next Steps
 
-- [Installation](/installation) -- Install Smithers and configure your project.
-- [Quickstart](/quickstart) -- Build and run your first workflow in under 5 minutes.
-- [Execution Model](/concepts/execution-model) -- Understand the render-execute-persist loop in depth.
-- [Components](/components/workflow) -- Reference for all JSX components.
+- [TOON Overview](/toon/overview) — Start with the declarative API.
+- [JSX API](/jsx/overview) — Build workflows as TSX components.
+- [Effect Builder](/effect/overview) — Use the low-level typed builder.

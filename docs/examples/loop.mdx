@@ -1,17 +1,17 @@
 ---
-title: Ralph Loop
-description: An iterative review loop using Ralph, where an agent writes code and a reviewer evaluates it until approved or max iterations.
+title: Loop
+description: An iterative review loop where an agent writes code and a reviewer evaluates it until approved or max iterations.
 ---
 
-# Ralph Loop
+# Loop
 
-**Ralph** is the looping primitive in Smithers. It re-executes its children until a condition is met or a maximum iteration count is reached. This example demonstrates a write-then-review cycle: one agent writes code, another reviews it, and the loop continues until the reviewer approves.
+`<Loop>` is the looping primitive in Smithers. It re-executes its children until a condition is met or a maximum iteration count is reached. This example demonstrates a write-then-review cycle: one agent writes code, another reviews it, and the loop continues until the reviewer approves.
 
 ## Workflow Definition
 
 ```tsx
-// ralph-loop.tsx
-import { createSmithers, Task, Sequence, Ralph } from "smithers-orchestrator";
+// review-loop.tsx
+import { createSmithers, Task, Sequence, Loop } from "smithers-orchestrator";
 import { ToolLoopAgent as Agent } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
@@ -48,9 +48,9 @@ export default smithers((ctx) => {
   const latestCode = ctx.outputMaybe("code", { nodeId: "write" });
 
   return (
-    <Workflow name="ralph-loop">
+    <Workflow name="review-loop">
       <Sequence>
-        <Ralph
+        <Loop
           id="revision-loop"
           until={latestReview?.approved === true}
           maxIterations={5}
@@ -71,7 +71,7 @@ export default smithers((ctx) => {
               {"\n```"}
             </Task>
           </Sequence>
-        </Ralph>
+        </Loop>
 
         {/* After the loop ends, emit the final result */}
         <Task id="final" output={outputs.finalOutput}>
@@ -89,13 +89,13 @@ export default smithers((ctx) => {
 ## Running the Workflow
 
 ```bash
-smithers run ralph-loop.tsx --input '{}'
+smithers run review-loop.tsx --input '{}'
 ```
 
 Example output showing two iterations before approval:
 
 ```
-[ralph-loop] Starting run ghi789
+[review-loop] Starting run ghi789
 [revision-loop] Iteration 1
   [write] Done -> { source: "function debounce(fn, ms) { ... }", language: "ts" }
   [review] Done -> { approved: false, feedback: "Missing generic types; no cancel method." }
@@ -103,10 +103,10 @@ Example output showing two iterations before approval:
   [write] Done -> { source: "function debounce<T>(fn: T, ms: number) { ... cancel() ... }", language: "ts" }
   [review] Done -> { approved: true, feedback: "Looks good. Generics and cancel are correct." }
 [final] Done -> { source: "function debounce<T>(...) { ... }", iterations: 2 }
-[ralph-loop] Completed
+[review-loop] Completed
 ```
 
-## How Ralph Works
+## How Loop Works
 
 | Prop | Description |
 |------|-------------|
@@ -137,15 +137,15 @@ Similarly, `ctx.latest("code", "write")` uses:
 - `"code"` -- the schema key, matching the key in `createSmithers()`
 - `"write"` -- the `id` prop of the `<Task id="write" ...>` element
 
-You can also use `ctx.latest()` instead of `ctx.outputMaybe()` inside Ralph loops. The difference is that `ctx.latest()` always returns the highest-iteration row, while `ctx.outputMaybe()` defaults to matching the current iteration. Inside a Ralph loop, `ctx.latest()` is often more convenient because it finds the most recent output without you needing to specify an iteration number.
+You can also use `ctx.latest()` instead of `ctx.outputMaybe()` inside loops. The difference is that `ctx.latest()` always returns the highest-iteration row, while `ctx.outputMaybe()` defaults to matching the current iteration. Inside a loop, `ctx.latest()` is often more convenient because it finds the most recent output without you needing to specify an iteration number.
 
 ## The re-render cycle
 
-Ralph drives iteration through tree re-rendering:
+The loop drives iteration through tree re-rendering:
 
 1. The workflow builder function `(ctx) => (...)` is called on every render frame.
 2. On the first render, `ctx.outputMaybe("review", { nodeId: "review" })` returns `undefined`. The write task has no feedback to work from, so it produces an initial draft.
 3. After both tasks in the sequence complete, the renderer persists their outputs and re-renders the tree.
-4. On the second render, `latestReview` is now populated with the iteration-0 review. Ralph evaluates `until={latestReview?.approved === true}`.
+4. On the second render, `latestReview` is now populated with the iteration-0 review. The loop evaluates `until={latestReview?.approved === true}`.
 5. If not approved, the loop body executes again. The write task now sees the review feedback and revises its code.
 6. This cycle repeats until approved or `maxIterations` is reached.

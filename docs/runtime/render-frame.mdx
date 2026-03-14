@@ -39,8 +39,8 @@ The second argument is a context object that provides the data your workflow's J
 | Field | Type | Description |
 |---|---|---|
 | `runId` | `string` | The run ID to use in the snapshot. Can be any string for preview purposes. |
-| `iteration` | `number` | The current Ralph iteration number (use `0` for non-looping workflows). |
-| `iterations` | `Record<string, number>` | Per-Ralph iteration counts, keyed by Ralph ID. Optional. |
+| `iteration` | `number` | The current loop iteration number (use `0` for non-looping workflows). |
+| `iterations` | `Record<string, number>` | Per-loop iteration counts, keyed by loop ID. Optional. |
 | `input` | `object` | The input data the workflow expects from `ctx.input`. |
 | `outputs` | `object` | Previously computed outputs, keyed by table name. Pass `{}` to render the initial state. |
 
@@ -120,8 +120,8 @@ type TaskDescriptor = {
 |---|---|
 | `nodeId` | The `id` prop from the `<Task>` component. |
 | `ordinal` | Position in the task list (0-indexed). |
-| `iteration` | The Ralph iteration this task belongs to. |
-| `ralphId` | The ID of the enclosing `<Ralph>` component, if any. |
+| `iteration` | The loop iteration this task belongs to. |
+| `ralphId` | The ID of the enclosing `<Loop>` component, if any. |
 | `outputTable` | The Drizzle table object for the task's output. |
 | `outputTableName` | String name of the output table. |
 | `outputSchema` | Optional Zod schema for validating agent output. |

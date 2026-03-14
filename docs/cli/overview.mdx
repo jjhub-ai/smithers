@@ -70,7 +70,7 @@ smithers approve <workflow.tsx> --run-id ID --node-id ID [options]
 
 | Option | Description |
 |---|---|
-| `--iteration N` | Ralph iteration number. Default: `0`. |
+| `--iteration N` | Loop iteration number. Default: `0`. |
 | `--note TEXT` | Optional note to attach to the approval record. |
 | `--decided-by TEXT` | Name or identifier of the person approving. |
 
@@ -98,7 +98,7 @@ smithers deny <workflow.tsx> --run-id ID --node-id ID [options]
 
 | Option | Description |
 |---|---|
-| `--iteration N` | Ralph iteration number. Default: `0`. |
+| `--iteration N` | Loop iteration number. Default: `0`. |
 | `--note TEXT` | Optional note explaining the denial. |
 | `--decided-by TEXT` | Name or identifier of the person denying. |
 
@@ -215,7 +215,7 @@ smithers revert <workflow.tsx> --run-id ID --node-id ID [--attempt N] [--iterati
 | Option | Description |
 |---|---|
 | `--attempt N` | Attempt number to revert to. Default: `1`. |
-| `--iteration N` | Ralph iteration number. Default: `0`. |
+| `--iteration N` | Loop iteration number. Default: `0`. |
 
 **Example:**
 

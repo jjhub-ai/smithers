@@ -1,156 +1,286 @@
 ---
 title: Execution Model
-description: The render-schedule-execute-persist loop that drives every Smithers workflow.
+description: How Smithers turns a builder graph into a durable Effect workflow.
 ---
 
-Smithers workflows execute through a deterministic loop that separates pure rendering from side-effectful execution. Understanding this loop is essential for reasoning about when your tasks run, why they re-run, and how the framework achieves resumability.
+Smithers executes workflows as durable state machines built from a typed graph. The important split is:
+
+- **workflow definition is pure**
+- **step execution is effectful**
+- **state transitions are durable**
+
+That gives you deterministic orchestration without a render cycle.
 
 ## The Core Loop
 
-Every workflow run follows the same four-phase cycle, repeated until no runnable nodes remain:
+Every workflow run follows the same high-level cycle:
 
+```txt
+1. Build      workflow definition -> typed graph
+2. Materialize load execution state from SQLite
+3. Select     find ready steps whose dependencies are satisfied
+4. Execute    run each ready step as an Effect
+5. Commit     persist outputs, attempts, events, and transitions
+              -> repeat until terminal
 ```
-1. Render    JSX tree -> HostElement tree -> TaskDescriptor[] + XML snapshot
-2. Schedule  Evaluate node states, pick runnable tasks (respecting ordering + concurrency)
-3. Execute   Run agent.generate() or apply static payloads
-4. Persist   Validate output against schema, write to SQLite, commit frame
-             -> Loop back to step 1 with updated context
-```
 
-### Phase 1: Render
+Unlike the old JSX API, the workflow definition is not re-rendered after each step. The graph is already explicit.
 
-Smithers calls your builder function with the current `SmithersCtx`, which contains the run's input and all outputs produced so far. The JSX you return is rendered through a [custom React reconciler](/concepts/renderer-internals) -- not React DOM -- producing an in-memory `HostElement` tree.
+## Phase 1: Build the Graph
 
-The `extractFromHost` function then walks this tree depth-first, left-to-right and produces two outputs:
+The workflow graph can be produced from any of Smithers' three definition layers:
 
-- **TaskDescriptor[]** -- one entry per `<Task>` node with its `nodeId`, `ordinal`, `iteration`, output table, agent, prompt, and all configuration props (`skipIf`, `needsApproval`, `retries`, `timeoutMs`, `continueOnFail`).
-- **XmlNode** -- a serializable XML snapshot of the full tree, stored in the `_smithers_frames` table for debugging and inspection.
+- **TOON** — a `.toon` file is compiled into a workflow graph at build time
+- **Effect builder** — `Smithers.workflow(...).build(...)` constructs the graph in TypeScript
+- **JSX** — the React renderer extracts `TaskDescriptor` objects from a component tree
 
-Rendering is **pure**. No network calls, no database writes, no side effects. The builder function can read from `ctx.outputs` and `ctx.input` but cannot mutate anything.
+All three produce the same internal graph structure. The rest of the execution model is identical regardless of which layer defined the workflow.
 
-### Phase 2: Schedule
+The builder API runs once to produce a workflow graph:
 
-The engine evaluates the state of every extracted task by checking:
+```ts
+const Workflow = Smithers.workflow({
+  name: "review-loop",
+  input: Input,
+}).build(($) => {
+  const analyze = $.step("analyze", { output: Analysis, run: ... });
+  const review = $.step("review", {
+    output: Review,
+    needs: { analysis: analyze },
+    run: ...,
+  });
 
-1. Is the task's `skipIf` prop true? Mark as `skipped`.
-2. Does it need approval? Check `_smithers_approvals`. If not yet approved, emit `ApprovalRequested` and mark as `waiting-approval`.
-3. Is there an in-progress attempt? Mark as `in-progress`.
-4. Does a valid output row already exist in the output table for `(runId, nodeId, iteration)`? Mark as `finished`.
-5. Is this a Ralph child whose loop is done? Mark as `skipped`.
-6. Has it exhausted its retries? Mark as `failed`.
-7. Otherwise: mark as `pending`.
-
-The scheduler then walks the plan tree (built from the XML) to determine which pending tasks are actually **runnable** given structural constraints:
-
-- **Sequence**: only the first non-terminal child is runnable.
-- **Parallel**: all non-terminal children are runnable simultaneously.
-- **Ralph**: children run as a group; when all finish, the loop may advance to the next iteration.
-- **Workflow**: behaves like an implicit sequence at the root.
-
-Finally, concurrency limits are applied. The global `maxConcurrency` (default 4) and per-`<Parallel>` `maxConcurrency` cap how many tasks execute at once, accounting for already in-progress tasks.
-
-### Phase 3: Execute
-
-Runnable tasks execute in parallel up to the concurrency limit. For each task:
-
-1. A new attempt row is inserted into `_smithers_attempts` with state `in-progress`.
-2. The node row in `_smithers_nodes` is updated to `in-progress`.
-3. A `NodeStarted` event is emitted.
-4. **Agent tasks**: `agent.generate()` is called with the prompt. The response is parsed for JSON output (structured output, raw JSON, code-fenced JSON, or extracted via balanced-brace matching). If extraction fails, a follow-up prompt requests just the JSON.
-5. **Static tasks**: the static payload from the JSX children is used directly.
-6. Output validation is performed against the Drizzle table schema.
-7. If schema validation fails for agent tasks, up to 2 schema-retry prompts are sent with the Zod error details.
-8. The validated payload is upserted into the output table.
-
-### Phase 4: Persist
-
-After execution:
-
-- The attempt row is updated to `finished` (or `failed` on error).
-- The node row is updated accordingly.
-- `NodeFinished` or `NodeFailed` events are emitted.
-- If caching is enabled and this was not a cache hit, the result is written to `_smithers_cache`.
-- The JJ pointer (version control change ID) is captured if available.
-
-The loop then returns to Phase 1. The builder function re-renders with the newly available outputs in `ctx`, which may cause new tasks to mount, Ralph loops to advance, or Branch conditions to change.
-
-## Node States
-
-Every task node transitions through these states:
-
-| State | Meaning |
-| --- | --- |
-| `pending` | Extracted from the tree but not yet started. |
-| `waiting-approval` | The `needsApproval` prop is set and no approval decision exists yet. |
-| `in-progress` | An attempt is currently executing. |
-| `finished` | A valid output row exists in the output table. |
-| `failed` | All attempts have failed (retries exhausted) or approval was denied. |
-| `cancelled` | The node was unmounted between render cycles while in-progress, or the run was aborted. |
-| `skipped` | The `skipIf` prop evaluated to true, or a Branch was not taken, or a Ralph loop completed. |
-
-State transitions are always persisted to `_smithers_nodes` before the engine proceeds.
-
-## Deterministic Ordering
-
-Task ordering is deterministic and derived from the JSX tree structure:
-
-1. **Ordinals**: Each `<Task>` receives an ordinal assigned during depth-first, left-to-right extraction. The first task encountered gets ordinal 0, the next gets 1, and so on.
-2. **Sequence gating**: Within a `<Sequence>` (or `<Workflow>`, which is an implicit sequence), tasks execute in order. The second task does not become runnable until the first reaches a terminal state (`finished`, `skipped`, or `failed` with `continueOnFail`).
-3. **Parallel concurrency**: Within a `<Parallel>`, all children are eligible to run simultaneously, subject to concurrency limits.
-4. **Stable identity**: Tasks are identified by their `id` prop, not their position. Moving a `<Task id="analyze">` within the tree does not create a new task -- the engine matches on `(runId, nodeId)`.
-
-This means the same workflow definition always produces the same execution order given the same inputs and outputs.
-
-## Re-Render Cycle
-
-The re-render cycle is what makes Smithers workflows reactive:
-
-```tsx
-export default smithers((ctx) => {
-  const analysis = ctx.outputMaybe("analyze", { nodeId: "analyze" });
-
-  return (
-    <Workflow name="example">
-      <Sequence>
-        <Task id="analyze" output="analyze" agent={codeAgent}>
-          {`Analyze: ${ctx.input.description}`}
-        </Task>
-
-        {analysis ? (
-          <Task id="review" output="output" agent={reviewAgent}>
-            {`Review: ${analysis.summary}`}
-          </Task>
-        ) : null}
-      </Sequence>
-    </Workflow>
-  );
+  return $.sequence(analyze, review);
 });
 ```
 
-On the first render cycle, `analysis` is `undefined`, so only the "analyze" task is mounted. After it executes and persists its output, the next render cycle sees `analysis` as a real row, causing the "review" task to mount and become runnable.
+This phase is pure:
 
-This pattern extends to any conditional rendering: Ralph loops that check convergence, Branch nodes that inspect previous outputs, and dynamic task lists generated from arrays.
+- it creates step handles
+- it records dependency edges
+- it records control-flow structure
+- it records policies like retry, timeout, approval, and concurrency
 
-## Retries
+No Effects run during graph construction.
 
-When a task fails, the engine checks if the number of failed attempts is less than `retries + 1`. If so, the node remains `pending` and will be picked up on the next scheduling pass. Each retry creates a new attempt row in `_smithers_attempts` -- previous attempts are never overwritten.
+## Phase 2: Materialize Execution State
 
-A `NodeRetrying` event is emitted between the failure and the next attempt. The latest attempt always determines the node's current state.
+When you call `Workflow.execute(input)`, Smithers:
 
-## Run Termination
+1. validates the input against the declared `Schema`
+2. allocates or resumes a durable execution id
+3. loads persisted workflow state from SQLite
+4. reconstructs the current step state machine
 
-The loop terminates when one of these conditions is met:
+At this point Smithers knows:
 
-| Condition | Run Status |
+- which steps have completed
+- which outputs already exist
+- which attempts failed
+- which approvals are pending
+- which loop or branch nodes are suspended
+
+The graph is static. The execution state is what changes over time.
+
+## Phase 3: Select Ready Steps
+
+Smithers walks the graph and marks each step according to durable state.
+
+Typical states are:
+
+| State | Meaning |
 | --- | --- |
-| No runnable tasks and no pending work remain | `finished` |
-| A task failed without `continueOnFail` and no runnable work remains | `failed` |
-| Tasks are waiting for approval and no other work is runnable | `waiting-approval` |
-| A Ralph loop exceeded `maxIterations` with `onMaxReached: "fail"` | `failed` |
-| The `AbortSignal` was triggered | `cancelled` |
+| `pending` | Known to the workflow but not yet eligible to run |
+| `ready` | All dependencies and guards are satisfied |
+| `running` | The step Effect is currently executing |
+| `waiting-approval` | Suspended on a durable approval gate |
+| `completed` | Output has been persisted successfully |
+| `failed` | Terminal failure after retry policy is exhausted |
+| `cancelled` | Interrupted by the user or runtime |
+| `skipped` | Not taken because of a branch or guard |
 
-On `waiting-approval`, the run can be resumed after an approval or denial decision is made via the CLI.
+A step becomes `ready` only when:
 
-## Stale Attempt Recovery
+- every entry in `needs` has completed
+- any approval or guard condition is satisfied
+- any loop or branch controller allows the step to proceed
+- concurrency limits permit it to run
 
-If a run is interrupted (process crash, timeout), in-progress attempts older than 15 minutes are automatically cancelled on resume. This prevents zombie tasks from blocking forward progress. The nodes are reset to `pending` so they can be retried.
+Because dependencies are explicit, Smithers does not need to infer readiness from a re-rendered tree.
+
+## Phase 4: Execute Ready Steps
+
+Each ready step runs as a normal `Effect`.
+
+```ts
+const fix = $.step("fix", {
+  output: Fix,
+  needs: { analysis },
+  run: ({ analysis }) =>
+    Effect.gen(function* () {
+      const coder = yield* Coder;
+      return yield* coder.fix(analysis);
+    }),
+});
+```
+
+The `run` function receives a typed execution context made from:
+
+- validated workflow input
+- resolved `needs` outputs
+- Smithers execution metadata such as step id, attempt number, and execution id
+- cancellation/timeout signals
+
+The step body can then use the normal Effect toolkit:
+
+- `Effect.gen`
+- `Context.Tag`
+- `Layer`
+- `Schedule`
+- logging and tracing
+- resource scoping
+
+Smithers should not invent a second effect system inside steps.
+
+## Phase 5: Commit Durable Transitions
+
+When a step finishes, Smithers commits the transition durably:
+
+- persist the output model row
+- persist attempt metadata
+- persist lifecycle events
+- update execution state
+- unblock downstream dependents
+
+If a step fails, Smithers persists the failure and consults the retry policy. If the retry policy allows another attempt, the step transitions back to `pending` or `ready`; otherwise it becomes `failed`.
+
+This is where Smithers should lean on durable workflow primitives rather than hand-rolled bookkeeping.
+
+## Determinism
+
+Determinism in the new API comes from explicit structure.
+
+### Stable step identity
+
+Each step has an explicit logical id:
+
+```ts
+const analyze = $.step("analyze", { ... });
+```
+
+That id becomes the durable identity for persistence, logs, retries, approvals, and resume behavior.
+
+### Explicit edges
+
+Dependencies are declared directly:
+
+```ts
+const report = $.step("report", {
+  needs: { research },
+  run: ({ research }) => ...,
+});
+```
+
+Smithers does not need to discover hidden dependencies by watching when user code reads from a shared context.
+
+### Explicit control flow
+
+Sequence, parallelism, branching, and looping should be represented as explicit builder nodes. That matters because runtime decisions must survive process restarts.
+
+If a workflow has a review loop, the current iteration belongs in durable state, not in transient JavaScript control flow.
+
+## Retry, Timeout, and Approval Semantics
+
+These policies should map directly onto Effect primitives.
+
+### Retries
+
+Retries belong to `Schedule`, not a Smithers-only integer.
+
+```ts
+retry: Schedule.exponential("250 millis").pipe(
+  Schedule.intersect(Schedule.recurs(3)),
+)
+```
+
+That makes retry semantics consistent with the rest of an Effect application.
+
+### Timeouts
+
+Timeouts should accept `DurationInput` and be enforced around the step Effect. A timed-out step is persisted as a failed attempt and fed through the same retry policy.
+
+### Approvals
+
+Approvals should suspend the step durably. The important property is not UI integration, but recoverability: after a restart, the workflow must still know that a decision is pending.
+
+## Persistence Model
+
+Smithers should persist two categories of data:
+
+### Domain outputs
+
+These are your declared `Model`s:
+
+```ts
+class Review extends Model.Class<Review>("Review")({
+  approved: Schema.Boolean,
+  feedback: Schema.String,
+}) {}
+```
+
+### Workflow metadata
+
+This is owned by Smithers:
+
+- executions
+- step attempts
+- retry history
+- approvals
+- loop state
+- branch decisions
+- event log
+
+The user should not have to add workflow bookkeeping columns to every domain model.
+
+## Resume and Replay
+
+Resuming a workflow should mean:
+
+1. load the execution by id
+2. rebuild the graph definition
+3. reload persisted execution state
+4. continue from unfinished durable nodes
+
+Completed steps should not re-run unless the user explicitly asks for replay or invalidates cached state.
+
+That is the core contract of Smithers: workflow definitions are pure and replayable, but execution history is durable and incremental.
+
+## Dynamic Workflows
+
+Builder-based workflows still support dynamic behavior, but it has to be explicit.
+
+Good examples:
+
+- a branch node that chooses a subgraph from a previous step output
+- a loop node that repeats until a persisted condition is met
+- a queue or merge gate that limits concurrency durably
+
+The unifying rule is that runtime control-flow decisions must be represented in durable state. They cannot depend on an ephemeral re-render of arbitrary user code.
+
+## Why This Matters
+
+This execution model makes the system easier to reason about:
+
+- graph structure is explicit
+- dependencies are typed
+- runtime services stay inside Effect
+- persistence is durable
+- retries and approvals have a stable state machine
+
+That is a better fit for workflow orchestration than reusing a UI renderer as the planner.
+
+## Next Steps
+
+- [Data Model](/concepts/data-model) -- See how `Schema`, `Model`, and workflow metadata fit together.
+- [Context](/concepts/context) -- Understand what data a running step receives.
+- [Approvals](/concepts/approvals) -- Design durable approval gates on top of Effect primitives.

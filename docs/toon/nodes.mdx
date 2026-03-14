@@ -1,0 +1,296 @@
+---
+title: Nodes
+description: All node kinds available in .toon files — step, sequence, parallel, loop, approval, branch, and worktree.
+---
+
+TOON workflows are built from nodes. Each node kind maps to a builder primitive in the Effect API.
+
+## Step
+
+The most common node. Sends a prompt to an agent and produces structured output.
+
+```toon
+agents:
+  coder:
+    type: claude-code
+    model: claude-opus-4-6
+    subscription: true
+    instructions: You are a senior software engineer.
+
+steps:
+  - id: analyze
+    agent: coder
+    prompt: |
+      Analyze the bug described below.
+      Description: {input.description}
+    output:
+      summary: string
+      severity: "low" | "medium" | "high"
+```
+
+Steps execute sequentially by default (top to bottom). A step can reference outputs from any earlier step.
+
+### Step Properties
+
+| Property | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | yes | Unique identifier within the workflow |
+| `agent` | `string` | no | Name of a declared agent (required for `prompt:` steps) |
+| `prompt` | `string` | no | The prompt sent to the agent. Supports `{interpolation}` |
+| `run` | `typescript` | no | Inline TypeScript code block (alternative to prompt) |
+| `handler` | `string` | no | Path to a TypeScript handler function |
+| `output` | schema | yes | Output shape — inline or imported |
+| `needs` | `string[]` | no | Explicit dependency on other step ids |
+| `retry` | object | no | Retry policy |
+| `timeout` | `string` | no | Timeout duration (e.g. `"30s"`, `"5m"`) |
+| `cache` | object | no | Cache policy |
+| `skipIf` | `string` | no | Condition expression to skip the step |
+
+### Retry Policy
+
+```toon
+steps:
+  - id: flaky-api
+    prompt: |
+      Call the external API.
+    output:
+      result: string
+    retry:
+      maxAttempts: 3
+      backoff: exponential
+      initialDelay: 250ms
+```
+
+### Timeout
+
+```toon
+steps:
+  - id: slow-step
+    prompt: |
+      Process a large dataset.
+    output:
+      status: string
+    timeout: 5m
+```
+
+## Sequence
+
+Steps are sequential by default. Use an explicit `sequence` node when you need to group steps inside a `parallel` block:
+
+```toon
+steps:
+  - kind: parallel
+    children:
+      - kind: sequence
+        children:
+          - id: step-a
+            prompt: Do A.
+            output:
+              result: string
+          - id: step-b
+            prompt: Do B using {step-a.result}.
+            output:
+              result: string
+      - id: step-c
+        prompt: Do C independently.
+        output:
+          result: string
+```
+
+## Parallel
+
+Execute steps concurrently:
+
+```toon
+steps:
+  - kind: parallel
+    children:
+      - id: research-web
+        prompt: Search the web for {input.topic}.
+        output:
+          findings: string
+
+      - id: research-docs
+        prompt: Search internal docs for {input.topic}.
+        output:
+          findings: string
+
+  - id: combine
+    prompt: |
+      Combine these findings:
+      Web: {research-web.findings}
+      Docs: {research-docs.findings}
+    output:
+      summary: string
+```
+
+### Concurrency Limit
+
+```toon
+steps:
+  - kind: parallel
+    maxConcurrency: 2
+    children:
+      - id: task-1
+        # ...
+      - id: task-2
+        # ...
+      - id: task-3
+        # ...
+```
+
+## Loop
+
+Repeat steps until a condition is met:
+
+```toon
+steps:
+  - id: draft
+    prompt: Write a first draft about {input.topic}.
+    output:
+      content: string
+
+  - kind: loop
+    id: review-loop
+    maxIterations: 5
+    until: "{review.approved} == true"
+    children:
+      - id: review
+        prompt: |
+          Review this draft:
+          {draft.content}
+        output:
+          approved: boolean
+          feedback: string
+
+      - id: revise
+        prompt: |
+          Revise the draft based on feedback:
+          {review.feedback}
+        output:
+          content: string
+        skipIf: "{review.approved}"
+```
+
+### Loop Properties
+
+| Property | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | no | Loop identifier |
+| `maxIterations` | `number` | no | Maximum iterations (default: 5) |
+| `until` | `string` | yes | Stop condition expression |
+| `onMaxReached` | `"fail" \| "return-last"` | no | Behavior at max iterations (default: `"return-last"`) |
+| `children` | nodes | yes | Steps to repeat |
+
+## Approval
+
+Suspend execution for human review:
+
+```toon
+steps:
+  - id: build
+    prompt: Build the deployment package.
+    output:
+      version: string
+      commitSha: string
+
+  - kind: approval
+    id: approve-deploy
+    needs: [build]
+    request:
+      title: "Deploy {build.version}?"
+      summary: "Commit {build.commitSha} passed all checks."
+    onDeny: fail
+
+  - id: deploy
+    needs: [build, approve-deploy]
+    prompt: Deploy version {build.version}.
+    output:
+      url: string
+```
+
+### Approval Properties
+
+| Property | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | yes | Gate identifier |
+| `needs` | `string[]` | no | Dependencies |
+| `request` | object | yes | Title and summary for the reviewer |
+| `onDeny` | `"fail" \| "continue" \| "skip"` | no | Denial behavior (default: `"fail"`) |
+
+## Branch
+
+Choose between paths based on a condition:
+
+```toon
+steps:
+  - id: classify
+    prompt: Classify the severity of {input.description}.
+    output:
+      severity: "low" | "medium" | "high"
+
+  - kind: branch
+    condition: "{classify.severity} == 'high'"
+    then:
+      - id: escalate
+        prompt: Escalate to senior engineer.
+        output:
+          action: string
+    else:
+      - id: auto-fix
+        prompt: Generate an automated fix.
+        output:
+          patch: string
+```
+
+## Worktree
+
+Execute steps in an isolated JJ worktree:
+
+```toon
+steps:
+  - kind: worktree
+    path: ./feature-branch
+    children:
+      - id: implement
+        prompt: |
+          Implement the feature described in {input.spec}.
+        output:
+          files: string[]
+          summary: string
+```
+
+The worktree is created before the children execute and cleaned up after.
+
+## Nesting
+
+Node kinds can be nested freely:
+
+```toon
+steps:
+  - kind: parallel
+    children:
+      - kind: sequence
+        children:
+          - id: a
+            prompt: Do A.
+            output:
+              result: string
+          - kind: loop
+            until: "{check.done}"
+            children:
+              - id: check
+                prompt: Check status.
+                output:
+                  done: boolean
+      - id: b
+        prompt: Do B.
+        output:
+          result: string
+```
+
+## Next Steps
+
+- [Components](/toon/components) — Extract reusable node groups.
+- [Prompts](/toon/prompts) — Interpolation syntax for prompts.
+- [Inline Code](/toon/inline-code) — Use TypeScript inside steps.

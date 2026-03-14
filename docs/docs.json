@@ -10,6 +10,9 @@
     { "source": "/docs/introduction", "destination": "/introduction" },
     { "source": "/docs/installation", "destination": "/installation" },
     { "source": "/docs/quickstart", "destination": "/quickstart" },
+    { "source": "/toon", "destination": "/toon/overview" },
+    { "source": "/jsx", "destination": "/jsx/overview" },
+    { "source": "/effect", "destination": "/effect/overview" },
     { "source": "/docs/concepts/:slug*", "destination": "/concepts/:slug*" },
     { "source": "/docs/components/:slug*", "destination": "/components/:slug*" },
     { "source": "/docs/guides/:slug*", "destination": "/guides/:slug*" },
@@ -19,137 +22,214 @@
     { "source": "/docs/examples/:slug*", "destination": "/examples/:slug*" },
     { "source": "/docs/reference/:slug*", "destination": "/reference/:slug*" },
     { "source": "/docs/ralph", "destination": "/components/ralph" },
+    { "source": "/docs/loop", "destination": "/components/ralph" },
     { "source": "/docs/task", "destination": "/components/task" },
     { "source": "/docs/workflow", "destination": "/components/workflow" },
     { "source": "/docs/sequence", "destination": "/components/sequence" },
     { "source": "/docs/parallel", "destination": "/components/parallel" },
     { "source": "/docs/branch", "destination": "/components/branch" },
-    { "source": "/docs/structured-output", "destination": "/guides/structured-output" }
+    { "source": "/docs/structured-output", "destination": "/guides/structured-output" },
+    { "source": "/concepts/context", "destination": "/effect/context" },
+    { "source": "/concepts/renderer-internals", "destination": "/concepts/planner-internals" }
   ],
   "navigation": {
-    "groups": [
+    "global": {
+      "anchors": [
+        {
+          "anchor": "Core Concepts",
+          "href": "/concepts/execution-model",
+          "pages": [
+            "concepts/execution-model",
+            "concepts/data-model",
+            "concepts/approvals",
+            "concepts/caching",
+            "concepts/planner-internals"
+          ]
+        },
+        {
+          "anchor": "Runtime",
+          "href": "/runtime/run-workflow",
+          "pages": [
+            "runtime/run-workflow",
+            "runtime/render-frame",
+            "runtime/events",
+            "runtime/revert"
+          ]
+        },
+        {
+          "anchor": "CLI",
+          "href": "/cli/overview",
+          "pages": [
+            "cli/overview"
+          ]
+        },
+        {
+          "anchor": "Integrations",
+          "href": "/integrations/tools",
+          "pages": [
+            "integrations/tools",
+            "integrations/linear",
+            "integrations/cli-agents",
+            "integrations/server",
+            "integrations/pi-plugin"
+          ]
+        }
+      ]
+    },
+    "tabs": [
       {
-        "group": "Getting Started",
-        "pages": [
-          "introduction",
-          "installation",
-          "quickstart"
-        ]
-      },
-      {
-        "group": "Core Concepts",
-        "pages": [
-          "concepts/execution-model",
-          "concepts/data-model",
-          "concepts/context",
-          "concepts/approvals",
-          "concepts/caching",
-          "concepts/renderer-internals"
-        ]
-      },
-      {
-        "group": "Components",
-        "pages": [
-          "components/workflow",
-          "components/task",
-          "components/sequence",
-          "components/parallel",
-          "components/branch",
-          "components/ralph"
-        ]
-      },
-      {
-        "group": "Guides",
-        "pages": [
-          "guides/tutorial-workflow",
-          "guides/project-structure",
-          "guides/model-selection",
-          "guides/review-loop",
-          "guides/dynamic-tickets",
-          "guides/mdx-prompts",
-          "guides/structured-output",
-          "guides/error-handling",
-          "guides/patterns",
-          "guides/resumability",
-          "guides/hot-reload",
-          "guides/debugging",
-          "guides/monitoring-logs",
-          "guides/best-practices",
-          "guides/vcs"
-        ]
-      },
-      {
-        "group": "Runtime",
-        "pages": [
-          "runtime/run-workflow",
-          "runtime/render-frame",
-          "runtime/events",
-          "runtime/revert"
-        ]
-      },
-      {
-        "group": "CLI",
-        "pages": [
-          "cli/overview"
-        ]
-      },
-      {
-        "group": "Integrations",
-        "pages": [
-          "integrations/tools",
-          "integrations/linear",
-          "integrations/cli-agents",
-          "integrations/server",
-          "integrations/pi-plugin"
-        ]
-      },
-      {
-        "group": "Examples",
-        "pages": [
-          "examples/hello-world",
-          "examples/dynamic-plan",
-          "examples/ralph-loop",
-          "examples/multi-agent-review",
-          "examples/approval-gate",
-          "examples/tools-agent",
+        "tab": "TOON",
+        "groups": [
           {
-            "group": "Ghost Docs: workflows/",
+            "group": "Getting Started",
             "pages": [
-              "examples/workflow-hello",
-              "examples/workflow-approval",
-              "examples/workflow-quickstart"
+              "toon/overview",
+              "toon/installation",
+              "toon/quickstart"
             ]
           },
           {
-            "group": "Ghost Docs: worktree-feature/",
+            "group": "Authoring",
             "pages": [
-              "examples/worktree-feature-workflow",
-              "examples/worktree-feature-schemas",
-              "examples/worktree-feature-prompts",
-              "examples/worktree-feature-run-sh"
+              "toon/schemas",
+              "toon/nodes",
+              "toon/components",
+              "toon/prompts",
+              "toon/inline-code",
+              "toon/imports"
             ]
           },
           {
-            "group": "Ghost Docs: Scripts & Config",
+            "group": "Examples",
             "pages": [
-              "examples/generate-llms-txt",
-              "examples/ci-workflow",
-              "examples/agents-md"
+              "examples/toon-hello",
+              "examples/toon-bugfix",
+              "examples/toon-review-loop",
+              "examples/toon-parallel"
             ]
           },
           {
-            "group": "Ghost Docs: Claude Code Plugins",
+            "group": "Reference",
             "pages": [
-              "examples/claude-plugin-skill",
-              "examples/claude-plugin-orchestrator"
+              "reference/toon-spec"
             ]
           }
         ]
       },
       {
-        "group": "Reference",
-        "pages": [
-          "reference/types"
+        "tab": "JSX",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "jsx/overview",
+              "jsx/installation",
+              "jsx/quickstart"
+            ]
+          },
+          {
+            "group": "Components",
+            "pages": [
+              "components/workflow",
+              "components/task",
+              "components/sequence",
+              "components/parallel",
+              "components/branch",
+              "components/ralph",
+              "components/merge-queue",
+              "components/worktree"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/tutorial-workflow",
+              "guides/project-structure",
+              "guides/model-selection",
+              "guides/review-loop",
+              "guides/dynamic-tickets",
+              "guides/mdx-prompts",
+              "guides/structured-output",
+              "guides/error-handling",
+              "guides/patterns",
+              "guides/resumability",
+              "guides/hot-reload",
+              "guides/debugging",
+              "guides/monitoring-logs",
+              "guides/best-practices",
+              "guides/vcs"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "examples/hello-world",
+              "examples/dynamic-plan",
+              "examples/loop",
+              "examples/multi-agent-review",
+              "examples/approval-gate",
+              "examples/tools-agent",
+              {
+                "group": "Ghost Docs: workflows/",
+                "pages": [
+                  "examples/workflow-hello",
+                  "examples/workflow-approval",
+                  "examples/workflow-quickstart"
+                ]
+              },
+              {
+                "group": "Ghost Docs: worktree-feature/",
+                "pages": [
+                  "examples/worktree-feature-workflow",
+                  "examples/worktree-feature-schemas",
+                  "examples/worktree-feature-prompts",
+                  "examples/worktree-feature-run-sh"
+                ]
+              },
+              {
+                "group": "Ghost Docs: Scripts & Config",
+                "pages": [
+                  "examples/generate-llms-txt",
+                  "examples/ci-workflow",
+                  "examples/agents-md"
+                ]
+              },
+              {
+                "group": "Ghost Docs: Claude Code Plugins",
+                "pages": [
+                  "examples/claude-plugin-skill",
+                  "examples/claude-plugin-orchestrator"
+                ]
+              }
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/types"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Effect Builder",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "effect/overview",
+              "effect/installation",
+              "effect/quickstart"
+            ]
+          },
+          {
+            "group": "Builder API",
+            "pages": [
+              "effect/builder-api",
+              "effect/context",
+              "effect/services"
+            ]
+          }
         ]
       }
     ]

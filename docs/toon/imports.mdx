@@ -1,0 +1,166 @@
+---
+title: Imports
+description: Import schemas, services, components, and other .toon files into your workflow.
+---
+
+The `imports:` block at the top of a `.toon` file lets you bring in external TypeScript types, Effect services, TOON components, and plugins.
+
+## Importing Schemas
+
+Import `Schema.Class` or `Model.Class` definitions for use as input or output types:
+
+```toon
+imports:
+  schemas:
+    - from: "./schemas.ts"
+      use: [TicketInput, AnalysisOutput, ReviewOutput]
+
+name: bugfix
+input: TicketInput
+
+steps:
+  - id: analyze
+    prompt: Analyze {input.description}.
+    output: AnalysisOutput
+
+  - id: review
+    prompt: Review {analyze.summary}.
+    output: ReviewOutput
+```
+
+## Importing Services
+
+Import Effect services to make them available in `handler:` functions and `run:` blocks:
+
+```toon
+imports:
+  services:
+    - from: "./services/coder.ts"
+      use: [Coder]
+    - from: "./services/jj.ts"
+      use: [JJ]
+
+steps:
+  - id: fix
+    handler: "./handlers/fix.ts#applyFix"
+    output:
+      patch: string
+```
+
+The imported services must be provided through the Layer stack when executing the workflow.
+
+## Importing Components
+
+Import reusable components from other `.toon` files:
+
+```toon
+imports:
+  components:
+    - from: "./shared/review-cycle.toon"
+      use: [ReviewCycle]
+    - from: "./shared/deploy-gate.toon"
+      use: [GuardedDeploy]
+
+steps:
+  - id: review
+    kind: component
+    use: ReviewCycle
+    with:
+      content: "{draft.content}"
+      reviewer: "a tech lead"
+```
+
+## Importing Other TOON Files
+
+Import an entire `.toon` file as a sub-workflow:
+
+```toon
+imports:
+  workflows:
+    - from: "./sub-workflows/research.toon"
+      as: research
+
+steps:
+  - id: do-research
+    kind: workflow
+    use: research
+    input:
+      topic: "{input.topic}"
+
+  - id: report
+    prompt: |
+      Write a report based on:
+      {do-research.summary}
+    output:
+      report: string
+```
+
+## Plugin Setup
+
+Plugins extend TOON with custom node kinds, model providers, or services. Register them in the `imports:` block:
+
+```toon
+imports:
+  plugins:
+    - from: "smithers-plugin-anthropic"
+      config:
+        defaultModel: "claude-opus-4-6"
+    - from: "smithers-plugin-linear"
+      config:
+        team: "ENG"
+```
+
+Plugins are loaded at build time and can:
+- Add custom node kinds (e.g., `kind: linear-ticket`)
+- Provide default model configuration
+- Register services automatically into the Layer stack
+- Add custom interpolation functions
+
+## Import Resolution
+
+Imports are resolved relative to the `.toon` file's directory:
+
+```
+project/
+  workflows/
+    main.toon           # imports from: "./shared/review.toon"
+    shared/
+      review.toon
+  schemas/
+    types.ts
+  services/
+    coder.ts
+```
+
+Package imports (without `./`) resolve from `node_modules`:
+
+```toon
+imports:
+  plugins:
+    - from: "smithers-plugin-anthropic"
+```
+
+## Multiple Import Sources
+
+Combine different import types freely:
+
+```toon
+imports:
+  schemas:
+    - from: "./schemas.ts"
+      use: [Input, Output]
+  services:
+    - from: "./services/index.ts"
+      use: [Coder, Reviewer, Deployer]
+  components:
+    - from: "./shared/patterns.toon"
+      use: [ReviewLoop, DeployGate]
+  plugins:
+    - from: "smithers-plugin-anthropic"
+```
+
+## Next Steps
+
+- [Schemas](/toon/schemas) — Define and import type definitions.
+- [Components](/toon/components) — Create and use reusable components.
+- [Overview](/toon/overview) — How TOON fits into the three-layer architecture.

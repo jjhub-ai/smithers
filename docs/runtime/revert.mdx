@@ -41,7 +41,7 @@ smithers revert <workflow.tsx> \
 | Flag | Default | Description |
 |---|---|---|
 | `--attempt N` | `1` | The attempt number to revert to (1-indexed). |
-| `--iteration N` | `0` | The Ralph iteration number. |
+| `--iteration N` | `0` | The loop iteration number. |
 
 ### Examples
 
@@ -57,7 +57,7 @@ Revert to the second attempt (after a retry):
 smithers revert workflow.tsx --run-id abc123 --node-id analyze --attempt 2
 ```
 
-Revert to a specific Ralph iteration:
+Revert to a specific loop iteration:
 
 ```bash
 smithers revert workflow.tsx --run-id abc123 --node-id fix --attempt 1 --iteration 2

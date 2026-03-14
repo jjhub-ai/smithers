@@ -3,6 +3,10 @@ title: <Task>
 description: A single executable node that produces output by calling an AI agent, running a compute callback, or emitting a static payload.
 ---
 
+<Warning>
+  **JSX API** — This page documents the JSX-based API. For alternative approaches, see [TOON](/toon/overview) (declarative) or the [Effect builder](/effect/overview) (TypeScript).
+</Warning>
+
 `<Task>` is the fundamental unit of work in a Smithers workflow. Every task has a unique `id` and an `output` destination. Tasks operate in one of three modes:
 
 - **Agent mode** -- when `agent` is provided, children are rendered to markdown text and sent as the prompt to the AI agent.
@@ -231,7 +235,7 @@ export default smithers(db, (ctx) => (
 
 ## Notes
 
-- Output tables must include `runId` and `nodeId` columns. Tasks inside a `<Ralph>` loop additionally need an `iteration` column.
+- Output tables must include `runId` and `nodeId` columns. Tasks inside a `<Loop>` loop additionally need an `iteration` column.
 - The `id` prop is used as the `nodeId` in the task descriptor and must be unique across all tasks in the workflow. This uniqueness is enforced at render time.
 - In agent mode, the prompt is the final rendered string after all JSX/MDX has been converted to markdown. The rendering uses custom markdown components that produce clean text output (not HTML).
 - The `key` prop is a standard React prop and does not affect Smithers execution semantics.

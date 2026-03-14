@@ -1,0 +1,36 @@
+---
+title: Troubleshooting
+description: Common setup, runtime, and workflow issues, with the fastest path to diagnose each one.
+---
+
+Use this page as the quick index when something in Smithers feels wrong and you do not yet know which subsystem is responsible.
+
+## Start With the Symptom
+
+- Workflow state, stuck runs, and SQLite inspection: [Debugging](/guides/debugging)
+- Retries, timeouts, skips, and graceful degradation: [Error Handling](/guides/error-handling)
+- File-watcher and prompt reload behavior: [Hot Reload](/guides/hot-reload)
+- Event streaming, approvals, and server APIs: [Server Integration](/integrations/server)
+- Workspace snapshots and revert behavior: [VCS Integration](/guides/vcs)
+
+## Common Failure Modes
+
+### A task did not rerun
+
+Smithers resumes by `runId`. If a node already completed for the current `runId`, it will be skipped on resume. Use a new `runId` for a fresh run, or inspect the persisted attempts with the CLI before assuming the scheduler is stuck.
+
+### An MDX prompt rendered as `[object Object]`
+
+That usually means the MDX preload was not registered. Confirm that your preload script calls `mdxPlugin()` and that `bunfig.toml` points at the preload file.
+
+### The workflow code changed but the running task did not
+
+Hot reload only affects work that has not been scheduled yet. In-flight tasks continue with the code and prompt they started with.
+
+## When in Doubt
+
+1. Check `smithers status` for the current run.
+2. Inspect recent frames with `smithers frames`.
+3. Query the SQLite database if the CLI summary is not enough.
+
+Those steps usually tell you whether the issue is scheduling, agent execution, schema validation, or environment setup.

@@ -1,21 +1,25 @@
 ---
-title: <Ralph>
+title: <Loop>
 description: Iterative loop that re-executes its children until a condition is met or the maximum iteration count is reached.
 ---
 
-`<Ralph>` repeats its children in a loop. On each iteration, the `until` condition is re-evaluated. When the condition becomes `true`, the loop stops. A `maxIterations` safety limit prevents infinite loops.
+<Warning>
+  **JSX API** — This page documents the JSX-based API. For alternative approaches, see [TOON](/toon/overview) (declarative) or the [Effect builder](/effect/overview) (TypeScript).
+</Warning>
+
+`<Loop>` repeats its children in a loop. On each iteration, the `until` condition is re-evaluated. When the condition becomes `true`, the loop stops. A `maxIterations` safety limit prevents infinite loops.
 
 ## Import
 
 ```tsx
-import { Ralph } from "smithers-orchestrator";
+import { Loop } from "smithers-orchestrator";
 ```
 
 ## Props
 
 | Prop | Type | Default | Description |
 | --- | --- | --- | --- |
-| `id` | `string` | auto-generated | Optional identifier for the loop. Useful when a workflow contains multiple `<Ralph>` loops. Auto-generated from tree position if omitted. |
+| `id` | `string` | auto-generated | Optional identifier for the loop. Useful when a workflow contains multiple `<Loop>` loops. Auto-generated from tree position if omitted. |
 | `until` | `boolean` | **(required)** | Stop condition. Re-evaluated each iteration. When `true`, the loop exits and the workflow proceeds to the next node. |
 | `maxIterations` | `number` | `5` | Maximum number of iterations allowed. The loop stops after this many iterations regardless of the `until` condition. |
 | `onMaxReached` | `"fail" \| "return-last"` | `"return-last"` | Behavior when `maxIterations` is reached without the `until` condition becoming `true`. `"fail"` causes the workflow to fail. `"return-last"` uses the output from the final iteration and continues. |
@@ -26,7 +30,7 @@ import { Ralph } from "smithers-orchestrator";
 
 ```tsx
 <Workflow name="review-loop">
-  <Ralph
+  <Loop
     until={ctx.output("review", { nodeId: "review" }).approved}
     maxIterations={3}
     onMaxReached="return-last"
@@ -34,7 +38,7 @@ import { Ralph } from "smithers-orchestrator";
     <Task id="review" output="review" agent={reviewAgent}>
       Review the code and decide whether to approve.
     </Task>
-  </Ralph>
+  </Loop>
 </Workflow>
 ```
 
@@ -42,12 +46,12 @@ The `review` task runs up to 3 times. If the agent sets `approved: true` in its 
 
 ## How iteration works
 
-Each time Ralph loops, it increments an internal iteration counter. This counter is reflected in two places on the workflow context:
+Each time the loop iterates, it increments an internal iteration counter. This counter is reflected in two places on the workflow context:
 
 - **`ctx.iteration`** -- the current iteration number (0-indexed) for the active loop.
-- **`ctx.iterations`** -- a map of Ralph ids to their current iteration numbers, useful when you need to reference iteration counts from outside the loop.
+- **`ctx.iterations`** -- a map of loop ids to their current iteration numbers, useful when you need to reference iteration counts from outside the loop.
 
-Inside the loop body, tasks receive the current iteration number in their task descriptor. Output tables for tasks inside a `<Ralph>` should include an `iteration` column to store per-iteration results:
+Inside the loop body, tasks receive the current iteration number in their task descriptor. Output tables for tasks inside a `<Loop>` should include an `iteration` column to store per-iteration results:
 
 ```tsx
 const reviewTable = sqliteTable(
@@ -68,7 +72,7 @@ Note the `iteration` column in the primary key. This ensures each iteration's ou
 
 ## Accessing previous iteration output with `ctx.latest()`
 
-Inside a Ralph loop, the most important pattern is feeding the output of the previous iteration back into the next iteration. Use `ctx.latest(table, nodeId)` to retrieve the most recent output for a task, regardless of which iteration produced it.
+Inside a loop, the most important pattern is feeding the output of the previous iteration back into the next iteration. Use `ctx.latest(table, nodeId)` to retrieve the most recent output for a task, regardless of which iteration produced it.
 
 **Parameter types:**
 
@@ -89,7 +93,7 @@ export default smithers((ctx) => {
 
   return (
     <Workflow name="refine-loop">
-      <Ralph
+      <Loop
         until={latestReview?.approved === true}
         maxIterations={5}
       >
@@ -103,7 +107,7 @@ export default smithers((ctx) => {
             {`Review this draft (score: ${latestDraft?.score ?? "N/A"}):\n${latestDraft?.text ?? ""}`}
           </Task>
         </Sequence>
-      </Ralph>
+      </Loop>
     </Workflow>
   );
 });
@@ -126,32 +130,32 @@ Use `ctx.latest()` instead of `ctx.output()` or `ctx.outputMaybe()` when you wan
 Use `ctx.iterationCount()` to check how many iterations have completed for a given task:
 
 ```tsx
-<Ralph
+<Loop
   until={ctx.iterationCount("review", "review") >= 2}
   maxIterations={5}
 >
   <Task id="review" output="review" agent={reviewAgent}>
     {`This is iteration ${ctx.iteration}. Review the code.`}
   </Task>
-</Ralph>
+</Loop>
 ```
 
 ## Multiple loops
 
-Use the `id` prop to distinguish between multiple `<Ralph>` loops in the same workflow:
+Use the `id` prop to distinguish between multiple `<Loop>` loops in the same workflow:
 
 ```tsx
 <Workflow name="multi-loop">
-  <Ralph id="code-loop" until={codeApproved} maxIterations={3}>
+  <Loop id="code-loop" until={codeApproved} maxIterations={3}>
     <Task id="write-code" output="writeCode" agent={codeAgent}>
       Write the implementation.
     </Task>
-  </Ralph>
-  <Ralph id="review-loop" until={reviewApproved} maxIterations={3}>
+  </Loop>
+  <Loop id="review-loop" until={reviewApproved} maxIterations={3}>
     <Task id="review-code" output="reviewCode" agent={reviewAgent}>
       Review the implementation.
     </Task>
-  </Ralph>
+  </Loop>
 </Workflow>
 ```
 
@@ -166,17 +170,17 @@ When `id` is omitted, Smithers generates a stable id from the element's position
 
 ```tsx
 // Fail the workflow if we can't converge in 10 iterations
-<Ralph until={converged} maxIterations={10} onMaxReached="fail">
+<Loop until={converged} maxIterations={10} onMaxReached="fail">
   <Task id="optimize" output="optimize" agent={optimizer}>
     Optimize the solution.
   </Task>
-</Ralph>
+</Loop>
 ```
 
 ## Full example
 
 ```tsx
-import { smithers, Workflow, Task, Ralph } from "smithers-orchestrator";
+import { smithers, Workflow, Task, Loop } from "smithers-orchestrator";
 import { ToolLoopAgent as Agent } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { drizzle } from "drizzle-orm/bun-sqlite";
@@ -211,7 +215,7 @@ const reviewAgent = new Agent({
 
 export default smithers(db, (ctx) => (
   <Workflow name="iterative-review">
-    <Ralph
+    <Loop
       until={
         ctx.outputMaybe("review", { nodeId: "review" })?.approved === true
       }
@@ -221,23 +225,23 @@ export default smithers(db, (ctx) => (
       <Task id="review" output="review" agent={reviewAgent}>
         {`Review this code and either approve or provide feedback:\n\n${ctx.input.code}`}
       </Task>
-    </Ralph>
+    </Loop>
   </Workflow>
 ));
 ```
 
 ## Rendering
 
-Internally, `<Ralph>` renders as a `<smithers:ralph>` host element (or `null` when skipped). The runtime manages iteration state and re-renders the workflow tree on each iteration, re-evaluating the `until` condition with the latest context.
+Internally, `<Loop>` renders as a `<smithers:ralph>` host element (or `null` when skipped). The runtime manages iteration state and re-renders the workflow tree on each iteration, re-evaluating the `until` condition with the latest context.
 
 ## Restrictions
 
-- **Nesting is not supported.** Placing a `<Ralph>` inside another `<Ralph>` throws the error `"Nested <Ralph> is not supported."` at render time.
-- **Duplicate ids throw.** If two `<Ralph>` loops share the same `id` (explicit or auto-generated), the error `"Duplicate Ralph id detected: <id>"` is thrown.
+- **Nesting is not supported.** Placing a `<Loop>` inside another `<Loop>` throws an error at render time.
+- **Duplicate ids throw.** If two `<Loop>` loops share the same `id` (explicit or auto-generated), an error is thrown.
 
 ## Notes
 
 - The `until` condition is evaluated at render time for each frame. It typically references the output of a task inside the loop body using `ctx.output()` or `ctx.outputMaybe()`.
 - Use `ctx.outputMaybe()` for the `until` condition since the output will not exist on the first render before the task has run.
-- Tasks inside a `<Ralph>` loop should have an `iteration` column in their output table's primary key to avoid row conflicts across iterations.
-- Ralph tracks iteration state internally. The iteration counter resets to 0 at the start of each workflow run.
+- Tasks inside a `<Loop>` loop should have an `iteration` column in their output table's primary key to avoid row conflicts across iterations.
+- The loop tracks iteration state internally. The iteration counter resets to 0 at the start of each workflow run.

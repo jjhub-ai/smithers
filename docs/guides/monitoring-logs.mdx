@@ -1,249 +1,187 @@
 ---
-title: Monitoring & Logs
-description: Monitor workflow execution with events, NDJSON log files, the SSE endpoint, and database queries.
+title: Observability
+description: Export Smithers spans and metrics over OTLP, inspect persisted events, and add your own observability dependencies with Effect.
 ---
 
-Smithers emits typed events for every lifecycle transition in a workflow run. These events are persisted to the SQLite database, written to NDJSON log files, and optionally streamed via Server-Sent Events (SSE). This guide covers all monitoring approaches.
+Smithers exposes four observability surfaces:
 
-## onProgress Callback
+- persisted lifecycle events
+- structured logs
+- OpenTelemetry spans
+- Effect metrics exported over OTLP
 
-The most direct way to monitor a run is the `onProgress` callback passed to `runWorkflow`:
+The runtime already instruments workflow runs, nodes, tools, cache behavior, approvals, database access, hot reloads, HTTP requests, and Jujutsu commands. You can send those signals to any OTLP-compatible backend and you can consume the same observability context inside your own Effect services.
+
+## Enable OpenTelemetry Export
+
+Smithers ships a public observability layer:
 
 ```ts
-import { runWorkflow } from "smithers-orchestrator";
-import workflow from "./workflow";
+import { Context, Effect, Layer, Schema } from "effect";
+import { Model } from "@effect/sql";
+import { Smithers } from "smithers-orchestrator";
+import { createSmithersObservabilityLayer } from "smithers-orchestrator/observability";
 
-const result = await runWorkflow(workflow, {
-  input: { description: "Fix auth bugs" },
-  onProgress: (event) => {
-    switch (event.type) {
-      case "RunStarted":
-        console.log(`Run started: ${event.runId}`);
-        break;
-      case "NodeStarted":
-        console.log(`Task started: ${event.nodeId} (attempt ${event.attempt})`);
-        break;
-      case "NodeFinished":
-        console.log(`Task finished: ${event.nodeId}`);
-        break;
-      case "NodeFailed":
-        console.log(`Task failed: ${event.nodeId} -- ${event.error}`);
-        break;
-      case "NodeRetrying":
-        console.log(`Task retrying: ${event.nodeId} (attempt ${event.attempt})`);
-        break;
-      case "ApprovalRequested":
-        console.log(`Approval needed: ${event.nodeId}`);
-        break;
-      case "RunFinished":
-        console.log(`Run finished: ${event.runId}`);
-        break;
-      case "ToolCallStarted":
-        console.log(`Tool call: ${event.toolName}`);
-        break;
-    }
-  },
-});
+const AppLive = Layer.mergeAll(
+  Smithers.sqlite({ filename: "./smithers.db" }),
+  AgentLive,
+  createSmithersObservabilityLayer({
+    enabled: true,
+    endpoint: "http://localhost:4318",
+    serviceName: "bugfix-worker",
+    logFormat: "json",
+  }),
+);
 ```
 
-The callback is invoked synchronously with every event during the run. It receives a typed `SmithersEvent` object.
+If you prefer environment-based configuration, the runtime also reads:
 
-## NDJSON Log Files
-
-By default, Smithers writes every event as a newline-delimited JSON line to:
-
+```bash
+export SMITHERS_OTEL_ENABLED=1
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_SERVICE_NAME=bugfix-worker
+export SMITHERS_LOG_FORMAT=json
+export SMITHERS_LOG_LEVEL=info
 ```
+
+Those variables are respected by the built-in runtime used by Smithers execution and the HTTP server.
+
+## Local Prometheus + Grafana Stack
+
+The repo ships a ready-made local stack under `observability/`:
+
+```bash
+docker compose -f observability/docker-compose.otel.yml up
+```
+
+That starts:
+
+- OTLP collector on `http://localhost:4318`
+- Prometheus on `http://localhost:9090`
+- Grafana on `http://localhost:3000`
+- Tempo on `http://localhost:3200`
+
+The collector exports metrics on `:8889`, Prometheus scrapes that endpoint, and Grafana comes pre-provisioned with a Smithers dashboard. Smithers itself does not expose a direct Prometheus `/metrics` endpoint in this setup; the collector is the bridge.
+
+## Built-in Smithers Metrics
+
+Import the predeclared metrics from `smithers-orchestrator/observability`:
+
+```ts
+import { smithersMetrics } from "smithers-orchestrator/observability";
+
+smithersMetrics.runsTotal;
+smithersMetrics.nodeDuration;
+smithersMetrics.httpRequestDuration;
+```
+
+The exported registry currently includes:
+
+- `runsTotal`, `activeRuns`
+- `nodesStarted`, `nodesFinished`, `nodesFailed`, `activeNodes`
+- `nodeDuration`, `attemptDuration`
+- `toolCallsTotal`, `toolDuration`
+- `cacheHits`, `cacheMisses`
+- `dbQueryDuration`, `dbRetries`
+- `schedulerQueueDepth`
+- `approvalsRequested`, `approvalsGranted`, `approvalsDenied`
+- `httpRequests`, `httpRequestDuration`
+- `hotReloads`, `hotReloadFailures`, `hotReloadDuration`
+- `vcsDuration`
+
+These metrics are emitted by the engine and runtime itself. You do not need to wire them by hand.
+
+## Use Observability as a Dependency
+
+The observability layer also provides a service tag you can depend on in your own Effect services:
+
+```ts
+import { Context, Effect, Layer, Metric } from "effect";
+import { SmithersObservability } from "smithers-orchestrator/observability";
+
+const notificationsSent = Metric.counter("app.notifications.sent");
+
+class Notifications extends Context.Tag("Notifications")<
+  Notifications,
+  {
+    readonly send: (ticketId: string) => Effect.Effect<void>;
+  }
+>() {}
+
+const NotificationsLive = Layer.effect(
+  Notifications,
+  Effect.gen(function* () {
+    const obs = yield* SmithersObservability;
+
+    return {
+      send: (ticketId) =>
+        obs.withSpan(
+          "notifications:send",
+          Effect.gen(function* () {
+            yield* obs.annotate({
+              ticketId,
+              channel: "slack",
+            });
+            yield* Metric.increment(notificationsSent);
+            yield* Effect.logInfo(`sending notification for ${ticketId}`);
+          }),
+          { component: "notifications" },
+        ),
+    };
+  }),
+);
+```
+
+This is the intended composition model:
+
+- use `createSmithersObservabilityLayer(...)` once in your app layer
+- depend on `SmithersObservability` in your own services when you want Smithers-scoped spans or shared annotations
+- use normal Effect `Metric` primitives for custom application metrics
+
+## Events and Logs Still Matter
+
+OpenTelemetry does not replace Smithers' durable event log. Every run still persists typed events and, when enabled, writes the NDJSON stream to:
+
+```txt
 .smithers/executions/<runId>/logs/stream.ndjson
 ```
 
-Each line is a self-contained JSON object:
+That gives you two complementary views:
 
-```json
-{"type":"RunStarted","runId":"smth_a1b2c3d4","timestampMs":1730000000000}
-{"type":"NodeStarted","runId":"smth_a1b2c3d4","nodeId":"analyze","iteration":0,"attempt":1,"timestampMs":1730000000100}
-{"type":"ToolCallStarted","runId":"smth_a1b2c3d4","nodeId":"analyze","toolName":"read","timestampMs":1730000000200}
-{"type":"ToolCallFinished","runId":"smth_a1b2c3d4","nodeId":"analyze","toolName":"read","durationMs":45,"timestampMs":1730000000245}
-{"type":"NodeFinished","runId":"smth_a1b2c3d4","nodeId":"analyze","iteration":0,"attempt":1,"timestampMs":1730000005000}
-{"type":"RunFinished","runId":"smth_a1b2c3d4","status":"finished","timestampMs":1730000010000}
-```
+- OTLP spans and metrics for dashboards and tracing
+- durable event history for replay, approvals, debugging, and auditability
 
-### Live tailing
-
-Watch events in real time during execution:
+You can still tail the event log directly:
 
 ```bash
 tail -f .smithers/executions/<runId>/logs/stream.ndjson
 ```
 
-### Filtering with jq
+And you can still inspect the SQLite event table:
 
 ```bash
-# Pretty-print all events
-cat .smithers/executions/<runId>/logs/stream.ndjson | jq .
-
-# Show only node lifecycle events
-cat .smithers/executions/<runId>/logs/stream.ndjson | jq 'select(.type | startswith("Node"))'
-
-# Show failures with error details
-cat .smithers/executions/<runId>/logs/stream.ndjson | jq 'select(.type == "NodeFailed")'
-
-# Calculate task durations
-cat .smithers/executions/<runId>/logs/stream.ndjson | jq 'select(.type == "NodeFinished") | {nodeId, durationMs: (.timestampMs - .timestampMs)}'
-
-# Count events by type
-cat .smithers/executions/<runId>/logs/stream.ndjson | jq -r '.type' | sort | uniq -c | sort -rn
-```
-
-### Custom log directory
-
-```bash
-# Write logs to a custom directory
-bunx smithers run workflow.tsx --log-dir ./my-logs
-
-# Disable log output entirely
-bunx smithers run workflow.tsx --no-log
-```
-
-## SSE Endpoint (Server)
-
-When using the Smithers server, you can stream events via Server-Sent Events:
-
-```
-GET /v1/runs/:runId/events
-```
-
-This endpoint sends events as they occur, formatted as SSE:
-
-```
-event: NodeStarted
-data: {"type":"NodeStarted","runId":"smth_a1b2c3d4","nodeId":"analyze","iteration":0,"attempt":1,"timestampMs":1730000000100}
-
-event: NodeFinished
-data: {"type":"NodeFinished","runId":"smth_a1b2c3d4","nodeId":"analyze","iteration":0,"attempt":1,"timestampMs":1730000005000}
-```
-
-Connect from a browser or any SSE client:
-
-```ts
-const eventSource = new EventSource("http://localhost:3000/v1/runs/smth_a1b2c3d4/events");
-
-eventSource.addEventListener("NodeStarted", (e) => {
-  const event = JSON.parse(e.data);
-  console.log(`Task started: ${event.nodeId}`);
-});
-
-eventSource.addEventListener("NodeFinished", (e) => {
-  const event = JSON.parse(e.data);
-  console.log(`Task finished: ${event.nodeId}`);
-});
-```
-
-## Event Types Reference
-
-Smithers emits 25+ event types. Here is the full list grouped by category:
-
-### Run lifecycle
-
-| Event | Description |
-|---|---|
-| `RunStarted` | A new run has been created |
-| `RunStatusChanged` | The run status transitioned (e.g., running to waiting-approval) |
-| `RunFinished` | The run completed successfully |
-| `RunFailed` | The run failed |
-| `RunCancelled` | The run was cancelled (abort signal or manual) |
-
-### Node lifecycle
-
-| Event | Description |
-|---|---|
-| `NodePending` | A node has been extracted from the tree and is waiting to be scheduled |
-| `NodeStarted` | A node's execution has begun (includes `nodeId`, `iteration`, `attempt`) |
-| `NodeFinished` | A node completed successfully |
-| `NodeFailed` | A node failed (includes error details) |
-| `NodeCancelled` | A node was cancelled (unmounted between renders or run aborted) |
-| `NodeSkipped` | A node was skipped (`skipIf` or Branch not taken) |
-| `NodeRetrying` | A node failed and will be retried (includes attempt number) |
-| `NodeOutput` | A node produced output (includes the output payload) |
-
-### Approval events
-
-| Event | Description |
-|---|---|
-| `NodeWaitingApproval` | A node with `needsApproval` is waiting for a decision |
-| `ApprovalRequested` | An approval request has been created in the database |
-| `ApprovalGranted` | A node was approved |
-| `ApprovalDenied` | A node was denied |
-
-### Tool events
-
-| Event | Description |
-|---|---|
-| `ToolCallStarted` | An agent tool invocation has started (includes tool name and arguments) |
-| `ToolCallFinished` | An agent tool invocation completed (includes result and duration) |
-
-### Frame events
-
-| Event | Description |
-|---|---|
-| `FrameCommitted` | A new render frame was persisted to the database |
-
-### Revert events
-
-| Event | Description |
-|---|---|
-| `RevertStarted` | A revert operation has begun |
-| `RevertFinished` | A revert operation completed |
-
-## Database Event Storage
-
-All events are persisted to the `_smithers_events` table with sequential ordering:
-
-```bash
-# View the last 20 events for a run
 sqlite3 smithers.db "SELECT seq, type, payload_json FROM _smithers_events WHERE run_id = '<id>' ORDER BY seq DESC LIMIT 20;"
-
-# Count events by type
-sqlite3 smithers.db "SELECT type, COUNT(*) FROM _smithers_events WHERE run_id = '<id>' GROUP BY type ORDER BY COUNT(*) DESC;"
-
-# Find the timestamp of the last event
-sqlite3 smithers.db "SELECT type, json_extract(payload_json, '$.timestampMs') as ts FROM _smithers_events WHERE run_id = '<id>' ORDER BY seq DESC LIMIT 1;"
 ```
 
-The `_smithers_events` table has these columns:
+For the event model itself, see [Events](/runtime/events).
 
-| Column | Type | Description |
-|---|---|---|
-| `run_id` | text | The run ID |
-| `seq` | integer | Auto-incrementing sequence number (unique per run) |
-| `type` | text | The event type name |
-| `payload_json` | text | Full event payload as JSON |
+## Server Instrumentation
 
-## Building a Progress Dashboard
+If you expose workflows through the Smithers HTTP server, request handling is instrumented as well:
 
-Combine the `onProgress` callback with your own state tracking to build a real-time dashboard:
+- every request increments `smithers.http.requests`
+- request latency records into `smithers.http.request_duration_ms`
+- request, workflow-load, and body-read spans flow through the same OTLP layer
 
-```ts
-const nodeStatuses = new Map<string, string>();
+That means the same local collector stack works for both embedded workflow execution and the hosted server process.
 
-await runWorkflow(workflow, {
-  input: { description: "Fix bugs" },
-  onProgress: (event) => {
-    if ("nodeId" in event) {
-      nodeStatuses.set(event.nodeId, event.type);
-    }
+## What This Buys You
 
-    // Clear the terminal and redraw
-    console.clear();
-    for (const [nodeId, status] of nodeStatuses) {
-      const icon = status === "NodeFinished" ? "[done]"
-        : status === "NodeStarted" ? "[....]"
-        : status === "NodeFailed" ? "[FAIL]"
-        : "[    ]";
-      console.log(`${icon} ${nodeId}`);
-    }
-  },
-});
-```
+With OTLP enabled, existing Smithers spans become real traces and existing metric updates become dashboardable time series without changing workflow logic. The only code you usually add is:
+
+- one app-level observability layer
+- optional custom metrics for your own domain
+- optional `SmithersObservability` usage inside services that need extra span structure
 
 ## Next Steps
 

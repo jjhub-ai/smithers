@@ -142,7 +142,8 @@ This is the fundamental Smithers pattern: **implement → review → loop until 
 - **Sequence**: Tasks run top-to-bottom. Default behavior inside `<Workflow>`.
 - **Parallel**: Tasks run concurrently with optional `maxConcurrency`.
 - **Branch**: Conditional execution based on a boolean (`if`/`then`/`else`).
-- **Context (`ctx`)**: Access `input`, completed `output` rows, `runId`, `iteration`. Use `ctx.latest(schema, nodeId)` to read the most recent output of a task (critical for Ralph loop feedback).
+- **Loop**: Iterative loop with `until` condition and `maxIterations` safety cap.
+- **Context (`ctx`)**: Access `input`, completed `output` rows, `runId`, `iteration`. Use `ctx.latest(schema, nodeId)` to read the most recent output of a task (critical for loop feedback).
 - **Resume**: Re-running with same `runId` skips completed tasks automatically.
 - **Schema Registry**: Zod schemas passed to `createSmithers()` auto-create SQLite tables.
 
@@ -150,7 +151,7 @@ This is the fundamental Smithers pattern: **implement → review → loop until 
 
 ```ts
 // Core
-import { createSmithers, Task, Sequence, Parallel, Branch, Ralph, runWorkflow, renderFrame } from "smithers-orchestrator";
+import { createSmithers, Task, Sequence, Parallel, Branch, Loop, runWorkflow, renderFrame } from "smithers-orchestrator";
 
 // Tools (sandboxed filesystem + shell)
 import { read, write, edit, grep, bash, tools } from "smithers-orchestrator/tools";
@@ -213,7 +214,7 @@ scripts/my-workflow/
     Report.schema.ts
     Report.mdx
     TicketPipeline.tsx   # Composed pipeline per ticket
-    ValidationLoop.tsx   # Ralph loop: implement->validate->review->fix
+    ValidationLoop.tsx   # Loop: implement->validate->review->fix
   prompts/
     system-prompt.mdx    # Master system prompt template
     *.md                 # Domain-specific context docs
@@ -444,15 +445,15 @@ export default smithers((ctx) => (
 ));
 ```
 
-### Pattern 2: Implement-Review Ralph Loop (ESSENTIAL)
+### Pattern 2: Implement-Review Loop (ESSENTIAL)
 
-> **This is THE pattern that defines Smithers.** Without Ralph loops, you're just running tasks sequentially — no different from a shell script. The Ralph loop is what makes Smithers self-correcting: implement, review, feed issues back, repeat until approved.
+> **This is THE pattern that defines Smithers.** Without loops, you're just running tasks sequentially — no different from a shell script. The loop is what makes Smithers self-correcting: implement, review, feed issues back, repeat until approved.
 
-**Always use this pattern.** Wrap every implementation in a Ralph loop with validation and review. This catches issues early and forces agents to fix them before moving on.
+**Always use this pattern.** Wrap every implementation in a `<Loop>` with validation and review. This catches issues early and forces agents to fix them before moving on.
 
 ```tsx
 // ValidationLoop.tsx
-import { Ralph, Sequence } from "smithers";
+import { Loop, Sequence } from "smithers";
 
 export function ValidationLoop({ ticket }: { ticket: Ticket }) {
   const ctx = useCtx();
@@ -464,7 +465,7 @@ export function ValidationLoop({ ticket }: { ticket: Ticket }) {
   const allApproved = !!claudeReview?.approved && !!codexReview?.approved;
 
   return (
-    <Ralph
+    <Loop
       id={`${ticketId}:impl-review-loop`}
       until={allApproved}
       maxIterations={3}
@@ -476,7 +477,7 @@ export function ValidationLoop({ ticket }: { ticket: Ticket }) {
         <Review ticket={ticket} />
         <ReviewFix ticket={ticket} />
       </Sequence>
-    </Ralph>
+    </Loop>
   );
 }
 ```
@@ -607,7 +608,7 @@ export type ImplementOutput = z.infer<typeof ImplementOutput>;
 
 ### Pattern 7: Multi-Pass Refinement with Sprint Tracking
 
-For very large projects, wrap the entire workflow in a Ralph loop with a pass tracker. Each pass discovers new work, implements it, and advances a counter.
+For very large projects, wrap the entire workflow in a `<Loop>` with a pass tracker. Each pass discovers new work, implements it, and advances a counter.
 
 ```tsx
 export default smithers((ctx) => {
@@ -617,14 +618,14 @@ export default smithers((ctx) => {
 
   return (
     <Workflow name="large-project">
-      <Ralph until={projectComplete} maxIterations={25} onMaxReached="return-last">
+      <Loop until={projectComplete} maxIterations={25} onMaxReached="return-last">
         <Sequence>
           {/* Sprint work here -- discover, implement, test, review */}
           <Task id="sprint-tracker" output={outputs.output}>
             {{ sprintsCompleted: currentSprint + 1, summary: `Sprint ${currentSprint + 1} complete.` }}
           </Task>
         </Sequence>
-      </Ralph>
+      </Loop>
     </Workflow>
   );
 });
@@ -643,7 +644,7 @@ sqlite3 my-workflow.db "SELECT node_id, status, created_at FROM smithers_attempt
 # Check outputs for a specific step
 sqlite3 my-workflow.db "SELECT * FROM implement WHERE node_id LIKE '%:implement' ORDER BY created_at DESC LIMIT 5"
 
-# Count iterations per task (useful for Ralph loops)
+# Count iterations per task (useful for loops)
 sqlite3 my-workflow.db "SELECT node_id, COUNT(*) as iterations FROM smithers_attempts WHERE status='completed' GROUP BY node_id"
 
 # See review approval status
@@ -730,7 +731,7 @@ Base URL: `https://github.com/evmts/smithers/blob/main/`
 |------|-------------|
 | [src/index.ts](https://github.com/evmts/smithers/blob/main/src/index.ts) | Main entry point. `createSmithers()`, `smithers()`, `runWorkflow()`, `renderFrame()` |
 | [src/types.ts](https://github.com/evmts/smithers/blob/main/src/types.ts) | All core types: `SmithersWorkflow`, `SmithersCtx`, `TaskDescriptor`, `RunOptions`, `RunResult`, `AgentLike`, `GraphSnapshot` |
-| [src/components.ts](https://github.com/evmts/smithers/blob/main/src/components.ts) | JSX components: `Workflow`, `Task`, `Sequence`, `Parallel`, `Branch`, `Ralph` |
+| [src/components.ts](https://github.com/evmts/smithers/blob/main/src/components.ts) | JSX components: `Workflow`, `Task`, `Sequence`, `Parallel`, `Branch`, `Loop` |
 | [src/context.ts](https://github.com/evmts/smithers/blob/main/src/context.ts) | `SmithersContext` React context and `useCtx()` hook |
 | [src/events.ts](https://github.com/evmts/smithers/blob/main/src/events.ts) | Event types and lifecycle event definitions |
 | [src/jsx-runtime.ts](https://github.com/evmts/smithers/blob/main/src/jsx-runtime.ts) | Custom JSX runtime for `jsxImportSource: "smithers-orchestrator"` |
@@ -740,7 +741,7 @@ Base URL: `https://github.com/evmts/smithers/blob/main/`
 | File | Description |
 |------|-------------|
 | [src/engine/index.ts](https://github.com/evmts/smithers/blob/main/src/engine/index.ts) | Core execution engine: render-schedule-execute-persist loop, agent invocation, retry logic |
-| [src/engine/scheduler.ts](https://github.com/evmts/smithers/blob/main/src/engine/scheduler.ts) | Task scheduling: determines which tasks are ready, handles Sequence/Parallel/Ralph ordering |
+| [src/engine/scheduler.ts](https://github.com/evmts/smithers/blob/main/src/engine/scheduler.ts) | Task scheduling: determines which tasks are ready, handles Sequence/Parallel/Loop ordering |
 | [src/engine/approvals.ts](https://github.com/evmts/smithers/blob/main/src/engine/approvals.ts) | Human-in-the-loop approval/denial operations |
 
 ### DOM / Renderer
@@ -830,7 +831,7 @@ Base URL: `https://github.com/evmts/smithers/blob/main/`
 
 | File | Description |
 |------|-------------|
-| [tests/engine.test.tsx](https://github.com/evmts/smithers/blob/main/tests/engine.test.tsx) | Engine tests: Ralph iteration, Sequence/Parallel execution, resume, skipIf, timeouts, approvals |
+| [tests/engine.test.tsx](https://github.com/evmts/smithers/blob/main/tests/engine.test.tsx) | Engine tests: Loop iteration, Sequence/Parallel execution, resume, skipIf, timeouts, approvals |
 | [tests/renderer.test.tsx](https://github.com/evmts/smithers/blob/main/tests/renderer.test.tsx) | Renderer tests: reconciler updates, prop changes |
 | [tests/docs-examples.test.tsx](https://github.com/evmts/smithers/blob/main/tests/docs-examples.test.tsx) | Documentation examples as runnable tests: Branch, Parallel, `createSmithers()`, context API |
 | [tests/cli.test.ts](https://github.com/evmts/smithers/blob/main/tests/cli.test.ts) | CLI command tests |
@@ -849,7 +850,7 @@ Base URL: `https://github.com/evmts/smithers/blob/main/`
 | File | Description |
 |------|-------------|
 | [examples/simple-workflow.tsx](https://github.com/evmts/smithers/blob/main/examples/simple-workflow.tsx) | Minimal two-step workflow: research → write article (uses old Drizzle API) |
-| [examples/code-review-loop.tsx](https://github.com/evmts/smithers/blob/main/examples/code-review-loop.tsx) | Review-fix Ralph loop with sandboxed tools (uses old Drizzle API) |
+| [examples/code-review-loop.tsx](https://github.com/evmts/smithers/blob/main/examples/code-review-loop.tsx) | Review-fix loop with sandboxed tools (uses old Drizzle API) |
 
 ### Config
 
@@ -879,13 +880,13 @@ Base URL: `https://github.com/evmts/smithers/blob/main/`
 - [Sequence](https://smithers.sh/components/sequence): Sequential execution of children.
 - [Parallel](https://smithers.sh/components/parallel): Concurrent execution with optional `maxConcurrency`.
 - [Branch](https://smithers.sh/components/branch): Conditional `if`/`then`/`else` routing.
-- [Ralph](https://smithers.sh/components/ralph): Iterative loop with `until`, `maxIterations`, `onMaxReached`.
+- [Loop](https://smithers.sh/components/ralph): Iterative loop with `until`, `maxIterations`, `onMaxReached`.
 
 ### Guides
 - [Tutorial: Build a Workflow](https://smithers.sh/guides/tutorial-workflow): End-to-end three-step code review workflow.
 - [Production Project Structure](https://smithers.sh/guides/project-structure): Recommended file layout with MDX prompts, component-per-step, and Zod schemas.
 - [Model Selection](https://smithers.sh/guides/model-selection): Which models to use (Codex, Claude Opus, Sonnet), CLI vs API agents, dual-agent setup.
-- [Implement-Review Loop](https://smithers.sh/guides/review-loop): The recommended implement-validate-review-fix Ralph loop pattern.
+- [Implement-Review Loop](https://smithers.sh/guides/review-loop): The recommended implement-validate-review-fix loop pattern.
 - [Dynamic Tickets](https://smithers.sh/guides/dynamic-tickets): Agent-driven ticket discovery for large projects vs hardcoded task lists.
 - [MDX Prompts](https://smithers.sh/guides/mdx-prompts): Using MDX for per-step prompts and system prompt composition from docs.
 - [Structured Output](https://smithers.sh/guides/structured-output): Schema validation flow, auto-retry, outputSchema prop.
@@ -915,7 +916,7 @@ Base URL: `https://github.com/evmts/smithers/blob/main/`
 ### Examples
 - [Hello World](https://smithers.sh/examples/hello-world): Minimal single-task workflow.
 - [Dynamic Plan](https://smithers.sh/examples/dynamic-plan): Branch between simple and complex execution paths.
-- [Ralph Loop](https://smithers.sh/examples/ralph-loop): Write-then-review iterative refinement loop.
+- [Loop](https://smithers.sh/examples/loop): Write-then-review iterative refinement loop.
 - [Multi-Agent Review](https://smithers.sh/examples/multi-agent-review): Parallel reviewers with aggregation.
 - [Approval Gate](https://smithers.sh/examples/approval-gate): Human-in-the-loop publish workflow.
 - [Tools Agent](https://smithers.sh/examples/tools-agent): Codebase search with sandboxed tools.

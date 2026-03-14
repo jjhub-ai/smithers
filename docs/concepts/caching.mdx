@@ -1,163 +1,229 @@
 ---
 title: Caching
-description: How Smithers caches task outputs to avoid redundant agent calls.
+description: Reuse step outputs when the same workflow inputs and dependencies appear again.
 ---
 
-Smithers includes a built-in caching layer that stores task outputs and replays them when the same task is executed with identical inputs. This eliminates redundant agent calls during development iteration, workflow resumption, and re-runs with unchanged parameters.
+Caching in the builder API should be:
 
-## Enabling Caching
+- **per-step**
+- **explicit**
+- **derived from declared inputs and dependencies**
+- **validated against the current output model before reuse**
 
-There are two ways to enable caching:
+It should not depend on hidden renderer state or ad hoc prompt hashing.
 
-**On the `<Workflow>` element:**
+## Step-Level Caching
 
-```tsx
-<Workflow name="my-workflow" cache>
-  <Task id="analyze" output={outputs.analyze} agent={agent}>
-    {prompt}
-  </Task>
-</Workflow>
+Caching belongs on the step that produces reusable work.
+
+**In TOON:**
+
+```toon
+steps:
+  - id: analyze
+    prompt: Analyze {input.description}.
+    output:
+      summary: string
+      severity: "low" | "medium" | "high"
+    cache:
+      by: [input.ticketId, input.description]
+      version: "analysis-v1"
 ```
 
-**Via the `smithers()` options:**
+**In the Effect builder:**
 
 ```ts
-export default smithers(db, buildWorkflow, { cache: true });
+const analyze = $.step("analyze", {
+  output: Analysis,
+  cache: {
+    by: ({ input }) => ({
+      ticketId: input.ticketId,
+      description: input.description,
+    }),
+    version: "analysis-v1",
+  },
+  run: ({ input }) => ...,
+});
 ```
 
-Both approaches enable caching for all tasks in the workflow. There is no per-task cache toggle -- it is workflow-wide.
+This says:
 
-## How It Works
+- cache `analyze`
+- key it from the declared `by` function
+- invalidate old entries if the algorithm or provider changes by bumping `version`
 
-When caching is enabled, the engine checks for a cached result **before** executing each task:
+That is a better fit for Effect workflows than a global workflow-wide cache switch.
 
-```
-Task ready to execute
-  |
-  v
-Compute cache key (SHA-256 of all input components)
-  |
-  v
-Look up key in _smithers_cache table
-  |
-  +---> Cache hit: validate payload against current output schema
-  |       |
-  |       +---> Valid:   use cached payload, skip agent call
-  |       +---> Invalid: cache miss (schema changed), execute normally
-  |
-  +---> Cache miss: execute task normally
-          |
-          v
-        On success: write result to _smithers_cache
-```
+## Default Mental Model
 
-A cache hit marks the attempt as `cached: true` in `_smithers_attempts`, so you can distinguish cached results from fresh executions in your debugging.
+The right mental model is:
 
-## Cache Key Components
+> A step is cacheable when it behaves like a pure function of its declared inputs.
 
-The cache key is a SHA-256 hash of a JSON object containing all of these components:
+If a step depends on:
 
-| Component | Source | Description |
-| --- | --- | --- |
-| `workflowName` | `<Workflow name="...">` | Scopes caches to a specific workflow. |
-| `nodeId` | `<Task id="...">` | Scopes caches to a specific task. |
-| `outputTableName` | Task's output table name | Ensures different output schemas are not confused. |
-| `schemaSig` | SHA-256 of table column definitions | Invalidates cache when table structure changes. |
-| `agentSig` | `agent.id` or `"agent"` | Invalidates cache when the agent/model changes. |
-| `toolsSig` | Sorted, comma-joined tool names | Invalidates cache when available tools change. |
-| `prompt` | Task's prompt text | Invalidates cache when the prompt changes. |
-| `payload` | Task's static payload | Invalidates cache when static data changes. |
+- `input`
+- `needs`
+- stable service behavior
 
-If **any** component changes, the cache key changes and a fresh execution occurs.
+then Smithers can safely reuse a previous successful output for the same key.
 
-## Schema Signatures
+If a step has hidden side effects or reads mutable external state, it should not be cached by default.
 
-The `schemaSig` deserves special attention. It is computed by the `schemaSignature()` function, which:
+## What Goes Into the Cache Key
 
-1. Gets all columns from the Drizzle table.
-2. Sorts column names alphabetically.
-3. For each column, captures: `name`, `columnType`, `notNull` flag, and `primary` flag.
-4. Joins everything with `|` separators.
-5. Computes a SHA-256 hash of the result.
+The default cache key should be derived from durable workflow structure plus the explicit `cache.by` payload.
 
-```
-tableName|colA:SQLiteText:1:0|colB:SQLiteInteger:0:0|...
+Good key components:
+
+- workflow name
+- step id
+- output model identity
+- `cache.version`
+- serialized value returned by `cache.by`
+
+For example:
+
+```ts
+cache: {
+  by: ({ input, analysis }) => ({
+    repo: input.repo,
+    summary: analysis.summary,
+  }),
+  version: "report-v2",
+}
 ```
 
-This means adding a column, removing a column, changing a column type, or changing nullability all produce a different signature, invalidating the cache. Renaming a column also invalidates it.
+This is better than attempting to hash arbitrary service graphs or opaque runtime objects.
 
-## Cache Invalidation
+## Why Explicit Keys Matter
 
-The cache is automatically invalidated when any of these change:
+Explicit keys make cache behavior reviewable.
 
-| Change | Why |
-| --- | --- |
-| Prompt text changes | Different input = different expected output. |
-| Output table structure changes | Schema signature changes. |
-| Agent model changes | Different model may produce different results. |
-| Tool allowlist changes | Available tools affect agent behavior. |
-| Static payload changes | Different data = different expected output. |
-| Workflow name changes | Cache is scoped to workflow name. |
-| Task node ID changes | Cache is scoped to node ID. |
+You can answer:
 
-The cache is **not** time-based. A cached result is valid indefinitely until one of the above components changes. To manually clear the cache, delete rows from `_smithers_cache`:
+- what exact data invalidates this step?
+- did the provider/model change?
+- does this step depend on hidden filesystem or network state?
+- should this cache survive a workflow refactor?
 
-```bash
-sqlite3 workflow.db "DELETE FROM _smithers_cache"
+Magic cache keys tend to break trust because users cannot predict when a step will reuse old work.
+
+## Cache Validation
+
+When Smithers finds a cache hit, it should still validate the cached payload against the current output model before reusing it.
+
+That protects against:
+
+- model shape changes
+- decoding changes
+- old invalid cache entries
+
+If validation fails, Smithers should treat the entry as a miss and compute a fresh value.
+
+## Example
+
+```ts
+const summarize = $.step("summarize", {
+  output: Summary,
+  needs: { analysis },
+  cache: {
+    by: ({ analysis }) => ({
+      summary: analysis.summary,
+      severity: analysis.severity,
+    }),
+    version: "summary-v1",
+  },
+  run: ({ analysis }) =>
+    Effect.succeed(
+      new Summary({
+        title: "Current Status",
+        body: analysis.summary,
+      }),
+    ),
+});
 ```
 
-Or clear cache for a specific workflow:
+If the same `analysis` input appears again with the same cache version, Smithers can reuse the persisted `Summary`.
 
-```bash
-sqlite3 workflow.db "DELETE FROM _smithers_cache WHERE workflow_name = 'my-workflow'"
+## What Should Not Be Cached
+
+Caching is a bad fit for steps that are primarily about side effects.
+
+Examples:
+
+- deploy to production
+- send email
+- mutate a Git branch
+- call an external system whose current state matters
+- open an approval request
+
+Those should either disable caching entirely or use explicit idempotency semantics separate from normal output caching.
+
+## Caching and Effect Services
+
+Effect services are not part of the cache key automatically.
+
+That is intentional. Service instances are often not serializable or stable.
+
+If service behavior affects the output, encode that in the cache version:
+
+```ts
+cache: {
+  by: ({ input }) => ({ prompt: input.prompt }),
+  version: "anthropic-sonnet-4-2025-02",
+}
 ```
 
-## Database Storage
+This keeps invalidation under user control.
 
-Cached results are stored in the `_smithers_cache` table:
+## Runtime Behavior
 
-| Column | Type | Description |
-| --- | --- | --- |
-| `cache_key` | TEXT (PK) | SHA-256 hash of all cache key components. |
-| `created_at_ms` | INTEGER | When the cache entry was created. |
-| `workflow_name` | TEXT | The workflow that produced this entry. |
-| `node_id` | TEXT | The task that produced this entry. |
-| `output_table` | TEXT | The output table name. |
-| `schema_sig` | TEXT | SHA-256 of the table column structure at cache time. |
-| `agent_sig` | TEXT | Agent identifier at cache time. |
-| `tools_sig` | TEXT | Tool allowlist signature at cache time. |
-| `jj_pointer` | TEXT | JJ version control pointer (if available). |
-| `payload_json` | TEXT | The cached output payload as JSON. |
+With caching enabled on a step, Smithers should:
 
-## Cache Validation on Read
+1. compute the cache key before executing the step
+2. look for a previously successful cached output
+3. validate the cached payload against the output model
+4. if valid, mark the step as completed from cache
+5. otherwise run the step normally and persist the fresh output
 
-When a cache hit is found, Smithers does not blindly use the stored payload. It validates the payload against the current output table schema. If validation fails (e.g., a required column was added since the cache was written), the cache entry is treated as a miss and the task executes normally.
+From the rest of the workflow's perspective, a cache hit behaves the same as a completed upstream step.
 
-This means cache entries are self-healing -- you do not need to manually purge stale entries after schema changes.
+## Resume vs Cache
 
-## When Not to Cache
+Resuming and caching are related but distinct.
 
-Caching is best for:
+### Resume
 
-- **Development iteration**: Re-running a workflow while changing later tasks should not re-execute expensive early tasks.
-- **Idempotent agent tasks**: Tasks where the same prompt reliably produces equivalent outputs.
-- **Resumption**: Resuming a run after a crash should not re-execute already-completed agent calls.
+Resume reuses outputs from the same execution id.
 
-Caching may not be appropriate for:
+### Cache
 
-- **Tasks that depend on external state**: If the agent reads from APIs, files, or databases that change between runs, cached results may be stale.
-- **Non-deterministic tasks**: If you want fresh, varied outputs each time (e.g., creative writing with high temperature), caching defeats the purpose.
-- **Tasks with side effects via tools**: If agent tools make external changes, replaying a cached result skips those side effects.
+Cache reuses outputs across different executions when the declared cache key matches.
 
-## Inspecting the Cache
+Resume is about durability. Cache is about recomputation.
 
-```bash
-# View all cache entries
-sqlite3 workflow.db "SELECT cache_key, workflow_name, node_id, created_at_ms FROM _smithers_cache"
+## Storage
 
-# Check if a specific task has a cached result
-sqlite3 workflow.db "SELECT cache_key FROM _smithers_cache WHERE workflow_name = 'my-workflow' AND node_id = 'analyze'"
+Cached outputs should live in Smithers-managed metadata, keyed by:
 
-# View cached payload
-sqlite3 workflow.db "SELECT payload_json FROM _smithers_cache WHERE node_id = 'analyze'"
-```
+- workflow id
+- step id
+- cache key
+- cache version
+
+This metadata belongs to the framework, not to user domain models.
+
+## Suggested Rule
+
+Only cache a step if you would be comfortable describing it as:
+
+> "Given these explicit inputs, I want the same persisted output back."
+
+If that sentence feels false, the step probably should not use caching.
+
+## Next Steps
+
+- [Renderer Internals](/concepts/renderer-internals) -- This page will be replaced with graph/planner internals in the new API.
+- [Execution Model](/concepts/execution-model) -- See where cache lookup happens in the durable step lifecycle.
+- [Runtime Events](/runtime/events) -- This page will need cache-hit and cache-miss events in the new design.

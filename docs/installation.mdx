@@ -1,128 +1,29 @@
 ---
 title: Installation
-description: Install Smithers and configure your project.
+description: Choose the installation guide for the Smithers API you want to use.
 ---
 
-## Prerequisites
+Smithers has separate installation guides for each authoring API.
 
-- **Bun** >= 1.3 -- Smithers uses Bun's native SQLite driver and runtime APIs. Install from [bun.sh](https://bun.sh).
-- **TypeScript** >= 5 -- Required as a peer dependency.
+## Pick an Installation Guide
 
-## Install
+| API | Use this when | Installation guide |
+| --- | --- | --- |
+| **TOON** | You want declarative `.toon` files and the least setup | [TOON Installation](/toon/installation) |
+| **JSX** | You want TSX workflows, MDX prompts, and render-time branching | [JSX Installation](/jsx/installation) |
+| **Effect Builder** | You want `Layer`, `Context.Tag`, and low-level graph construction | [Effect Installation](/effect/installation) |
 
-```bash
-bun add smithers-orchestrator ai @ai-sdk/anthropic zod
-```
+## Shared Requirements
 
-This installs:
+All three APIs run on the same underlying runtime, so these show up everywhere:
 
-| Package | Purpose |
-|---|---|
-| `smithers-orchestrator` | Core framework: components, engine, CLI, JSX runtime |
-| `ai` | Vercel AI SDK -- provides the `ToolLoopAgent` class and model abstractions |
-| `@ai-sdk/anthropic` | Anthropic provider for Claude models (swap for any Vercel AI SDK provider) |
-| `zod` | Schema validation for task outputs (v4) |
-
-The following dependencies are bundled with `smithers-orchestrator` and do not need to be installed separately:
-
-- `react` and `react-reconciler` -- used internally by the JSX renderer
-- `drizzle-orm` -- used internally for SQLite database access
-- `drizzle-zod` -- used internally for Zod-to-Drizzle schema conversion
-
-## Optional: JJ (Jujutsu) for Revert Support
-
-Smithers can record VCS snapshots at each task completion and revert filesystem changes when a task is re-run. This requires [Jujutsu](https://github.com/martinvonz/jj), a Git-compatible VCS:
-
-```bash
-brew install jj
-```
-
-If JJ is not installed, revert functionality is unavailable and JJ pointers are recorded as `null` in the database. Everything else works normally.
-
-## Project Setup
-
-Create a new project from scratch:
-
-```bash
-mkdir my-workflow && cd my-workflow
-bun init -y
-bun add smithers-orchestrator ai @ai-sdk/anthropic zod
-```
-
-Set your API key:
-
-```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
-```
-
-## TypeScript Configuration
-
-Smithers provides its own JSX runtime. Configure your `tsconfig.json` to use it:
-
-```json
-{
-  "compilerOptions": {
-    "target": "ESNext",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "jsx": "react-jsx",
-    "jsxImportSource": "smithers-orchestrator",
-    "strict": true,
-    "noEmit": true,
-    "skipLibCheck": true
-  }
-}
-```
-
-The key setting is `"jsxImportSource": "smithers-orchestrator"`, which tells TypeScript to resolve JSX element creation from `smithers-orchestrator/jsx-runtime` instead of the default React runtime.
-
-Alternatively, you can use `"jsxImportSource": "react"` if you prefer -- Smithers components work with the standard React JSX runtime as well. You can also set the import source per-file with a pragma comment:
-
-```tsx
-/** @jsxImportSource smithers-orchestrator */
-```
-
-## Verify Installation
-
-Create a minimal `workflow.tsx` to confirm everything is wired up:
-
-```tsx
-import { createSmithers, Task, runWorkflow } from "smithers-orchestrator";
-import { ToolLoopAgent as Agent } from "ai";
-import { anthropic } from "@ai-sdk/anthropic";
-import { z } from "zod";
-
-const { Workflow, smithers } = createSmithers({
-  greeting: z.object({ message: z.string() }),
-});
-
-const greeter = new Agent({
-  model: anthropic("claude-sonnet-4-20250514"),
-  instructions: "You are friendly. Return JSON with a 'message' field.",
-});
-
-const workflow = smithers((ctx) => (
-  <Workflow name="hello">
-    <Task id="greet" output="greeting" agent={greeter}>
-      Say hello to the user
-    </Task>
-  </Workflow>
-));
-
-const result = await runWorkflow(workflow, {
-  input: {},
-});
-
-console.log(result);
-```
-
-```bash
-bun run workflow.tsx
-```
-
-If you see `{ runId: "...", status: "finished", output: [...] }`, your installation is working.
+- Bun
+- local SQLite persistence
+- optional model or provider credentials
+- the shared runtime docs for observability, CLI usage, and integrations
 
 ## Next Steps
 
-- [Quickstart](/quickstart) -- Build a multi-step workflow with sequential tasks.
-- [Introduction](/introduction) -- Overview of Smithers concepts and architecture.
+- [TOON Installation](/toon/installation) — Start with the declarative path.
+- [JSX Installation](/jsx/installation) — Set up TSX and optional MDX prompts.
+- [Effect Installation](/effect/installation) — Install the low-level builder stack.

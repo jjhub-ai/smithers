@@ -77,7 +77,7 @@ export default smithers((ctx) => (
 1. **Use `createSmithers`** for schema-driven workflows with auto-persistence
 2. **Use `outputs.xxx`** as the `output` prop on `<Task>` (the Zod schema, not a string key)
 3. **Use `ctx.outputMaybe()`** for cross-task data flow (returns `undefined` if not yet available)
-4. **Set `maxIterations`** on `<Ralph>` to prevent infinite loops
+4. **Set `maxIterations`** on `<Loop>` to prevent infinite loops
 5. **Include `continueOnFail`** on non-critical tasks
 
 ## What This Demonstrates

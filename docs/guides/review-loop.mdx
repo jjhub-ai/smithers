@@ -1,9 +1,9 @@
 ---
 title: Implement-Review Loop
-description: The recommended pattern for production workflows -- a Ralph loop that implements, validates, reviews, and fixes code until approved.
+description: The recommended pattern for production workflows -- a loop that implements, validates, reviews, and fixes code until approved.
 ---
 
-The implement-review loop is the most important pattern in Smithers. It wraps implementation in a Ralph loop with validation and multi-agent review, catching issues early and forcing agents to fix them before moving on.
+The implement-review loop is the most important pattern in Smithers. It wraps implementation in a `<Loop>` with validation and multi-agent review, catching issues early and forcing agents to fix them before moving on.
 
 This pattern is **strongly recommended** for any workflow that produces code or other artifacts that need quality assurance.
 
@@ -21,7 +21,7 @@ The loop repeats until both reviewers approve or `maxIterations` is hit.
 ## Minimal Example
 
 ```tsx
-import { createSmithers, Task, Sequence, Parallel, Ralph } from "smithers-orchestrator";
+import { createSmithers, Task, Sequence, Parallel, Loop } from "smithers-orchestrator";
 import { z } from "zod";
 
 const { Workflow, smithers, tables } = createSmithers({
@@ -57,7 +57,7 @@ This is the core pattern. Each step is its own component with an MDX prompt and 
 
 ```tsx
 // components/ValidationLoop.tsx
-import { Ralph, Sequence } from "smithers-orchestrator";
+import { Loop, Sequence } from "smithers-orchestrator";
 import { Implement } from "./Implement";
 import { Validate } from "./Validate";
 import { Review } from "./Review";
@@ -78,7 +78,7 @@ export function ValidationLoop({ ticket }: { ticket: Ticket }) {
   const allApproved = !!claudeReview?.approved && !!codexReview?.approved;
 
   return (
-    <Ralph
+    <Loop
       id={`${ticketId}:impl-review-loop`}
       until={allApproved}
       maxIterations={MAX_REVIEW_ROUNDS}
@@ -90,7 +90,7 @@ export function ValidationLoop({ ticket }: { ticket: Ticket }) {
         <Review ticket={ticket} />
         <ReviewFix ticket={ticket} />
       </Sequence>
-    </Ralph>
+    </Loop>
   );
 }
 ```
@@ -235,7 +235,7 @@ export function ReviewFix({ ticket }: { ticket: Ticket }) {
 
 ## Next Steps
 
-- [Ralph Component](/components/ralph) -- All Ralph props and iteration semantics.
+- [Loop Component](/components/ralph) -- All Loop props and iteration semantics.
 - [Dynamic Tickets](/guides/dynamic-tickets) -- Generate tickets dynamically instead of hardcoding.
 - [Model Selection](/guides/model-selection) -- Which models to use for each step.
 - [Patterns](/guides/patterns) -- Project structure and naming conventions.

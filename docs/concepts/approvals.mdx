@@ -1,204 +1,259 @@
 ---
 title: Approvals
-description: Gate task execution on human review with approval workflows.
+description: Model human review as an explicit durable gate in the workflow graph.
 ---
 
-Smithers supports human-in-the-loop workflows through an approval system. Any task can be gated on explicit human approval before it executes. This is useful for high-stakes operations like deployments, financial transactions, or content publication where you want a human checkpoint.
+Approvals should be explicit workflow nodes, not a boolean flag on an otherwise normal step.
 
-## Basic Usage
+From first principles, an approval is:
 
-Set the `needsApproval` prop on a `<Task>` to gate it:
+- a durable request for a human decision
+- a suspended execution state
+- an audited decision record
+- a dependency that downstream work can wait on
 
-```tsx
-import { smithers, Workflow, Task, Sequence } from "smithers-orchestrator";
+That makes approvals a workflow primitive in their own right.
 
-export default smithers(db, (ctx) => (
-  <Workflow name="deploy-pipeline">
-    <Sequence>
-      <Task id="build" output="build" agent={buildAgent}>
-        {`Build the project: ${ctx.input.repo}`}
-      </Task>
+## Approval as a Node
 
-      <Task id="deploy" output="deploy" needsApproval>
-        {{ url: "https://prod.example.com", version: "1.2.0" }}
-      </Task>
-    </Sequence>
-  </Workflow>
-));
-```
-
-In this example, the "build" task runs automatically. Once it finishes, the "deploy" task enters the `waiting-approval` state instead of executing immediately.
-
-## Approval Flow
-
-The lifecycle of an approval-gated task:
-
-```
-Task extracted from tree
-  |
-  v
-needsApproval = true?
-  |
-  +---> Check _smithers_approvals table
-  |
-  +---> No approval record exists
-  |       |
-  |       +---> Insert approval request (status: "requested")
-  |       +---> Emit ApprovalRequested event
-  |       +---> Emit NodeWaitingApproval event
-  |       +---> Node state: waiting-approval
-  |
-  +---> Approval status = "approved"
-  |       |
-  |       +---> Proceed to normal execution
-  |
-  +---> Approval status = "denied"
-          |
-          +---> continueOnFail = true?  -> Node state: skipped
-          +---> continueOnFail = false? -> Node state: failed
-```
-
-When no runnable tasks remain and at least one task is in `waiting-approval`, the entire run transitions to `waiting-approval` status and returns. The run can be resumed after an approval decision is made.
-
-## Events
-
-The approval system emits these events, all available through the `onProgress` callback:
-
-| Event | When |
-| --- | --- |
-| `ApprovalRequested` | A task enters `waiting-approval` for the first time. Contains `runId`, `nodeId`, `iteration`, and `timestampMs`. |
-| `NodeWaitingApproval` | Emitted alongside `ApprovalRequested` to update the node state. |
-| `ApprovalGranted` | An approval decision of "approved" is recorded. |
-| `ApprovalDenied` | An approval decision of "denied" is recorded. |
-
-Listen for approval events to trigger notifications:
+Instead of:
 
 ```ts
-import { runWorkflow } from "smithers-orchestrator";
+// Old shape
+needsApproval: true
+```
 
-const result = await runWorkflow(workflow, {
-  input: { repo: "my-app" },
-  onProgress: (event) => {
-    if (event.type === "ApprovalRequested") {
-      // Send Slack notification, email, etc.
-      notify(`Task ${event.nodeId} needs approval for run ${event.runId}`);
-    }
-  },
+approvals are explicit nodes in both TOON and the Effect builder.
+
+**In TOON:**
+
+```toon
+steps:
+  - id: build
+    prompt: Build the deployment package.
+    output:
+      version: string
+      commitSha: string
+
+  - kind: approval
+    id: approve-deploy
+    needs: [build]
+    request:
+      title: "Deploy {build.version}?"
+      summary: "Commit {build.commitSha} passed all checks."
+    onDeny: fail
+
+  - id: deploy
+    needs: [build, approve-deploy]
+    prompt: Deploy version {build.version}.
+    output:
+      url: string
+```
+
+**In the Effect builder:**
+
+```ts
+const build = $.step("build", {
+  output: BuildResult,
+  run: ...,
 });
 
-if (result.status === "waiting-approval") {
-  console.log("Run paused -- waiting for human approval");
-}
+const approveDeploy = $.approval("approve-deploy", {
+  needs: { build },
+  request: ({ build }) => ({
+    title: `Deploy ${build.version}?`,
+    summary: `Commit ${build.commitSha} passed all checks.`,
+  }),
+  onDeny: "fail",
+});
+
+const deploy = $.step("deploy", {
+  output: Deployment,
+  needs: { build, approval: approveDeploy },
+  run: ({ build }) => ...,
+});
+
+return $.sequence(build, approveDeploy, deploy);
 ```
 
-## CLI Commands
+This is better for three reasons:
 
-Approve or deny tasks using the Smithers CLI:
+1. the approval is visible in the graph
+2. the execution can suspend on a first-class durable node
+3. the decision can be reused or branched on explicitly
+
+## What an Approval Produces
+
+An approval gate should resolve to a typed decision object:
+
+```ts
+type ApprovalDecision = {
+  readonly approved: boolean;
+  readonly note: string | null;
+  readonly decidedBy: string | null;
+  readonly decidedAt: string | null;
+};
+```
+
+That lets downstream nodes depend on the decision as data, not only as scheduler side effects.
+
+## Lifecycle
+
+An approval node should move through a durable lifecycle:
+
+```txt
+pending
+  -> requested
+  -> waiting-approval
+  -> approved | denied
+  -> completed | failed | routed
+```
+
+More concretely:
+
+1. Smithers reaches the approval node.
+2. It persists an approval request record.
+3. The execution suspends in a durable waiting state.
+4. A human approves or denies the request.
+5. The node resolves according to its policy.
+6. Downstream nodes become eligible to run.
+
+If the process restarts while waiting, the approval request still exists and the execution can resume later.
+
+## Request Shape
+
+The `request` function should be pure and derived from already-computed workflow data:
+
+```ts
+request: ({ build }) => ({
+  title: `Deploy ${build.version}?`,
+  summary: build.plan,
+  metadata: {
+    risk: build.risk,
+    commitSha: build.commitSha,
+  },
+})
+```
+
+That request is what Smithers persists, displays in UIs, and exposes through CLI or API tooling.
+
+## Denial Policies
+
+An approval gate should make denial behavior explicit.
+
+### `onDeny: "fail"`
+
+The workflow fails when the gate is denied.
+
+This is appropriate for destructive or compliance-sensitive actions.
+
+### `onDeny: "continue"`
+
+The gate resolves to a denial decision and the workflow continues. Downstream logic can branch on that value.
+
+### `onDeny: "skip"`
+
+The protected branch is skipped, but the rest of the workflow continues.
+
+The important part is that denial handling is declared in the workflow, not buried inside scheduler heuristics.
+
+## Branching on Approval
+
+Because approvals are values, not only control flags, you can route explicitly:
+
+```ts
+const approval = $.approval("approve-release", {
+  needs: { report },
+  request: ({ report }) => ({
+    title: `Publish ${report.title}?`,
+    summary: report.body,
+  }),
+  onDeny: "continue",
+});
+
+return $.match(approval, {
+  when: (decision) => decision.approved,
+  then: () => $.step("publish", { output: Published, run: ... }),
+  else: () => $.step("record-rejection", { output: Rejection, run: ... }),
+});
+```
+
+This is a better fit for builder-based workflows than implicit hidden states.
+
+## Storage Model
+
+Approval state belongs to Smithers-managed workflow metadata, not to domain models.
+
+Smithers should persist at least:
+
+- approval node id
+- execution id
+- current status
+- request payload
+- decision payload
+- timestamps
+- actor identity
+
+That gives you:
+
+- resumability
+- auditability
+- UI/API query support
+- explicit graph semantics
+
+## Approvals and Effect Primitives
+
+Approvals map naturally onto durable Effect concepts:
+
+- a request record is persisted metadata
+- the waiting state is a durable suspension point
+- the decision behaves like a durable deferred value
+
+Smithers should compile approval nodes onto durable primitives rather than inventing bespoke in-memory waiting logic.
+
+## Notifications and Automation
+
+Approval creation should emit a durable event so other systems can react:
+
+- send Slack messages
+- open a review UI
+- create a Linear issue
+- notify on-call engineers
+
+The important boundary is:
+
+- Smithers records the approval request durably
+- external systems subscribe and notify
+- the human decision flows back into the same durable gate
+
+## CLI and API Shape
+
+The control plane should target approval nodes directly.
+
+For example:
 
 ```bash
-# Approve a task
-smithers approve workflow.tsx --run-id <run-id> --node-id deploy
-
-# Deny a task
-smithers deny workflow.tsx --run-id <run-id> --node-id deploy
-
-# Approve with a note and author
-smithers approve workflow.tsx --run-id <run-id> --node-id deploy \
-  --note "Looks good, ship it" --decided-by "alice"
-
-# Deny with a reason
-smithers deny workflow.tsx --run-id <run-id> --node-id deploy \
-  --note "Staging tests failed" --decided-by "bob"
+smithers approve workflow.ts --execution-id <id> --gate approve-deploy --note "Ship it"
+smithers deny workflow.ts --execution-id <id> --gate approve-deploy --note "Blocked by QA"
 ```
 
-After approving, resume the run:
+The exact transport can vary, but the key should be `(executionId, gateId)`, not a hidden internal row id.
 
-```bash
-smithers run workflow.tsx --run-id <run-id> --resume
-```
+## Why Explicit Gates Matter
 
-## What Happens on Approve
+An explicit approval node is easier to reason about than a property on a task because it makes the workflow honest.
 
-When a task is approved:
+You can see:
 
-1. The `_smithers_approvals` row is updated with `status: "approved"`, `decidedAtMs`, `note`, and `decidedBy`.
-2. An `ApprovalGranted` event is persisted.
-3. The node state is reset to `pending`.
-4. On the next `runWorkflow` call with `--resume`, the task proceeds through normal execution.
+- where human intervention is required
+- what exactly is being approved
+- how denial changes the graph
+- what downstream work depends on the decision
 
-## What Happens on Deny
+That is the right abstraction for a durable workflow system.
 
-When a task is denied:
+## Next Steps
 
-1. The `_smithers_approvals` row is updated with `status: "denied"`, `decidedAtMs`, `note`, and `decidedBy`.
-2. An `ApprovalDenied` event is persisted.
-3. The node state is set to `failed`.
-4. On the next `runWorkflow` call with `--resume`:
-   - If `continueOnFail` is set on the task, it is treated as `skipped` and the workflow continues.
-   - If `continueOnFail` is not set (the default), the failed task blocks the workflow and the run finishes with status `failed`.
-
-## Database Storage
-
-Approval state is stored in the `_smithers_approvals` table:
-
-| Column | Type | Description |
-| --- | --- | --- |
-| `run_id` | TEXT | The workflow run ID. |
-| `node_id` | TEXT | The task node ID. |
-| `iteration` | INTEGER | The Ralph loop iteration (0 for non-loop tasks). |
-| `status` | TEXT | One of: `requested`, `approved`, `denied`. |
-| `requested_at_ms` | INTEGER | Timestamp when the approval was first requested. |
-| `decided_at_ms` | INTEGER | Timestamp when the approval or denial was recorded. |
-| `note` | TEXT | Optional free-text note from the reviewer. |
-| `decided_by` | TEXT | Optional identifier of who made the decision. |
-
-The primary key is `(run_id, node_id, iteration)`, so each task in each iteration can have exactly one approval record.
-
-## Approval with Ralph Loops
-
-When a task inside a `<Ralph>` loop has `needsApproval`, the approval is scoped to the current iteration. Each iteration requires its own approval:
-
-```tsx
-<Ralph until={converged} maxIterations={5}>
-  <Sequence>
-    <Task id="generate" output="draft" agent={writerAgent}>
-      {prompt}
-    </Task>
-    <Task id="publish" output="published" needsApproval>
-      {{ content: latestDraft?.text }}
-    </Task>
-  </Sequence>
-</Ralph>
-```
-
-Iteration 0 of "publish" requires approval. If approved, the Ralph loop may advance to iteration 1, where "publish" again requires a separate approval.
-
-## Patterns
-
-### Approval Gate Before Destructive Action
-
-```tsx
-<Sequence>
-  <Task id="plan" output="plan" agent={planAgent}>
-    {`Plan changes for: ${ctx.input.target}`}
-  </Task>
-  <Task id="execute" output="result" agent={execAgent} needsApproval>
-    {`Execute the plan: ${ctx.output("plan", { nodeId: "plan" }).steps}`}
-  </Task>
-</Sequence>
-```
-
-### Optional Approval with Continue-on-Fail
-
-```tsx
-<Task
-  id="deploy"
-  output="deploy"
-  needsApproval
-  continueOnFail
->
-  {{ url: "https://staging.example.com" }}
-</Task>
-```
-
-If denied, the workflow continues with "deploy" marked as `skipped` rather than failing the entire run.
+- [Caching](/concepts/caching) -- See how reusable outputs and approval-gated work interact.
+- [Execution Model](/concepts/execution-model) -- Understand how suspended approval nodes fit into durable execution.
+- [Runtime Events](/runtime/events) -- This page will need to describe approval events in the new model.

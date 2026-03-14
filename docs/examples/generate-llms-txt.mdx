@@ -14,56 +14,15 @@ description: "Example from scripts/generate-llms-txt.ts — A utility script tha
 ```ts
 // scripts/generate-llms-txt.ts
 #!/usr/bin/env bun
-import { readFileSync, writeFileSync } from "fs";
+import { writeFileSync } from "node:fs";
+import { generateLlmsFull } from "./docs-utils";
 
-const pages = [
-  { path: "docs/introduction.mdx", url: "https://smithers.sh/introduction" },
-  { path: "docs/installation.mdx", url: "https://smithers.sh/installation" },
-  { path: "docs/quickstart.mdx", url: "https://smithers.sh/quickstart" },
-  // ... all 40 documentation pages
-  { path: "docs/reference/types.mdx", url: "https://smithers.sh/reference/types" },
-];
-
-function stripFrontmatter(content: string) {
-  const match = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-  if (match) {
-    const frontmatter = match[1];
-    const body = match[2];
-    const titleMatch = frontmatter.match(/title:\s*["']?(.+?)["']?\s*$/m);
-    const descMatch = frontmatter.match(/description:\s*["']?(.+?)["']?\s*$/m);
-    return {
-      title: titleMatch?.[1]?.trim().replace(/^["']|["']$/g, "") ?? "",
-      description: descMatch?.[1]?.trim().replace(/^["']|["']$/g, "") ?? "",
-      body: body.trim(),
-    };
-  }
-  return { title: "", description: "", body: content.trim() };
-}
-
-function cleanMdx(body: string) {
-  return body
-    .replace(/<Warning>\s*/g, "> **Warning:** ")
-    .replace(/<\/Warning>/g, "")
-    .replace(/<Tip>\s*/g, "> **Tip:** ")
-    .replace(/<\/Tip>/g, "")
-    .replace(/<Note>\s*/g, "> **Note:** ")
-    .replace(/<\/Note>/g, "");
-}
-
-let output = `# Smithers\n\n> Deterministic, resumable AI workflow orchestration using JSX.\n\n`;
-
-for (const page of pages) {
-  const content = readFileSync(page.path, "utf-8");
-  const { title, description, body } = stripFrontmatter(content);
-  const cleaned = cleanMdx(body);
-
-  output += `---\n\n## ${title}\n\n`;
-  if (description) output += `> ${description}\n`;
-  output += `> Source: ${page.url}\n\n${cleaned}\n\n`;
-}
+const output = generateLlmsFull();
 
 writeFileSync("docs/llms-full.txt", output);
-console.log(`Generated docs/llms-full.txt (${output.length} chars)`);
+console.log(
+  `Generated docs/llms-full.txt (${output.length} chars, ~${Math.round(output.length / 4)} tokens)`,
+);
 ```
 
 ## Running
@@ -75,5 +34,12 @@ bun scripts/generate-llms-txt.ts
 ## What This Demonstrates
 
 - **llms.txt convention** — Generates a single text file containing all documentation, following the `llms.txt` standard for giving AI models project context.
+- **Shared docs manifest** — The generator, route preview server, and browser smoke tests all read the same manifest helper, so route changes do not drift across tooling.
 - **MDX to Markdown conversion** — Strips YAML frontmatter and converts MDX components (`<Warning>`, `<Tip>`, `<Note>`) to markdown blockquotes.
+- **Navigation-driven sync** — Reads `docs/docs.json` so the exported context tracks the current API tabs and shared sections.
 - **Source URL attribution** — Each section includes a source URL back to the live docs page.
+
+## Related Validation
+
+- `tests/docs-artifacts.test.ts` keeps the committed `docs/llms-full.txt` output in sync with the current docs manifest.
+- `tests/docs-e2e.playwright.ts` exercises docs routes and legacy redirects against a local preview server built from the same source data.

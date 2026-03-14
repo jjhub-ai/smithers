@@ -5,6 +5,14 @@ description: Subscribe to fine-grained lifecycle events emitted during workflow 
 
 Smithers emits typed `SmithersEvent` objects throughout a run's lifecycle. You can subscribe via the `onProgress` callback in `runWorkflow`, or read persisted events from the NDJSON log files after the fact.
 
+Those events are also part of the observability pipeline:
+
+- they remain the durable replay and audit log for each run
+- they correlate with structured logs through shared fields like `runId`, `nodeId`, and `attempt`
+- they drive Smithers' built-in lifecycle counters and gauges
+
+For OTLP export, Prometheus/Grafana setup, and the public observability service tag, see [Observability](/guides/monitoring-logs).
+
 ## Subscribing to Events
 
 ### onProgress Callback
@@ -54,6 +62,18 @@ cat .smithers/executions/abc123/logs/stream.ndjson | jq -r .type | sort | uniq -
 
 To change the log directory, pass `logDir` to `runWorkflow` or `--log-dir` to the CLI. To disable log files entirely, pass `logDir: null` or `--no-log`.
 
+## Event-Driven Metrics
+
+Smithers maps key event types onto built-in runtime metrics. For example:
+
+- `RunStarted` increments `smithers.runs.total`
+- `NodeStarted` increments `smithers.nodes.started`
+- `NodeFinished` increments `smithers.nodes.finished`
+- `NodeFailed` increments `smithers.nodes.failed`
+- approval events increment the approval counters
+
+That mapping is exposed as `trackSmithersEvent` from `smithers-orchestrator/observability` for advanced integrations, but most applications should rely on the built-in runtime wiring.
+
 ## Common Fields
 
 Every `SmithersEvent` includes:
@@ -69,7 +89,7 @@ Node-scoped events additionally include:
 | Field | Type | Description |
 |---|---|---|
 | `nodeId` | `string` | The task node this event relates to. |
-| `iteration` | `number` | The Ralph iteration number. |
+| `iteration` | `number` | The loop iteration number. |
 
 Attempt-scoped events additionally include:
 

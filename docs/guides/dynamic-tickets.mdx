@@ -194,7 +194,7 @@ You can still wrap each task in a [review loop](/guides/review-loop) for quality
 
 ## Sprint-Based Discovery
 
-For very large projects, wrap the entire workflow in a Ralph loop with a sprint tracker. Each sprint discovers work, implements it, and advances a counter:
+For very large projects, wrap the entire workflow in a `<Loop>` with a sprint tracker. Each sprint discovers work, implements it, and advances a counter:
 
 ```tsx
 export default smithers((ctx) => {
@@ -203,7 +203,7 @@ export default smithers((ctx) => {
 
   return (
     <Workflow name="large-project">
-      <Ralph until={currentSprint >= 25} maxIterations={25} onMaxReached="return-last">
+      <Loop until={currentSprint >= 25} maxIterations={25} onMaxReached="return-last">
         <Sequence>
           <Discover />
           {/* ... ticket pipelines ... */}
@@ -211,7 +211,7 @@ export default smithers((ctx) => {
             {{ sprintsCompleted: currentSprint + 1 }}
           </Task>
         </Sequence>
-      </Ralph>
+      </Loop>
     </Workflow>
   );
 });

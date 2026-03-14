@@ -1,183 +1,29 @@
 ---
 title: Quickstart
-description: Build and run your first Smithers workflow in under 5 minutes.
+description: Choose the quickstart for the Smithers API you want to use.
 ---
 
-This guide walks you through creating a two-step AI workflow where one agent researches a topic and a second agent writes a summary based on the research. By the end, you will have a working workflow with durable state, structured outputs, and sequential task execution.
+Smithers has a different quickstart for each authoring API.
 
-## Step 1: Define the Workflow
+## Pick a Quickstart
 
-Create a file called `workflow.tsx`:
+| API | What you build | Quickstart |
+| --- | --- | --- |
+| **TOON** | A declarative `.toon` workflow with inline schemas and prompts | [TOON Quickstart](/toon/quickstart) |
+| **JSX** | A TSX workflow with `<Task>` components and `ctx.outputMaybe(...)` | [JSX Quickstart](/jsx/quickstart) |
+| **Effect Builder** | A low-level workflow graph built with `$.step()` and `Layer` | [Effect Quickstart](/effect/quickstart) |
 
-```tsx
-import { createSmithers, Task } from "smithers-orchestrator";
-import { ToolLoopAgent as Agent } from "ai";
-import { anthropic } from "@ai-sdk/anthropic";
-import { z } from "zod";
+## Same Runtime, Different Authoring Style
 
-// 1. Define Zod schemas for each task's output
-const researchSchema = z.object({
-  summary: z.string(),
-  keyPoints: z.array(z.string()),
-});
+All three quickstarts end up on the same runtime:
 
-const reportSchema = z.object({
-  title: z.string(),
-  body: z.string(),
-  wordCount: z.number(),
-});
-
-// 2. Create a Smithers instance -- this auto-creates the SQLite
-//    database and Drizzle tables from your schemas
-const { Workflow, smithers, outputs } = createSmithers({
-  research: researchSchema,
-  report: reportSchema,
-});
-
-// 3. Define your agents using the Vercel AI SDK
-const researcher = new Agent({
-  model: anthropic("claude-sonnet-4-20250514"),
-  instructions: "You are a research assistant. Provide a concise summary and 3-5 key points.",
-});
-
-const writer = new Agent({
-  model: anthropic("claude-sonnet-4-20250514"),
-  instructions: "You are a technical writer. Write clear, engaging content.",
-});
-
-// 4. Build the workflow -- tasks inside <Workflow> run sequentially
-//    by default (top to bottom)
-export default smithers((ctx) => (
-  <Workflow name="research-report">
-    <Task id="research" output={outputs.research} agent={researcher}>
-      {`Research this topic and provide a summary with key points: ${ctx.input.topic}`}
-    </Task>
-    <Task id="report" output={outputs.report} agent={writer}>
-      {`Write a short report based on this research:
-Summary: ${ctx.outputMaybe("research", { nodeId: "research" })?.summary ?? ""}
-Key Points: ${JSON.stringify(ctx.outputMaybe("research", { nodeId: "research" })?.keyPoints ?? [])}`}
-    </Task>
-  </Workflow>
-));
-```
-
-There is a lot happening here, so let's break it down:
-
-- **Zod schemas** define the shape of each task's output. Smithers validates agent responses against these schemas and auto-retries on validation failures.
-- **`createSmithers()`** takes a record of named schemas and returns a `Workflow` component, a `smithers()` builder function, an `outputs` object with typed Zod schema references, and a configured database. You never touch SQLite or Drizzle directly.
-- **`smithers()`** wraps your JSX build function into a `SmithersWorkflow` object that the engine can execute. The `ctx` parameter provides access to the workflow input and completed task outputs.
-- **`ctx.input`** is the input object you pass at run time. Here it expects `{ topic: string }`.
-- **`ctx.outputMaybe("research", { nodeId: "research" })`** retrieves the persisted output of the `research` task, or `undefined` if it has not completed yet. Since the JSX tree is rendered before tasks execute, always use `outputMaybe` with optional chaining (`?.`) for downstream task prompts. `<Workflow>` sequences its children by default, so `report` only runs after `research` finishes -- by that point, the tree re-renders and the value is available.
-
-## Step 2: Create the Runner
-
-Create a file called `main.ts`:
-
-```ts
-import { runWorkflow } from "smithers-orchestrator";
-import workflow from "./workflow";
-
-const result = await runWorkflow(workflow, {
-  input: { topic: "The history of the Zig programming language" },
-  onProgress: (event) => {
-    console.log(`[${event.type}]`, "nodeId" in event ? event.nodeId : "");
-  },
-});
-
-console.log("Status:", result.status);
-console.log("Run ID:", result.runId);
-
-if (result.status === "finished") {
-  console.log("Output:", JSON.stringify(result.output, null, 2));
-}
-```
-
-The `onProgress` callback receives typed events as each task starts, finishes, fails, or retries. This is useful for logging, progress bars, or streaming updates to a UI.
-
-## Step 3: Run It
-
-Make sure your API key is set:
-
-```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
-```
-
-Run with Bun:
-
-```bash
-bun run main.ts
-```
-
-Or use the Smithers CLI directly (no `main.ts` needed):
-
-```bash
-bunx smithers run workflow.tsx --input '{"topic": "The history of the Zig programming language"}'
-```
-
-You should see event logs followed by a result like:
-
-```json
-{
-  "runId": "smth_a1b2c3d4",
-  "status": "finished",
-  "output": [
-    {
-      "runId": "smth_a1b2c3d4",
-      "nodeId": "report",
-      "iteration": 0,
-      "title": "The Zig Programming Language: A Brief History",
-      "body": "...",
-      "wordCount": 342
-    }
-  ]
-}
-```
-
-A SQLite database file (`smithers.db`) is created in your project directory. It contains the full execution history: inputs, outputs, attempts, events, and render frames.
-
-## What Happened
-
-When you called `runWorkflow`, Smithers executed the following loop:
-
-1. **Render** -- The JSX tree is rendered using a custom React reconciler. Smithers identifies two tasks: `research` (ordinal 0) and `report` (ordinal 1). Since they are direct children of `<Workflow>`, they form an implicit sequence.
-
-2. **Schedule** -- The engine walks the plan tree and determines that `research` is runnable (no dependencies) and `report` is blocked (it depends on `research` completing). On this first render, `ctx.outputMaybe("research", ...)` returns `undefined`, so the `report` task's prompt uses the fallback values.
-
-3. **Execute `research`** -- The researcher agent is called with the prompt. Its response is parsed as JSON, validated against `researchSchema`, and written to the `research` table in SQLite.
-
-4. **Re-render** -- The tree re-renders. This time `ctx.outputMaybe("research", { nodeId: "research" })` returns the persisted row, so the `report` task's prompt is fully resolved.
-
-5. **Execute `report`** -- The writer agent is called. Its output is validated against `reportSchema` and persisted.
-
-6. **Re-render** -- Both tasks are now finished. No runnable tasks remain. The engine returns `{ status: "finished" }`.
-
-If the process had crashed at any point (say, between steps 3 and 4), you could resume the exact same run:
-
-```bash
-bunx smithers resume workflow.tsx --run-id smth_a1b2c3d4
-```
-
-The engine would detect that `research` already has a valid output row, skip it, and continue from `report`.
-
-## Key Concepts
-
-| Concept | Description |
-|---|---|
-| **Workflow** | A JSX tree that defines the execution graph. Re-renders after each task completes. |
-| **Task** | A single unit of work (AI agent call or static data). Identified by its `id` prop. |
-| **Output** | A Zod-validated JSON object persisted to SQLite. Keyed by `(runId, nodeId, iteration)`. |
-| **Context (`ctx`)** | Provides access to `input`, completed output rows via `outputMaybe`/`latest`, `runId`, and `iteration`. Passed to the `smithers()` build function. |
-| **Sequence** | Default within `<Workflow>`. Tasks run top-to-bottom. Use `<Sequence>` explicitly for nested groups. |
-| **Parallel** | Tasks inside `<Parallel>` run concurrently up to `maxConcurrency`. |
-| **Ralph** | A loop component. Re-runs its children with an incrementing `iteration` until `until` is true or `maxIterations` is reached. |
-| **Resume** | Re-running a workflow with the same `runId`. Completed tasks are skipped automatically. |
-| **Schema Registry** | When you pass Zod schemas to `createSmithers()`, the framework auto-creates SQLite tables and returns an `outputs` object. Use `output={outputs.research}` to bind a task to its schema. |
+- steps are persisted to SQLite
+- completed work resumes after restarts
+- retries, approvals, and loops use the same engine
+- observability and CLI tooling are shared
 
 ## Next Steps
 
-- [Execution Model](/concepts/execution-model) -- Deep dive into the render-schedule-execute loop.
-- [Task Component](/components/task) -- All `<Task>` props: `retries`, `needsApproval`, `skipIf`, `timeoutMs`, `continueOnFail`.
-- [Ralph Component](/components/ralph) -- Iteration loops with `until`, `maxIterations`, and `onMaxReached`.
-- [Context](/concepts/context) -- Full `SmithersCtx` API: `output`, `outputMaybe`, `latest`, `latestArray`, `iterationCount`.
-- [Tools](/integrations/tools) -- Built-in sandboxed tools (`read`, `edit`, `bash`, `grep`, `write`) for code-editing agents.
-- [Examples](/examples/hello-world) -- More workflow patterns: dynamic plans, approval gates, multi-agent review, and Ralph loops.
+- [TOON Quickstart](/toon/quickstart) — Start with the declarative flow.
+- [JSX Quickstart](/jsx/quickstart) — Build a render-driven TSX workflow.
+- [Effect Quickstart](/effect/quickstart) — Build the same idea with typed step handles.

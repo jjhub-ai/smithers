@@ -1,0 +1,110 @@
+---
+title: "TOON: Bugfix Workflow"
+description: A TOON workflow with imports and inline TypeScript run blocks.
+---
+
+A multi-step bugfix workflow that imports schemas from TypeScript and uses inline `run:` blocks for non-LLM steps.
+
+## `bugfix.toon`
+
+```toon
+imports:
+  schemas:
+    - from: "./schemas.ts"
+      use: [TicketInput]
+
+name: bugfix
+agents:
+  coder:
+    type: claude-code
+    model: claude-opus-4-6
+    subscription: true
+    instructions: You are a senior software engineer specializing in debugging.
+
+input: TicketInput
+
+steps:
+  - id: fetch-context
+    run: |
+      const response = await fetch(
+        `https://api.linear.app/tickets/${input.ticketId}`,
+        { headers: { Authorization: `Bearer ${process.env.LINEAR_API_KEY}` } }
+      );
+      const data = await response.json();
+      return {
+        title: data.title,
+        body: data.description,
+        labels: data.labels.map(l => l.name),
+      };
+    output:
+      title: string
+      body: string
+      labels: string[]
+
+  - id: analyze
+    agent: coder
+    prompt: |
+      You are a senior software engineer.
+
+      Analyze the following bug report and identify the root cause,
+      affected systems, and suggested fix approach.
+
+      Title: {fetch-context.title}
+      Description: {fetch-context.body}
+      Labels: {fetch-context.labels}
+
+      Original report: {input.description}
+    output:
+      rootCause: string
+      affectedFiles: string[]
+      severity: "low" | "medium" | "high"
+      suggestedApproach: string
+
+  - id: generate-fix
+    agent: coder
+    prompt: |
+      Based on this analysis, generate a code fix.
+
+      Root cause: {analyze.rootCause}
+      Affected files: {analyze.affectedFiles}
+      Approach: {analyze.suggestedApproach}
+    output:
+      patch: string
+      explanation: string
+      testSuggestions: string[]
+
+  - id: format-output
+    run: |
+      return {
+        summary: `## ${fetch-context.title}\n\n**Severity:** ${analyze.severity}\n\n**Root Cause:** ${analyze.rootCause}\n\n**Fix:**\n\`\`\`\n${generate-fix.patch}\n\`\`\`\n\n${generate-fix.explanation}`,
+        filesChanged: analyze.affectedFiles.length,
+      };
+    output:
+      summary: string
+      filesChanged: number
+```
+
+## `schemas.ts`
+
+```ts
+import { Schema } from "effect";
+
+export class TicketInput extends Schema.Class<TicketInput>("TicketInput")({
+  ticketId: Schema.String,
+  description: Schema.String,
+}) {}
+```
+
+## Run It
+
+```bash
+smithers run bugfix.toon --input '{"ticketId": "SMI-123", "description": "Auth tokens expire silently"}'
+```
+
+## Key Patterns
+
+- **Imported schema**: `TicketInput` is a `Schema.Class` from TypeScript, used as the workflow input
+- **`run:` for API calls**: The `fetch-context` step calls an external API without an LLM
+- **`run:` for formatting**: The `format-output` step transforms data without a model call
+- **`prompt:` for LLM steps**: The `analyze` and `generate-fix` steps call the model
+- **Cross-step references**: Each step references upstream outputs like `{analyze.rootCause}`

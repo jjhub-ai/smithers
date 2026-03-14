@@ -20,7 +20,7 @@ This workflow automates a complete feature implementation pipeline:
 5. **ReviewFix** — An agent addresses review issues
 6. **Report** — An agent generates a final report
 
-Steps 2-5 loop using `<Ralph>` until both reviewers approve or max iterations are reached.
+Steps 2-5 loop using `<Loop>` until both reviewers approve or max iterations are reached.
 
 ## Schema Setup — smithers.ts
 
@@ -168,7 +168,7 @@ export const codex = USE_CLI ? codexCli : codexApi;
 
 ```tsx
 // scripts/worktree-feature/components/ValidationLoop.tsx
-import { Ralph, Sequence } from "smithers-orchestrator";
+import { Loop, Sequence } from "smithers-orchestrator";
 import { Implement } from "./Implement";
 import { Validate } from "./Validate";
 import { Review } from "./Review";
@@ -187,7 +187,7 @@ export function ValidationLoop({ ticket }: { ticket: { id: string } }) {
   const allApproved = !!claudeReview?.approved && !!codexReview?.approved;
 
   return (
-    <Ralph
+    <Loop
       id={`${ticketId}:impl-review-loop`}
       until={allApproved}
       maxIterations={MAX_REVIEW_ROUNDS}
@@ -199,7 +199,7 @@ export function ValidationLoop({ ticket }: { ticket: { id: string } }) {
         <Review ticket={ticket} />
         <ReviewFix ticket={ticket} />
       </Sequence>
-    </Ralph>
+    </Loop>
   );
 }
 ```
@@ -281,7 +281,7 @@ bun install
 
 - **`createSmithers`** — Registers 6 output schemas in one call, generating typed `tables`, `outputs`, and `Task` components.
 - **CLI agent integration** — `ClaudeCodeAgent` and `CodexAgent` run real CLI tools (Claude Code, OpenAI Codex) with full filesystem access.
-- **`<Ralph>` review loop** — Iterates implement/validate/review/fix until both reviewers approve or `MAX_REVIEW_ROUNDS` (3) is exhausted.
+- **`<Loop>` review loop** — Iterates implement/validate/review/fix until both reviewers approve or `MAX_REVIEW_ROUNDS` (3) is exhausted.
 - **`<Parallel>` dual review** — Two agents review the same code simultaneously; both must approve.
 - **`ctx.latest(schemaKey, nodeId)`** — Reads the highest-iteration output for a given task. The first argument is the schema key from `createSmithers`, the second is the `Task` id.
 - **MDX prompts** — Each component uses `.mdx` files for prompt templates with JSX interpolation.

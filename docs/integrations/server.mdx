@@ -30,6 +30,30 @@ const server = startServer({
 console.log("Smithers server listening on port 7331");
 ```
 
+## Observability
+
+The HTTP server participates in the same observability pipeline as local workflow execution.
+
+- requests increment `smithers.http.requests`
+- latency records into `smithers.http.request_duration_ms`
+- request handling, workflow loading, and body parsing are wrapped in spans
+
+To export those signals, enable the OTLP runtime with environment variables:
+
+```bash
+export SMITHERS_OTEL_ENABLED=1
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_SERVICE_NAME=smithers-server
+```
+
+For a ready-made local collector, Prometheus, Tempo, and Grafana stack, run:
+
+```bash
+docker compose -f observability/docker-compose.otel.yml up
+```
+
+See [Observability](/guides/monitoring-logs) for the public layer API and built-in metrics list.
+
 ---
 
 ## ServerOptions

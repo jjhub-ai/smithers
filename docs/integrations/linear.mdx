@@ -186,7 +186,7 @@ type LinearIssue = {
 A complete workflow that processes Linear tickets through research, implementation, and review stages:
 
 ```tsx
-import { createSmithers, Sequence, Ralph, Parallel } from "smithers-orchestrator";
+import { createSmithers, Sequence, Loop, Parallel } from "smithers-orchestrator";
 import { ClaudeCodeAgent, CodexAgent } from "smithers-orchestrator";
 import { useLinear } from "smithers-orchestrator/linear";
 import { read, grep, bash } from "smithers-orchestrator/tools";

@@ -1,0 +1,218 @@
+---
+title: Planner Internals
+description: How Smithers compiles a builder graph into an executable durable plan.
+---
+
+<Warning>
+  This page describes internal architecture. You do not need it to write workflows, but it is useful when designing new primitives or debugging scheduler behavior.
+</Warning>
+
+Smithers compiles workflow definitions — whether from TOON files, the Effect builder, or JSX — into a normalized internal plan and drives execution from durable state transitions.
+
+## Pipeline Overview
+
+```txt
+TOON File / Builder API / JSX
+  ->
+Workflow Graph
+  ->
+Normalized Plan
+  ->
+Durable Execution State
+  ->
+Ready Step Set
+  ->
+Effect Execution + Commit
+```
+
+The internal architecture should be centered on those phases.
+
+## Stage 1: Builder Capture
+
+The builder captures a typed graph from calls like:
+
+```ts
+const workflow = Smithers.workflow({
+  name: "bugfix",
+  input: Input,
+}).build(($) => {
+  const analyze = $.step("analyze", { output: Analysis, run: ... });
+  const approve = $.approval("approve", { needs: { analyze }, request: ... });
+  const fix = $.step("fix", { output: Fix, needs: { analyze, approve }, run: ... });
+
+  return $.sequence(analyze, approve, fix);
+});
+```
+
+At this point Smithers should have an internal graph with explicit node kinds, stable ids, and typed handles.
+
+Conceptually:
+
+```ts
+type WorkflowNode =
+  | { kind: "step"; id: string; ... }
+  | { kind: "sequence"; children: WorkflowNode[] }
+  | { kind: "parallel"; children: WorkflowNode[]; maxConcurrency?: number }
+  | { kind: "approval"; id: string; ... }
+  | { kind: "match"; id: string; ... }
+  | { kind: "loop"; id: string; ... };
+```
+
+The important part is that the graph is already explicit before execution begins.
+
+## Stage 2: Normalization
+
+The raw builder graph is convenient for authoring, but the runtime wants a normalized representation.
+
+Normalization should:
+
+- resolve step handles to stable internal ids
+- flatten `needs` into dependency edges
+- assign concurrency groups
+- attach output model signatures
+- attach retry, timeout, cache, and approval policies
+- derive branch and loop controller descriptors
+
+After normalization, every executable node should be schedulable without interpreting user builder code again.
+
+## Compiled Step Descriptor
+
+A normalized step descriptor might look like:
+
+```ts
+type CompiledStep = {
+  id: string;
+  outputModel: string;
+  needs: ReadonlyArray<{ name: string; stepId: string }>;
+  retryPolicy?: unknown;
+  timeout?: unknown;
+  cachePolicy?: unknown;
+  concurrencyGroup?: string;
+  run: unknown;
+};
+```
+
+The actual `run` implementation remains an Effectful callback, but the rest of the descriptor should be plain data.
+
+That distinction matters because the planner and persistence layer must reason about the workflow even when a step is not currently running.
+
+## Stage 3: Durable Execution State
+
+Smithers then combines the normalized plan with persisted execution state.
+
+That state should include:
+
+- execution record
+- node state
+- completed outputs
+- attempt history
+- approval state
+- loop state
+- branch decisions
+- cache hits or invalidations
+
+This is the real source of truth for the scheduler. The builder graph tells Smithers what is possible; durable state tells Smithers what has already happened.
+
+## Stage 4: Ready-Set Computation
+
+The scheduler walks the normalized plan and computes the current ready set.
+
+A step is ready only when:
+
+- all entries in `needs` are completed
+- any enclosing sequence has advanced to it
+- any approval or branch controller has resolved in its favor
+- any loop state allows the current iteration
+- concurrency limits allow admission
+
+This is simpler than the old renderer-based model because scheduling depends on explicit graph edges instead of a re-rendered UI tree.
+
+## Stage 5: Effect Execution
+
+Ready steps are executed by invoking their `run` callback with:
+
+- validated input
+- resolved dependency outputs
+- execution metadata
+- cancellation signal
+
+The callback returns an `Effect`, and Smithers runs it inside the application's provided layer stack.
+
+The planner should not know about provider-specific behavior. It only knows how to supply step inputs and interpret success, failure, retry, suspension, or cancellation.
+
+## Stage 6: Commit and Transition
+
+After a step produces a result, Smithers commits:
+
+- the output model row
+- attempt metadata
+- lifecycle event records
+- state transitions for downstream scheduling
+
+This commit phase should be atomic at the workflow level wherever possible. The goal is that after a crash, Smithers can recover from persisted state without guessing.
+
+## Why a Planner Instead of a Renderer
+
+The React renderer model was carrying too many unrelated responsibilities:
+
+- authoring syntax
+- control-flow representation
+- dependency discovery
+- runtime scheduling
+
+The planner model separates those concerns:
+
+- the builder API is authoring
+- the normalized plan is scheduling data
+- the Effect runtime runs step bodies
+- persistence manages durability
+
+That is a cleaner architecture for a workflow engine.
+
+## Suggested Internal APIs
+
+Internal APIs should bias toward explicit inspection.
+
+Examples:
+
+```ts
+Smithers.inspect(workflow)
+```
+
+should return a normalized graph for tooling and tests.
+
+```ts
+Smithers.explain(workflow, executionId)
+```
+
+should explain why each node is pending, ready, blocked, waiting for approval, or complete.
+
+Those kinds of APIs become much easier once the runtime is based on an explicit plan rather than an opaque reconciler tree.
+
+## Debugging
+
+For debugging, the most useful artifacts are no longer XML frames. They are:
+
+- normalized plan snapshots
+- node state tables
+- dependency edges
+- ready-set explanations
+- step transition events
+
+If Smithers exposes those clearly, most workflow bugs become much easier to diagnose.
+
+## Relationship to Effect
+
+The planner should stay mostly data-oriented. Effect belongs primarily in:
+
+- step execution
+- runtime services
+- logging and tracing
+- durable primitives such as suspension, retries, queues, and timers
+
+That boundary keeps the planning layer inspectable and the execution layer composable.
+
+## Next Steps
+
+- [Runtime Events](/runtime/events) -- This page will need to describe planner-level transitions instead of renderer frames.
+- [runWorkflow](/runtime/run-workflow) -- This page will need to describe the new execution entry points for builder workflows.

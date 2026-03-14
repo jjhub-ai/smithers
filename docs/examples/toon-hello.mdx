@@ -1,0 +1,99 @@
+---
+title: "TOON: Hello World"
+description: A minimal single-step TOON workflow.
+---
+
+The simplest possible TOON workflow — one step, one prompt, one output.
+
+## `hello.toon`
+
+```toon
+name: hello-world
+agents:
+  assistant:
+    type: claude-code
+    model: claude-opus-4-6
+    subscription: true
+    instructions: You are a friendly assistant.
+
+input:
+  name: string
+
+steps:
+  - id: greet
+    agent: assistant
+    prompt: |
+      Say a friendly hello to {input.name}.
+      Be warm and brief.
+    output:
+      message: string
+```
+
+## Run It
+
+```bash
+smithers run hello.toon --input '{"name": "World"}'
+```
+
+Or from TypeScript:
+
+```ts
+import { Smithers } from "smithers-orchestrator";
+import { Effect } from "effect";
+
+const workflow = Smithers.loadToon("./hello.toon");
+
+const result = await Effect.runPromise(
+  workflow.execute({ name: "World" }).pipe(
+    Effect.provide(Smithers.sqlite({ filename: "./smithers.db" })),
+  ),
+);
+
+console.log(result.message);
+```
+
+## What Happens
+
+1. Smithers validates `{"name": "World"}` against the `input:` schema
+2. The `greet` step sends the interpolated prompt to the `assistant` agent (Claude Code)
+3. The response is validated against the output schema (`message: string`)
+4. The output is persisted to SQLite and returned
+
+## Effect Builder Equivalent
+
+```ts
+import { Context, Effect, Layer, Schema } from "effect";
+import { Model } from "@effect/sql";
+import { Smithers } from "smithers-orchestrator";
+
+class Input extends Schema.Class<Input>("Input")({
+  name: Schema.String,
+}) {}
+
+class Greeting extends Model.Class<Greeting>("Greeting")({
+  message: Schema.String,
+}) {}
+
+class Greeter extends Context.Tag("Greeter")<
+  Greeter,
+  { readonly greet: (name: string) => Effect.Effect<Greeting> }
+>() {}
+
+const Hello = Smithers.workflow({
+  name: "hello-world",
+  input: Input,
+}).build(($) => {
+  const greet = $.step("greet", {
+    output: Greeting,
+    run: ({ input }) =>
+      Effect.gen(function* () {
+        const greeter = yield* Greeter;
+        return yield* greeter.greet(input.name);
+      }),
+  });
+
+  return $.sequence(greet);
+});
+```
+
+The TOON version is 12 lines. The Effect builder version is 30+.

@@ -3,6 +3,10 @@ title: <Workflow>
 description: Root container that defines a named, cacheable workflow with implicit sequential execution of its children.
 ---
 
+<Warning>
+  **JSX API** — This page documents the JSX-based API. For alternative approaches, see [TOON](/toon/overview) (declarative) or the [Effect builder](/effect/overview) (TypeScript).
+</Warning>
+
 `<Workflow>` is the root component of every Smithers workflow. It wraps all tasks and control-flow components into a single named unit that can be executed, cached, and resumed.
 
 ## Import
@@ -135,4 +139,4 @@ Internally, `<Workflow>` renders as a `<smithers:workflow>` host element. The ru
 
 - Every Smithers workflow must have exactly one `<Workflow>` at the root.
 - The `name` prop is used for identification in logs, the CLI, and event streams, but does not need to be globally unique across files.
-- Output tables referenced by child tasks must include `runId` and `nodeId` columns. Tasks inside a `<Ralph>` loop additionally need an `iteration` column.
+- Output tables referenced by child tasks must include `runId` and `nodeId` columns. Tasks inside a `<Loop>` loop additionally need an `iteration` column.

@@ -1,0 +1,123 @@
+---
+title: "TOON: Review Loop"
+description: A TOON workflow with an iterative review loop and an approval gate.
+---
+
+A workflow that drafts content, iterates through review cycles, then gates deployment behind human approval.
+
+## `review-loop.toon`
+
+```toon
+name: review-and-publish
+agents:
+  writer:
+    type: claude-code
+    model: claude-opus-4-6
+    subscription: true
+    instructions: You are a technical writer.
+  reviewer:
+    type: claude-code
+    model: claude-opus-4-6
+    subscription: true
+    instructions: You are a thorough technical reviewer.
+
+input:
+  topic: string
+  targetAudience: string
+
+steps:
+  - id: draft
+    agent: writer
+    prompt: |
+      Write a technical article about {input.topic}
+      for {input.targetAudience}.
+
+      Include:
+      - Introduction
+      - Key concepts
+      - Practical examples
+      - Conclusion
+    output:
+      title: string
+      content: string
+
+  - kind: loop
+    id: review-cycle
+    maxIterations: 3
+    until: "{review.approved} == true"
+    onMaxReached: return-last
+    children:
+      - id: review
+        agent: reviewer
+        prompt: |
+          Review the following article for accuracy, clarity, and completeness.
+
+          Title: {draft.title}
+          Content: {draft.content}
+
+          {#if loop.iteration > 1}
+          Previous feedback was: {review.feedback}
+          Check if the issues were addressed.
+          {/if}
+
+          Respond with whether the article is approved and any remaining feedback.
+        output:
+          approved: boolean
+          feedback: string
+          score: number
+
+      - id: revise
+        agent: writer
+        prompt: |
+          Revise this article based on the review feedback.
+
+          Original: {draft.content}
+          Feedback: {review.feedback}
+          Score: {review.score}/10
+        output:
+          title: string
+          content: string
+        skipIf: "{review.approved}"
+
+  - kind: approval
+    id: publish-gate
+    request:
+      title: "Publish '{draft.title}'?"
+      summary: |
+        Review score: {review.score}/10
+        Iterations: {loop.iteration}
+    onDeny: fail
+
+  - id: publish
+    needs: [publish-gate]
+    run: |
+      return {
+        url: `https://blog.example.com/${draft.title.toLowerCase().replace(/ /g, '-')}`,
+        publishedAt: new Date().toISOString(),
+      };
+    output:
+      url: string
+      publishedAt: string
+```
+
+## Run It
+
+```bash
+smithers run review-loop.toon --input '{"topic": "Effect in TypeScript", "targetAudience": "backend engineers"}'
+```
+
+The workflow will pause at the `publish-gate` approval. Approve it with:
+
+```bash
+smithers approve review-loop.toon --execution-id <id> --gate publish-gate --note "Looks good"
+```
+
+## Key Patterns
+
+- **`kind: loop`** repeats the review/revise cycle up to 3 times
+- **`until:`** stops the loop when the reviewer approves
+- **`skipIf:`** skips revision when the review is already approved
+- **`{#if loop.iteration > 1}`** adds context about previous feedback on subsequent iterations
+- **`kind: approval`** suspends execution for human review
+- **`onDeny: fail`** causes the workflow to fail if the approval is denied
+- **Durable state**: if the process restarts during the loop or while waiting for approval, Smithers resumes from persisted state

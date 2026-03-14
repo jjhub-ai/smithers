@@ -1,187 +1,261 @@
 ---
 title: Data Model
-description: How Smithers stores workflow state in SQLite using Drizzle ORM.
+description: How Smithers uses Effect Schema, Effect SQL Model, and internal workflow metadata.
 ---
 
-Smithers persists its durable workflow state -- inputs, outputs, execution metadata, approvals, events, frames, and cache -- in a single SQLite database managed through Drizzle ORM. The process still keeps transient runtime helpers in memory while a run is active. There are two ways to set up the data layer depending on how much control you need.
+The Smithers data model has three layers:
 
-## Two API Modes
+1. **workflow input** described with `Schema`
+2. **domain outputs** described with `Model`
+3. **execution metadata** owned by Smithers
 
-### Schema-Driven API (Recommended)
+Those layers serve different purposes and should stay separate.
 
-Define your output shapes as Zod schemas and let Smithers handle everything: database creation, table generation, and Drizzle configuration.
+## Input Uses `Schema`
+
+Workflow input is the external boundary of the run.
+
+**In TOON:**
+
+```toon
+input:
+  ticketId: string
+  description: string
+```
+
+**In the Effect builder:**
 
 ```ts
-import { createSmithers } from "smithers-orchestrator";
-import { z } from "zod";
+import { Schema } from "effect";
 
-const { Workflow, useCtx, smithers, db, tables } = createSmithers({
-  discover: z.object({
-    topics: z.array(z.string()),
-    confidence: z.number(),
-  }),
-  research: z.object({
-    summary: z.string(),
-    sources: z.array(z.string()),
-  }),
+class Input extends Schema.Class<Input>("Input")({
+  ticketId: Schema.String,
+  description: Schema.String,
+}) {}
+```
+
+Both compile to the same `Schema` validation. Smithers validates input against this schema before the workflow starts. After validation, steps receive a typed `input` value.
+
+Use `Schema` for input because:
+
+- it defines the runtime contract
+- it supports validation and decoding
+- it does not imply persistence strategy by itself
+
+## Outputs Use `Model`
+
+Step outputs are domain records that Smithers persists.
+
+**In TOON:**
+
+```toon
+steps:
+  - id: analyze
+    output:
+      summary: string
+      severity: "low" | "medium" | "high"
+```
+
+TOON output schemas compile to `Model.Class` definitions automatically.
+
+**In the Effect builder:**
+
+```ts
+import { Model } from "@effect/sql";
+import { Schema } from "effect";
+
+class Analysis extends Model.Class<Analysis>("Analysis")({
+  summary: Schema.String,
+  severity: Schema.Literal("low", "medium", "high"),
+}) {}
+
+class Fix extends Model.Class<Fix>("Fix")({
+  patch: Schema.String,
+  explanation: Schema.String,
+}) {}
+```
+
+The important point is that these are **domain models**, not workflow bookkeeping types.
+
+You should not need to add fields like:
+
+- `runId`
+- `nodeId`
+- `iteration`
+- `attempt`
+- `approvedAt`
+
+Those belong to Smithers, not to your business data.
+
+## Smithers Owns Workflow Metadata
+
+To run durably, Smithers needs internal state that is distinct from user models:
+
+- execution ids
+- step ids
+- attempt history
+- retry state
+- timeout state
+- approval state
+- loop iteration state
+- branch decisions
+- event journal
+
+This data should live in framework-managed tables, not inside every output model.
+
+That separation is the main difference from the old API, where the user had to think in terms of `(runId, nodeId, iteration)` rows.
+
+## What Gets Persisted
+
+When a step completes, Smithers should persist two things:
+
+### The domain output
+
+The user-declared `Model` value:
+
+```ts
+new Analysis({
+  summary: "Token refresh silently fails after the first expiration window.",
+  severity: "high",
+})
+```
+
+### The execution transition
+
+Framework state such as:
+
+- which step produced the row
+- which execution it belongs to
+- which attempt produced it
+- when it was written
+- whether it unblocked downstream work
+
+The domain model is for your app. The transition record is for orchestration.
+
+## Step Identity and Output Identity
+
+A workflow can use the same `Model` in multiple places:
+
+```ts
+const initialReview = $.step("initial-review", {
+  output: Review,
+  run: ...,
+});
+
+const finalReview = $.step("final-review", {
+  output: Review,
+  run: ...,
 });
 ```
 
-What happens under the hood:
+That means persistence cannot be keyed only by model name. Smithers must track at least:
 
-1. Each Zod schema is converted to a Drizzle `sqliteTable` via `zodToTable()`. The table name is the snake_case version of the key (e.g., `discover` stays `discover`, `researchResult` becomes `research_result`).
-2. Standard columns `runId`, `nodeId`, and `iteration` are prepended automatically with a composite primary key of `(runId, nodeId, iteration)`.
-3. A SQLite database is created at `./smithers.db` (or the path you specify with `{ dbPath: "..." }`).
-4. `CREATE TABLE IF NOT EXISTS` statements are executed for each table, including an `input` table that stores the run input as JSON in a `payload` column.
-5. A schema registry maps string keys (like `"discover"`) to their Drizzle tables and Zod schemas, so `<Task output="discover">` resolves at runtime.
+- execution identity
+- step identity
+- model identity
+- iteration or branch identity when relevant
 
-In schema-driven mode, `ctx.input` is the decoded payload object (not the raw input row).
+This is another reason workflow metadata needs its own storage layer.
 
-Zod-to-column mapping:
+## Why `Model` Instead of Raw Tables
 
-| Zod Type | SQLite Column |
-| --- | --- |
-| `z.string()`, `z.enum()`, `z.literal()` | `TEXT` |
-| `z.number()` | `INTEGER` |
-| `z.boolean()` | `INTEGER` (boolean mode) |
-| `z.array()`, `z.object()`, unions, complex | `TEXT` (JSON mode) |
+Using `Model` gives Smithers a better abstraction boundary than exposing raw SQL tables:
 
-Tasks reference outputs by string key:
+- the output type is explicit
+- validation and encoding are shared
+- repositories and queries can use the same Effect SQL model
+- the user stays in domain types instead of persistence plumbing
 
-```tsx
-<Task id="discover" output="discover" agent={agent}>
-  {prompt}
-</Task>
-```
+The workflow definition should talk about `Analysis` and `Fix`, not about SQLite column names.
 
-### Manual API
+## Direct SQL Access Still Works
 
-For full control, provide your own Drizzle database instance with manually defined tables.
+Smithers should not hide the SQL layer. If your app needs repositories or reporting queries, use Effect SQL directly against the same database.
 
 ```ts
-import { smithers } from "smithers-orchestrator";
-import { drizzle } from "drizzle-orm/bun-sqlite";
-import { sqliteTable, text, integer, primaryKey } from "drizzle-orm/sqlite-core";
+import * as SqliteClient from "@effect/sql-sqlite-bun/SqliteClient";
+import { Layer } from "effect";
 
-const inputTable = sqliteTable("input", {
-  runId: text("run_id").primaryKey(),
-  description: text("description").notNull(),
+const DatabaseLive = SqliteClient.layer({
+  filename: "./smithers.db",
 });
-
-const analyzeTable = sqliteTable(
-  "analyze",
-  {
-    runId: text("run_id").notNull(),
-    nodeId: text("node_id").notNull(),
-    iteration: integer("iteration").notNull().default(0),
-    summary: text("summary").notNull(),
-    files: text("files", { mode: "json" }).$type<string[]>(),
-  },
-  (t) => ({
-    pk: primaryKey({ columns: [t.runId, t.nodeId, t.iteration] }),
-  }),
-);
-
-const schema = { input: inputTable, output: analyzeTable, analyze: analyzeTable };
-const db = drizzle("./workflow.db", { schema });
-
-export default smithers(db, (ctx) => (
-  <Workflow name="manual">
-    <Task id="analyze" output={outputs.analyze} agent={agent}>
-      {`Analyze: ${ctx.input.description}`}
-    </Task>
-  </Workflow>
-));
 ```
 
-Tasks reference outputs by Drizzle table object:
+The intended architecture is:
 
-```tsx
-<Task id="analyze" output={outputs.analyze} agent={agent}>
+- Smithers orchestrates workflow state
+- Effect SQL handles model persistence and queries
+- both run on the same SQLite client layer
+
+## Input and Dependency Access Inside Steps
+
+A step does not query tables directly in the normal path. Instead, Smithers resolves declared dependencies and passes them in:
+
+```ts
+const report = $.step("report", {
+  output: Report,
+  needs: { analysis },
+  run: ({ input, analysis }) =>
+    Effect.succeed(
+      new Report({
+        title: input.ticketId,
+        body: analysis.summary,
+        wordCount: 42,
+      }),
+    ),
+});
 ```
 
-## Required Columns
+That gives you:
 
-All output tables **must** include these columns, regardless of which API mode you use:
+- typed workflow input
+- typed dependency outputs
+- no raw SQL lookups in orchestration code
 
-| Column | Type | Purpose |
-| --- | --- | --- |
-| `runId` | `text("run_id")` | Links the row to a specific workflow run. |
-| `nodeId` | `text("node_id")` | Links the row to a specific task node. |
-| `iteration` | `integer("iteration")` | Distinguishes loop iterations for Ralph tasks. Defaults to `0` for non-loop tasks. |
+If you need ad hoc querying, do it explicitly through a repository or SQL service.
 
-These columns are injected automatically by the engine when persisting output. If the agent or static payload does not include them, Smithers adds `runId`, `nodeId`, and `iteration` before inserting.
+## Loop and Branch State
 
-## Primary Keys
+Loops and branches should persist their control-flow state separately from the domain outputs they produce.
 
-The primary key convention determines how Smithers identifies whether a task has already produced output:
+Examples:
 
-- **Non-loop tasks**: `PRIMARY KEY (run_id, node_id)` -- or include `iteration` defaulting to 0.
-- **Ralph loop tasks**: `PRIMARY KEY (run_id, node_id, iteration)` -- required so each iteration produces a distinct row.
+- current loop iteration
+- whether a branch was taken
+- which approval decision unblocked a step
+- which queue slot is currently owned
 
-In practice, using `(run_id, node_id, iteration)` for all tables is the safest choice. The schema-driven API does this automatically.
+These are orchestration facts, not business facts. They should not leak into your `Model` definitions.
 
-## Reserved Schema Keys
+## Migrations
 
-Two schema keys have special meaning:
+Changing a `Model` is a schema change and should be treated as one.
 
-| Key | Purpose |
-| --- | --- |
-| `schema.input` | The workflow input table. Smithers inserts one row per run with the provided input data. The `runId` field is set as the primary key. |
-| `schema.output` | The workflow output table. When a run finishes, Smithers queries this table for all rows matching the `runId` and returns them as the run result. |
+Typical cases:
 
-These are conventions, not hard requirements. If `schema.output` is not defined, the run result's `output` field will be `undefined`.
+- adding a field to `Report`
+- changing a field type in `Review`
+- splitting one model into two models
 
-## Output Validation
+Smithers should validate that persisted model schemas still match the workflow definition and either:
 
-Every output -- whether from an agent or a static payload -- is validated against the Drizzle table schema before being written. The validation checks:
+- apply a migration, or
+- fail fast and require one
 
-1. All `notNull` columns have values.
-2. Column types match (text columns get strings, integer columns get numbers).
-3. The composite key columns (`runId`, `nodeId`, `iteration`) are present and match the current execution context.
+The workflow runtime should not silently reinterpret old rows with new model definitions.
 
-For agent tasks, if validation fails, Smithers will re-prompt the agent up to 2 additional times with the specific Zod validation errors and expected schema shape before giving up.
+## Suggested Mental Model
 
-## Internal Tables
+Use this rule of thumb:
 
-Smithers automatically creates and manages these tables with the `_smithers_` prefix. You never need to define or query them directly, but they are available for debugging.
+- **`Schema`** answers: what input does this workflow accept?
+- **`Model`** answers: what domain value does this step persist?
+- **Smithers metadata** answers: what happened while the workflow executed?
 
-| Table | Primary Key | Purpose |
-| --- | --- | --- |
-| `_smithers_runs` | `(run_id)` | Run metadata: status, workflow name, timestamps, config, errors. |
-| `_smithers_nodes` | `(run_id, node_id, iteration)` | Current state of every task node per run. |
-| `_smithers_attempts` | `(run_id, node_id, iteration, attempt)` | Individual execution attempts with timing, errors, and response text. |
-| `_smithers_frames` | `(run_id, frame_no)` | XML snapshots of the tree at each render cycle. |
-| `_smithers_approvals` | `(run_id, node_id, iteration)` | Approval requests and decisions. |
-| `_smithers_cache` | `(cache_key)` | Cached task outputs keyed by content hash. |
-| `_smithers_tool_calls` | `(run_id, node_id, iteration, attempt, seq)` | Tool call logs for agent tasks. |
-| `_smithers_events` | `(run_id, seq)` | Ordered event stream for the run. |
-| `_smithers_ralph` | `(run_id, ralph_id)` | Ralph loop iteration state and done flag. |
+If a field only matters to orchestration, it probably does not belong in your domain model.
 
-These tables are created via `CREATE TABLE IF NOT EXISTS` when `runWorkflow` is called. They do not require Drizzle migrations.
+## Next Steps
 
-## Upsert Behavior
-
-Output rows are upserted -- if a row with the same `(runId, nodeId, iteration)` already exists, it is replaced. This means:
-
-- Re-running a task (after a revert or invalidation) overwrites the previous output.
-- Retries that eventually succeed replace any partial state.
-- You never see duplicate output rows for the same task in the same iteration.
-
-## Inspecting Data
-
-Since everything is in SQLite, you can query the database directly:
-
-```bash
-# Check run status
-sqlite3 workflow.db "SELECT run_id, status FROM _smithers_runs"
-
-# View task states for a run
-sqlite3 workflow.db "SELECT node_id, state, iteration FROM _smithers_nodes WHERE run_id = 'abc'"
-
-# See output for a specific task
-sqlite3 workflow.db "SELECT * FROM analyze WHERE run_id = 'abc' AND node_id = 'analyze'"
-
-# View event stream
-sqlite3 workflow.db "SELECT seq, type, payload_json FROM _smithers_events WHERE run_id = 'abc' ORDER BY seq"
-```
+- [Context](/concepts/context) -- Learn what data a step receives at runtime.
+- [Approvals](/concepts/approvals) -- See how approval state should be modeled durably.
+- [Caching](/concepts/caching) -- Understand where reusable outputs fit into the data model.
