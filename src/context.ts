@@ -1,4 +1,5 @@
 import React from "react";
+import { getTableName } from "drizzle-orm";
 import type { SmithersCtx } from "./SmithersCtx";
 import type { OutputKey } from "./OutputKey";
 
@@ -50,6 +51,11 @@ export function buildContext<Schema>(opts: {
       const key = zodToKeyName.get(table);
       if (key) return key;
     }
+    // Drizzle table object — extract snake_case table name
+    try {
+      const name = getTableName(table);
+      if (name && typeof name === "string") return name;
+    } catch {}
     return String(table);
   }
 
@@ -80,8 +86,9 @@ export function buildContext<Schema>(opts: {
     outputMaybe(table: any, key: OutputKey): any {
       return resolveRow(table, key);
     },
-    latest(table: string, nodeId: string): any {
-      const tableRows = outputs[table] ?? [];
+    latest(table: any, nodeId: string): any {
+      const tableName = resolveTableName(table);
+      const tableRows = outputs[tableName] ?? [];
       let best: any = undefined;
       let bestIteration = -Infinity;
       for (const row of tableRows) {
@@ -120,8 +127,9 @@ export function buildContext<Schema>(opts: {
       }
       return result;
     },
-    iterationCount(table: string, nodeId: string): number {
-      const tableRows = outputs[table] ?? [];
+    iterationCount(table: any, nodeId: string): number {
+      const tableName = resolveTableName(table);
+      const tableRows = outputs[tableName] ?? [];
       const seen = new Set<number>();
       for (const row of tableRows) {
         if (!row || row.nodeId !== nodeId) continue;

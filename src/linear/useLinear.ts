@@ -11,13 +11,25 @@ import type {
 import { fromPromise } from "../effect/interop";
 import { runPromise } from "../effect/runtime";
 
+/** Safely resolve a lazy Linear SDK relation that may be undefined. */
+function resolveMaybe(label: string, thunk: () => any) {
+  return Effect.gen(function* () {
+    const val = thunk();
+    if (val == null) return null;
+    if (typeof val === "object" && typeof val.then === "function") {
+      return yield* fromPromise(label, () => val);
+    }
+    return val;
+  });
+}
+
 function resolveIssueEffect(node: any) {
   return Effect.gen(function* () {
     const [state, assignee, labels, project] = yield* Effect.all([
-      fromPromise("resolve linear issue state", () => node.state),
-      fromPromise("resolve linear issue assignee", () => node.assignee),
+      resolveMaybe("resolve linear issue state", () => node.state),
+      resolveMaybe("resolve linear issue assignee", () => node.assignee),
       fromPromise("resolve linear issue labels", () => node.labels()),
-      fromPromise("resolve linear issue project", () => node.project),
+      resolveMaybe("resolve linear issue project", () => node.project),
     ], { concurrency: "unbounded" });
     return {
       id: node.id,
@@ -30,7 +42,7 @@ function resolveIssueEffect(node: any) {
       assignee: assignee
         ? { id: assignee.id, name: assignee.name, email: assignee.email }
         : null,
-      labels: labels.nodes.map((l: any) => ({ id: l.id, name: l.name })),
+      labels: (labels?.nodes ?? []).map((l: any) => ({ id: l.id, name: l.name })),
       project: project ? { id: project.id, name: project.name } : null,
       createdAt: node.createdAt.toISOString(),
       updatedAt: node.updatedAt.toISOString(),
