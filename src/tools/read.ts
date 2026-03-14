@@ -7,13 +7,19 @@ import { fromSync } from "../effect/interop";
 import { runPromise } from "../effect/runtime";
 import { resolveSandboxPath, assertPathWithinRootEffect } from "./utils";
 import { getToolContext } from "./context";
-import { logToolCallEffect, truncateToBytes } from "./logToolCall";
+import {
+  logToolCallEffect,
+  logToolCallStartEffect,
+  truncateToBytes,
+} from "./logToolCall";
 
 export function readToolEffect(path: string) {
   const ctx = getToolContext();
   const root = ctx?.rootDir ?? process.cwd();
   const started = nowMs();
+  let seq: number | undefined;
   return Effect.gen(function* () {
+    seq = yield* logToolCallStartEffect("read", started);
     const fs = yield* FileSystem.FileSystem;
     const resolved = yield* fromSync("resolve sandbox path", () =>
       resolveSandboxPath(root, path),
@@ -33,6 +39,7 @@ export function readToolEffect(path: string) {
       "success",
       undefined,
       started,
+      seq,
     );
     return output;
   }).pipe(
@@ -43,7 +50,7 @@ export function readToolEffect(path: string) {
     }),
     Effect.withLogSpan("tool:read"),
     Effect.tapError((error) =>
-      logToolCallEffect("read", { path }, null, "error", error, started),
+      logToolCallEffect("read", { path }, null, "error", error, started, seq),
     ),
   );
 }

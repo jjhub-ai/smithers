@@ -9,7 +9,7 @@ import { fromSync } from "../effect/interop";
 import { runPromise } from "../effect/runtime";
 import { resolveSandboxPath, assertPathWithinRootEffect } from "./utils";
 import { getToolContext } from "./context";
-import { logToolCallEffect } from "./logToolCall";
+import { logToolCallEffect, logToolCallStartEffect } from "./logToolCall";
 
 export function writeToolEffect(path: string, content: string) {
   const ctx = getToolContext();
@@ -18,7 +18,9 @@ export function writeToolEffect(path: string, content: string) {
   const max = ctx?.maxOutputBytes ?? 200_000;
   const contentBytes = Buffer.byteLength(content, "utf8");
   const logInput = { path, contentBytes, contentHash: sha256Hex(content) };
+  let seq: number | undefined;
   return Effect.gen(function* () {
+    seq = yield* logToolCallStartEffect("write", started);
     const fs = yield* FileSystem.FileSystem;
     const resolved = yield* fromSync("resolve sandbox path", () =>
       resolveSandboxPath(root, path),
@@ -36,6 +38,7 @@ export function writeToolEffect(path: string, content: string) {
       "success",
       undefined,
       started,
+      seq,
     );
     return "ok";
   }).pipe(
@@ -47,7 +50,7 @@ export function writeToolEffect(path: string, content: string) {
     }),
     Effect.withLogSpan("tool:write"),
     Effect.tapError((error) =>
-      logToolCallEffect("write", logInput, null, "error", error, started),
+      logToolCallEffect("write", logInput, null, "error", error, started, seq),
     ),
   );
 }

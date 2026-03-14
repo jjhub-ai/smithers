@@ -7,13 +7,15 @@ import { fromSync } from "../effect/interop";
 import { runPromise } from "../effect/runtime";
 import { resolveSandboxPath, assertPathWithinRootEffect } from "./utils";
 import { getToolContext } from "./context";
-import { logToolCallEffect } from "./logToolCall";
+import { logToolCallEffect, logToolCallStartEffect } from "./logToolCall";
 
 export function grepToolEffect(pattern: string, path?: string) {
   const ctx = getToolContext();
   const root = ctx?.rootDir ?? process.cwd();
   const started = nowMs();
+  let seq: number | undefined;
   return Effect.gen(function* () {
+    seq = yield* logToolCallStartEffect("grep", started);
     const resolvedRoot = yield* fromSync("resolve sandbox path", () =>
       resolveSandboxPath(root, path ?? "."),
     );
@@ -41,6 +43,7 @@ export function grepToolEffect(pattern: string, path?: string) {
       "success",
       undefined,
       started,
+      seq,
     );
     return result.stdout;
   }).pipe(
@@ -59,6 +62,7 @@ export function grepToolEffect(pattern: string, path?: string) {
         "error",
         error,
         started,
+        seq,
       ),
     ),
   );

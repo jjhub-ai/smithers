@@ -9,7 +9,7 @@ import { fromSync } from "../effect/interop";
 import { runPromise } from "../effect/runtime";
 import { resolveSandboxPath, assertPathWithinRootEffect } from "./utils";
 import { getToolContext } from "./context";
-import { logToolCallEffect } from "./logToolCall";
+import { logToolCallEffect, logToolCallStartEffect } from "./logToolCall";
 
 export function editToolEffect(path: string, patch: string) {
   const ctx = getToolContext();
@@ -18,7 +18,9 @@ export function editToolEffect(path: string, patch: string) {
   const max = ctx?.maxOutputBytes ?? 200_000;
   const patchBytes = Buffer.byteLength(patch, "utf8");
   const logInput = { path, patchBytes, patchHash: sha256Hex(patch) };
+  let seq: number | undefined;
   return Effect.gen(function* () {
+    seq = yield* logToolCallStartEffect("edit", started);
     const fs = yield* FileSystem.FileSystem;
     const resolved = yield* fromSync("resolve sandbox path", () =>
       resolveSandboxPath(root, path),
@@ -46,6 +48,7 @@ export function editToolEffect(path: string, patch: string) {
       "success",
       undefined,
       started,
+      seq,
     );
     return "ok";
   }).pipe(
@@ -57,7 +60,7 @@ export function editToolEffect(path: string, patch: string) {
     }),
     Effect.withLogSpan("tool:edit"),
     Effect.tapError((error) =>
-      logToolCallEffect("edit", logInput, null, "error", error, started),
+      logToolCallEffect("edit", logInput, null, "error", error, started, seq),
     ),
   );
 }

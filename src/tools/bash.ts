@@ -7,7 +7,11 @@ import { fromSync } from "../effect/interop";
 import { runPromise } from "../effect/runtime";
 import { resolveSandboxPath, assertPathWithinRootEffect } from "./utils";
 import { getToolContext } from "./context";
-import { logToolCallEffect, truncateToBytes } from "./logToolCall";
+import {
+  logToolCallEffect,
+  logToolCallStartEffect,
+  truncateToBytes,
+} from "./logToolCall";
 
 export function bashToolEffect(
   cmd: string,
@@ -18,7 +22,9 @@ export function bashToolEffect(
   const root = ctx?.rootDir ?? process.cwd();
   const allowNetwork = ctx?.allowNetwork ?? false;
   const started = nowMs();
+  let seq: number | undefined;
   return Effect.gen(function* () {
+    seq = yield* logToolCallStartEffect("bash", started);
     const cwd = opts?.cwd
       ? yield* fromSync("resolve sandbox path", () =>
           resolveSandboxPath(root, opts.cwd!),
@@ -70,6 +76,7 @@ export function bashToolEffect(
       "success",
       undefined,
       started,
+      seq,
     );
     return output;
   }).pipe(
@@ -82,7 +89,15 @@ export function bashToolEffect(
     }),
     Effect.withLogSpan("tool:bash"),
     Effect.tapError((error) =>
-      logToolCallEffect("bash", { cmd, args }, null, "error", error, started),
+      logToolCallEffect(
+        "bash",
+        { cmd, args },
+        null,
+        "error",
+        error,
+        started,
+        seq,
+      ),
     ),
   );
 }

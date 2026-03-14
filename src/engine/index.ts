@@ -752,6 +752,39 @@ async function computeTaskStates(
   ralphDone: Map<string, boolean>,
 ): Promise<TaskStateMap> {
   const stateMap: TaskStateMap = new Map();
+  const existing = await adapter.listNodes(runId);
+  const existingState = new Map<string, TaskState>();
+  for (const node of existing) {
+    existingState.set(
+      buildStateKey(node.nodeId, node.iteration ?? 0),
+      node.state as TaskState,
+    );
+  }
+
+  const maybeEmitStateEvent = async (state: TaskState, desc: TaskDescriptor) => {
+    const key = buildStateKey(desc.nodeId, desc.iteration);
+    const prev = existingState.get(key);
+    if (state === "pending" && prev !== "pending") {
+      await eventBus.emitEventWithPersist({
+        type: "NodePending",
+        runId,
+        nodeId: desc.nodeId,
+        iteration: desc.iteration,
+        timestampMs: nowMs(),
+      });
+      existingState.set(key, state);
+    }
+    if (state === "skipped" && prev !== "skipped") {
+      await eventBus.emitEventWithPersist({
+        type: "NodeSkipped",
+        runId,
+        nodeId: desc.nodeId,
+        iteration: desc.iteration,
+        timestampMs: nowMs(),
+      });
+      existingState.set(key, state);
+    }
+  };
 
   for (const desc of tasks) {
     const key = buildStateKey(desc.nodeId, desc.iteration);
@@ -768,6 +801,7 @@ async function computeTaskStates(
         outputTable: desc.outputTableName,
         label: desc.label ?? null,
       });
+      await maybeEmitStateEvent("skipped", desc);
       continue;
     }
 
@@ -795,6 +829,7 @@ async function computeTaskStates(
           outputTable: desc.outputTableName,
           label: desc.label ?? null,
         });
+        await maybeEmitStateEvent(state, desc);
         if (state === "pending") {
           continue;
         }
@@ -817,6 +852,7 @@ async function computeTaskStates(
             outputTable: desc.outputTableName,
             label: desc.label ?? null,
           });
+          await maybeEmitStateEvent("pending", desc);
           continue;
         }
         if (!approval) {
@@ -917,6 +953,7 @@ async function computeTaskStates(
         outputTable: desc.outputTableName,
         label: desc.label ?? null,
       });
+      await maybeEmitStateEvent("skipped", desc);
       continue;
     }
 
@@ -948,6 +985,7 @@ async function computeTaskStates(
       outputTable: desc.outputTableName,
       label: desc.label ?? null,
     });
+    await maybeEmitStateEvent("pending", desc);
   }
 
   return stateMap;
@@ -1216,6 +1254,7 @@ async function executeTask(
             maxOutputBytes: toolConfig.maxOutputBytes,
             timeoutMs: desc.timeoutMs ?? toolConfig.toolTimeoutMs,
             seq: 0,
+            emitEvent: (event) => eventBus.emitEventQueued(event),
           },
           async () => {
             // Auto-append structured output instructions when an output table is defined.

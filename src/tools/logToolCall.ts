@@ -13,10 +13,12 @@ export function logToolCallEffect(
   status: "success" | "error",
   error?: unknown,
   startedAtMs?: number,
+  seqOverride?: number,
 ) {
   const ctx = getToolContext();
   if (!ctx) return Effect.void;
-  const seq = nextToolSeq(ctx);
+  const seq =
+    typeof seqOverride === "number" ? seqOverride : nextToolSeq(ctx);
   const started = startedAtMs ?? nowMs();
   const finished = nowMs();
   const durationMs = finished - started;
@@ -24,6 +26,17 @@ export function logToolCallEffect(
   const inputJson = safeJson(input, maxLogBytes);
   const outputJson = safeJson(output, maxLogBytes);
   const errorJson = error ? safeJson(errorToJson(error), maxLogBytes) : null;
+  void ctx.emitEvent?.({
+    type: "ToolCallFinished",
+    runId: ctx.runId,
+    nodeId: ctx.nodeId,
+    iteration: ctx.iteration,
+    attempt: ctx.attempt,
+    toolName,
+    seq,
+    status,
+    timestampMs: finished,
+  });
   return Metric.update(toolDuration, durationMs).pipe(
     Effect.andThen(
       ctx.db.insertToolCallEffect({
@@ -64,6 +77,27 @@ export async function logToolCall(
   await runPromise(
     logToolCallEffect(toolName, input, output, status, error, startedAtMs),
   );
+}
+
+export function logToolCallStartEffect(
+  toolName: string,
+  startedAtMs?: number,
+) {
+  const ctx = getToolContext();
+  if (!ctx) return Effect.succeed(undefined);
+  const seq = nextToolSeq(ctx);
+  const started = startedAtMs ?? nowMs();
+  void ctx.emitEvent?.({
+    type: "ToolCallStarted",
+    runId: ctx.runId,
+    nodeId: ctx.nodeId,
+    iteration: ctx.iteration,
+    attempt: ctx.attempt,
+    toolName,
+    seq,
+    timestampMs: started,
+  });
+  return Effect.succeed(seq);
 }
 
 export function truncateToBytes(text: string, maxBytes: number): string {

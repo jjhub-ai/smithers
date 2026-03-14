@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { SmithersDb } from "../db/adapter";
+import type { SmithersEvent } from "../SmithersEvent";
 
 export type ToolContext = {
   db: SmithersDb;
@@ -12,6 +13,7 @@ export type ToolContext = {
   maxOutputBytes: number;
   timeoutMs: number;
   seq: number;
+  emitEvent?: (event: SmithersEvent) => void | Promise<void>;
 };
 
 const storage = new AsyncLocalStorage<ToolContext>();
