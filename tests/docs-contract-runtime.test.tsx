@@ -311,6 +311,36 @@ describe("docs: runWorkflow", () => {
     cleanup();
   });
 
+  test("toolTimeoutMs propagates to tool execution", async () => {
+    const { smithers, outputs, cleanup } = createTestSmithers({
+      output: z.object({ value: z.number() }),
+    });
+
+    const agent: any = {
+      id: "timeout-check",
+      tools: { bash },
+      async generate() {
+        await bash.execute({ cmd: "sleep", args: ["1"] });
+        return { output: { value: 1 } };
+      },
+    };
+
+    const workflow = smithers(() => (
+      <Workflow name="tool-timeout">
+        <Task id="slow" output={outputs.output} agent={agent}>
+          Slow tool.
+        </Task>
+      </Workflow>
+    ));
+
+    const result = await runWorkflow(workflow, {
+      input: {},
+      toolTimeoutMs: 10,
+    });
+    expect(result.status).toBe("failed");
+    cleanup();
+  });
+
   test("AbortSignal cancels a running workflow", async () => {
     const { smithers, outputs, cleanup } = createTestSmithers(outputSchemas);
     const controller = new AbortController();
