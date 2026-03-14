@@ -7,7 +7,12 @@ import type { AgentLike } from "../AgentLike";
 export type TaskProps<Row> = {
   key?: string;
   id: string;
-  output: import("zod").ZodObject<any>;
+  output: any;
+  /**
+   * Optional Zod schema describing the expected agent output shape.
+   * Used for validation and to inject schema examples into MDX prompts.
+   */
+  outputSchema?: import("zod").ZodObject<any>;
   /** Agent or array of agents [primary, fallback1, fallback2, ...]. Tries in order on retries. */
   agent?: AgentLike | AgentLike[];
   /** Convenience alias for a single retry fallback without exposing array syntax in JSX. */
@@ -65,6 +70,10 @@ function renderChildrenToText(children: any): string {
   }
 }
 
+function isZodObject(value: any): value is import("zod").ZodObject<any> {
+  return Boolean(value && typeof value === "object" && "shape" in value);
+}
+
 export function Task<Row>(props: TaskProps<Row>) {
   const { children, agent, fallbackAgent, ...rest } = props as any;
   const agentChain = Array.isArray(agent)
@@ -77,10 +86,12 @@ export function Task<Row>(props: TaskProps<Row>) {
   if (agent) {
     // Auto-inject `schema` prop into React element children when output is a ZodObject
     let childElement = children;
-    const outputIsZod = props.output && typeof props.output === "object" && "shape" in (props.output as any) && (props.output as any).shape;
-    if (React.isValidElement(children) && outputIsZod) {
+    const schemaForInjection =
+      (props as any).outputSchema ??
+      (isZodObject(props.output) ? props.output : undefined);
+    if (React.isValidElement(children) && schemaForInjection) {
       childElement = React.cloneElement(children as React.ReactElement<any>, {
-        schema: zodSchemaToJsonExample(props.output as any),
+        schema: zodSchemaToJsonExample(schemaForInjection as any),
       });
     }
     const prompt = renderChildrenToText(childElement);
