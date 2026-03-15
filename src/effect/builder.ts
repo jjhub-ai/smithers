@@ -1588,6 +1588,12 @@ async function buildAgentFromConfig(name: string, config: Record<string, any>): 
   }
 }
 
+function coerceUseList(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.map(String);
+  if (typeof raw === "string" && raw.length > 0) return raw.split(",").map((s) => s.trim());
+  return [];
+}
+
 async function resolveImportedSchemas(
   imports: any,
   baseDir: string,
@@ -1596,7 +1602,7 @@ async function resolveImportedSchemas(
   const list = Array.isArray(imports) ? imports : [];
   for (const entry of list) {
     const from = String(entry?.from ?? "");
-    const use = Array.isArray(entry?.use) ? entry.use : [];
+    const use = coerceUseList(entry?.use);
     if (!from || use.length === 0) continue;
     const mod = await importModule(from, baseDir);
     for (const name of use) {
@@ -1616,7 +1622,7 @@ async function resolveImportedAgents(
   const list = Array.isArray(imports) ? imports : [];
   for (const entry of list) {
     const from = String(entry?.from ?? "");
-    const use = Array.isArray(entry?.use) ? entry.use : [];
+    const use = coerceUseList(entry?.use);
     if (!from || use.length === 0) continue;
     const mod = await importModule(from, baseDir);
     for (const name of use) {
@@ -1638,7 +1644,7 @@ async function resolveImportedServices(
   const list = Array.isArray(imports) ? imports : [];
   for (const entry of list) {
     const from = String(entry?.from ?? "");
-    const use = Array.isArray(entry?.use) ? entry.use : [];
+    const use = coerceUseList(entry?.use);
     if (!from || use.length === 0) continue;
     const mod = await importModule(from, baseDir);
     for (const name of use) {
@@ -1827,7 +1833,7 @@ async function resolveImportedComponents(
   const list = Array.isArray(imports) ? imports : [];
   for (const entry of list) {
     const from = String(entry?.from ?? "");
-    const use = Array.isArray(entry?.use) ? entry.use : [];
+    const use = coerceUseList(entry?.use);
     if (!from || use.length === 0) continue;
     const resolved = resolveImportPath(from, baseDir);
     const absPath =
@@ -2290,10 +2296,23 @@ async function compileToon(absPath: string): Promise<{
 
   const agents = new Map<string, AgentLike>(importedAgents);
   if (isRecord(data.agents)) {
+    // Object form: agents: { name: { type, model, ... } }
     for (const [agentName, def] of Object.entries(data.agents)) {
       if (!isRecord(def)) {
         throw new Error(`Agent "${agentName}" definition must be an object`);
       }
+      const agent = await buildAgentFromConfig(agentName, def);
+      agents.set(agentName, agent);
+    }
+  } else if (Array.isArray(data.agents)) {
+    // Tabular form: agents[N]{name,type,model,...}: rows
+    for (const row of data.agents) {
+      if (!isRecord(row) || typeof row.name !== "string") {
+        throw new Error(`Agent array entry must have a "name" field`);
+      }
+      const agentName = row.name;
+      const def = { ...row };
+      delete (def as any).name;
       const agent = await buildAgentFromConfig(agentName, def);
       agents.set(agentName, agent);
     }

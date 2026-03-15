@@ -1,7 +1,6 @@
 imports:
-  services[1]:
-    - from: ./toon-services.ts
-      use[1]: Greeter
+  services[1]{from,use}:
+    ./toon-services.ts,Greeter
 name: toon-services
 input:
   name: string

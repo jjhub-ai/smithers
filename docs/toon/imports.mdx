@@ -3,7 +3,7 @@ title: Imports
 description: Import schemas, services, components, and other .toon files into your workflow.
 ---
 
-The `imports:` block at the top of a `.toon` file lets you bring in external TypeScript types, Effect services, TOON components, and plugins.
+The `imports:` block at the top of a `.toon` file lets you bring in external TypeScript types, Effect services, TOON components, and plugins. Import arrays use TOON's tabular format for compact, readable declarations.
 
 ## Importing Schemas
 
@@ -11,9 +11,8 @@ Import `Schema.Class` or `Model.Class` definitions for use as input or output ty
 
 ```toon
 imports:
-  schemas[1]:
-    - from: ./schemas.ts
-      use[3]: TicketInput,AnalysisOutput,ReviewOutput
+  schemas[1]{from,use}:
+    ./schemas.ts,"TicketInput,AnalysisOutput,ReviewOutput"
 
 name: bugfix
 input: TicketInput
@@ -34,11 +33,9 @@ Import Effect services to make them available in `handler:` functions and `run:`
 
 ```toon
 imports:
-  services[2]:
-    - from: ./services/coder.ts
-      use[1]: Coder
-    - from: ./services/jj.ts
-      use[1]: JJ
+  services[2]{from,use}:
+    ./services/coder.ts,Coder
+    ./services/jj.ts,JJ
 
 steps[1]:
   - id: fix
@@ -55,11 +52,9 @@ Import reusable components from other `.toon` files:
 
 ```toon
 imports:
-  components[2]:
-    - from: ./shared/review-cycle.toon
-      use[1]: ReviewCycle
-    - from: ./shared/deploy-gate.toon
-      use[1]: GuardedDeploy
+  components[2]{from,use}:
+    ./shared/review-cycle.toon,ReviewCycle
+    ./shared/deploy-gate.toon,GuardedDeploy
 
 steps[1]:
   - id: review
@@ -76,9 +71,8 @@ Import an entire `.toon` file as a sub-workflow:
 
 ```toon
 imports:
-  workflows[1]:
-    - from: ./sub-workflows/research.toon
-      as: research
+  workflows[1]{from,as}:
+    ./sub-workflows/research.toon,research
 
 steps[2]:
   - id: do-research
@@ -95,7 +89,7 @@ steps[2]:
 
 ## Plugin Setup
 
-Plugins extend TOON with custom node kinds, model providers, or services. Register them in the `imports:` block:
+Plugins extend TOON with custom node kinds, model providers, or services. Plugins have per-entry config, so they use expanded list items:
 
 ```toon
 imports:
@@ -121,7 +115,7 @@ Imports are resolved relative to the `.toon` file's directory:
 ```
 project/
   workflows/
-    main.toon           # imports from: "./shared/review.toon"
+    main.toon
     shared/
       review.toon
   schemas/
@@ -144,15 +138,12 @@ Combine different import types freely:
 
 ```toon
 imports:
-  schemas[1]:
-    - from: ./schemas.ts
-      use[2]: Input,Output
-  services[1]:
-    - from: ./services/index.ts
-      use[3]: Coder,Reviewer,Deployer
-  components[1]:
-    - from: ./shared/patterns.toon
-      use[2]: ReviewLoop,DeployGate
+  schemas[1]{from,use}:
+    ./schemas.ts,"Input,Output"
+  services[1]{from,use}:
+    ./services/index.ts,"Coder,Reviewer,Deployer"
+  components[1]{from,use}:
+    ./shared/patterns.toon,"ReviewLoop,DeployGate"
   plugins[1]:
     - from: smithers-plugin-anthropic
 ```

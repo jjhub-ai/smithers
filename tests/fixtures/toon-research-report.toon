@@ -1,7 +1,6 @@
 imports:
-  agents[1]:
-    - from: ./toon-agent.ts
-      use[2]: researcher,writer
+  agents[1]{from,use}:
+    ./toon-agent.ts,"researcher,writer"
 name: research-report
 input:
   topic: string

@@ -1,7 +1,6 @@
 imports:
-  components[1]:
-    - from: ./toon-components-lib.toon
-      use[1]: Summarize
+  components[1]{from,use}:
+    ./toon-components-lib.toon,Summarize
 name: component-workflow
 input:
   brief: string

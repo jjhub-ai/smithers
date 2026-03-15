@@ -289,9 +289,8 @@ You can also import agents defined in TypeScript:
 
 ```toon
 imports:
-  agents[1]:
-    - from: ./agents.ts
-      use[2]: coder,reviewer
+  agents[1]{from,use}:
+    ./agents.ts,"coder,reviewer"
 ```
 
 This lets you share agent configurations across workflows or use agents with custom setup that can't be expressed in TOON syntax.

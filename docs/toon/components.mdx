@@ -147,11 +147,9 @@ Components can be imported from other `.toon` files:
 
 ```toon
 imports:
-  components[2]:
-    - from: ./shared/review.toon
-      use[1]: ReviewCycle
-    - from: ./shared/deploy.toon
-      use[1]: GuardedDeploy
+  components[2]{from,use}:
+    ./shared/review.toon,ReviewCycle
+    ./shared/deploy.toon,GuardedDeploy
 
 name: full-pipeline
 input:

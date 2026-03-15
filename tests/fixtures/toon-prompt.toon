@@ -1,7 +1,6 @@
 imports:
-  agents[1]:
-    - from: ./toon-agent.ts
-      use[1]: echo
+  agents[1]{from,use}:
+    ./toon-agent.ts,echo
 name: toon-prompt
 input:
   name: string

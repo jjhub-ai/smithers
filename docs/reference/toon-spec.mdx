@@ -323,43 +323,43 @@ Timeouts and delays use duration strings:
 
 ## Import Blocks
 
+Imports use TOON's tabular array format for compact declarations. Each import category is a tabular array with `{from,use}` or `{from,as}` field headers.
+
 ### Schema Import
 
 ```toon
 imports:
-  schemas[1]:
-    - from: ./path.ts
-      use[1]: TypeName
+  schemas[1]{from,use}:
+    ./path.ts,TypeName
 ```
 
 ### Service Import
 
 ```toon
 imports:
-  services[1]:
-    - from: ./path.ts
-      use[1]: ServiceTag
+  services[1]{from,use}:
+    ./path.ts,ServiceTag
 ```
 
 ### Component Import
 
 ```toon
 imports:
-  components[1]:
-    - from: ./path.toon
-      use[1]: ComponentName
+  components[1]{from,use}:
+    ./path.toon,ComponentName
 ```
 
 ### Workflow Import
 
 ```toon
 imports:
-  workflows[1]:
-    - from: ./path.toon
-      as: aliasName
+  workflows[1]{from,as}:
+    ./path.toon,aliasName
 ```
 
 ### Plugin Import
+
+Plugins have per-entry config objects, so they use expanded list items:
 
 ```toon
 imports:
