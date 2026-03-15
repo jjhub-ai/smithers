@@ -39,6 +39,8 @@ export type {
   ApprovalDecision,
   ApprovalProps,
   ApprovalRequest,
+  TaskProps,
+  OutputTarget,
 } from "./components";
 
 // Agents
@@ -119,6 +121,8 @@ export {
   nodesFailed,
   nodesFinished,
   nodesStarted,
+  prometheusContentType,
+  renderPrometheusMetrics,
   resolveSmithersObservabilityOptions,
   runsTotal,
   schedulerQueueDepth,
