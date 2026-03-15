@@ -1020,6 +1020,7 @@ type ToonEnv = {
   services: Map<string, unknown>;
   workflows: Map<string, string>;
   pluginNodes: Map<string, ToonPluginNodeHandler>;
+  prompts: Map<string, string>;
   baseDir: string;
   componentId?: string;
   componentParams?: Record<string, unknown>;
@@ -2083,7 +2084,9 @@ function compileNode(node: any, env: ToonEnv): BuilderNode {
     throw new Error(`Step "${id}" is missing output schema`);
   }
 
-  const prompt = node.prompt !== undefined ? String(applyComponentId(node.prompt, env.componentId)) : undefined;
+  // Resolve prompt: can be inline text or a reference to a named prompt
+  const rawPrompt = node.prompt !== undefined ? String(applyComponentId(node.prompt, env.componentId)) : undefined;
+  const prompt = rawPrompt !== undefined && env.prompts.has(rawPrompt) ? env.prompts.get(rawPrompt)! : rawPrompt;
   const runCode = node.run !== undefined ? String(node.run) : undefined;
   const handlerRef = node.handler !== undefined ? String(node.handler) : undefined;
   const hasPrompt = typeof prompt === "string";
@@ -2341,6 +2344,17 @@ async function compileToon(absPath: string): Promise<{
     ...importedPlugins.layers,
   ];
 
+  // Parse named prompts
+  const prompts = new Map<string, string>();
+  if (isRecord(data.prompts)) {
+    for (const [promptName, promptText] of Object.entries(data.prompts)) {
+      if (typeof promptText !== "string") {
+        throw new Error(`Prompt "${promptName}" must be a string`);
+      }
+      prompts.set(promptName, promptText);
+    }
+  }
+
   const inputDef = data.input;
   if (!inputDef) throw new Error(`TOON workflow "${name}" missing input schema`);
   const inputSchema = typeof inputDef === "string" && schemas.has(inputDef)
@@ -2362,6 +2376,7 @@ async function compileToon(absPath: string): Promise<{
       services,
       workflows,
       pluginNodes,
+      prompts,
       baseDir,
     };
     return compileNodes(steps, env);
