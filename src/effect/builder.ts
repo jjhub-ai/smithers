@@ -1028,22 +1028,7 @@ type ToonEnv = {
 
 type TemplateNode =
   | { type: "text"; value: string }
-  | { type: "expr"; expr: string }
-  | { type: "if"; expr: string; children: TemplateNode[] };
-
-type ExprNode =
-  | { type: "literal"; value: any }
-  | { type: "identifier"; name: string }
-  | { type: "binary"; op: string; left: ExprNode; right: ExprNode };
-
-type ExprToken =
-  | { type: "op"; value: string }
-  | { type: "identifier"; value: string }
-  | { type: "number"; value: number }
-  | { type: "string"; value: string }
-  | { type: "boolean"; value: boolean }
-  | { type: "null"; value: null }
-  | { type: "paren"; value: "(" | ")" };
+  | { type: "expr"; expr: string };
 
 const TOON_RESERVED = new Set([
   "input",
@@ -1064,321 +1049,140 @@ const TOON_RESERVED = new Set([
 
 function parseTemplate(source: string): TemplateNode[] {
   const input = String(source ?? "");
-  let i = 0;
+  const nodes: TemplateNode[] = [];
+  let textBuf = "";
   const len = input.length;
+  let i = 0;
 
-  const parseUntil = (stopOnClose: boolean): TemplateNode[] => {
-    const nodes: TemplateNode[] = [];
-    let textBuf = "";
-    const pushText = () => {
-      if (textBuf) {
-        nodes.push({ type: "text", value: textBuf });
-        textBuf = "";
-      }
-    };
-
-    while (i < len) {
-      if (stopOnClose && input.startsWith("{/if}", i)) {
-        pushText();
-        i += 5;
-        break;
-      }
-      if (input.startsWith("{{", i)) {
-        textBuf += "{";
-        i += 2;
-        continue;
-      }
-      if (input.startsWith("}}", i)) {
-        textBuf += "}";
-        i += 2;
-        continue;
-      }
-      if (input.startsWith("{#if", i)) {
-        pushText();
-        i += 4;
-        while (i < len && /\s/.test(input[i]!)) i++;
-        const end = input.indexOf("}", i);
-        if (end === -1) {
-          textBuf += input.slice(i - 4);
-          i = len;
-          break;
-        }
-        const expr = input.slice(i, end).trim();
-        i = end + 1;
-        const children = parseUntil(true);
-        nodes.push({ type: "if", expr, children });
-        continue;
-      }
-      if (input[i] === "{") {
-        const end = input.indexOf("}", i + 1);
-        if (end === -1) {
-          textBuf += input.slice(i);
-          i = len;
-          break;
-        }
-        const expr = input.slice(i + 1, end).trim();
-        pushText();
-        nodes.push({ type: "expr", expr });
-        i = end + 1;
-        continue;
-      }
-      textBuf += input[i]!;
-      i += 1;
+  const pushText = () => {
+    if (textBuf) {
+      nodes.push({ type: "text", value: textBuf });
+      textBuf = "";
     }
-    pushText();
-    return nodes;
   };
 
-  return parseUntil(false);
-}
-
-function tokenizeExpression(expr: string): ExprToken[] {
-  const tokens: ExprToken[] = [];
-  const input = expr.trim();
-  let i = 0;
-  const len = input.length;
   while (i < len) {
-    const ch = input[i]!;
-    if (/\s/.test(ch)) {
-      i += 1;
-      continue;
-    }
-    const two = input.slice(i, i + 2);
-    if (two === "&&" || two === "||" || two === "==" || two === "!=" || two === ">=" || two === "<=") {
-      tokens.push({ type: "op", value: two });
+    if (input.startsWith("{{", i)) {
+      textBuf += "{";
       i += 2;
       continue;
     }
-    if (ch === ">" || ch === "<") {
-      tokens.push({ type: "op", value: ch });
-      i += 1;
+    if (input.startsWith("}}", i)) {
+      textBuf += "}";
+      i += 2;
       continue;
     }
-    if (ch === "(" || ch === ")") {
-      tokens.push({ type: "paren", value: ch as "(" | ")" });
-      i += 1;
-      continue;
-    }
-    if (ch === "\"" || ch === "'") {
-      const quote = ch;
-      i += 1;
-      let value = "";
-      while (i < len) {
-        const c = input[i]!;
-        if (c === "\\") {
-          value += input[i + 1] ?? "";
-          i += 2;
+    if (input[i] === "{") {
+      // Depth-aware brace matching — skip braces inside string literals
+      let depth = 1;
+      let j = i + 1;
+      while (j < len && depth > 0) {
+        const ch = input[j]!;
+        if (ch === "'" || ch === '"' || ch === "`") {
+          const quote = ch;
+          j += 1;
+          while (j < len) {
+            if (input[j] === "\\") {
+              j += 2;
+              continue;
+            }
+            if (input[j] === quote) {
+              j += 1;
+              break;
+            }
+            j += 1;
+          }
           continue;
         }
-        if (c === quote) {
-          i += 1;
-          break;
-        }
-        value += c;
-        i += 1;
+        if (ch === "{") depth++;
+        else if (ch === "}") depth--;
+        if (depth > 0) j += 1;
       }
-      tokens.push({ type: "string", value });
-      continue;
-    }
-    if (/[0-9]/.test(ch)) {
-      let j = i + 1;
-      while (j < len && /[0-9.]/.test(input[j]!)) j++;
-      const raw = input.slice(i, j);
-      tokens.push({ type: "number", value: Number(raw) });
-      i = j;
-      continue;
-    }
-    if (/[A-Za-z_$]/.test(ch)) {
-      let j = i + 1;
-      while (j < len && /[A-Za-z0-9_.-]/.test(input[j]!)) j++;
-      const raw = input.slice(i, j);
-      if (raw === "true") {
-        tokens.push({ type: "boolean", value: true });
-      } else if (raw === "false") {
-        tokens.push({ type: "boolean", value: false });
-      } else if (raw === "null") {
-        tokens.push({ type: "null", value: null });
-      } else {
-        tokens.push({ type: "identifier", value: raw });
+      if (depth !== 0) {
+        textBuf += input.slice(i);
+        i = len;
+        break;
       }
-      i = j;
+      const expr = input.slice(i + 1, j).trim();
+      pushText();
+      nodes.push({ type: "expr", expr });
+      i = j + 1;
       continue;
     }
-    // Unknown token, skip
+    textBuf += input[i]!;
     i += 1;
   }
-  return tokens;
+  pushText();
+  return nodes;
 }
 
-function parseExpressionAst(expr: string): ExprNode {
-  const tokens = tokenizeExpression(expr);
-  let pos = 0;
-
-  const peek = () => tokens[pos];
-  const consume = () => tokens[pos++];
-
-  const parsePrimary = (): ExprNode => {
-    const tok = consume();
-    if (!tok) return { type: "literal", value: undefined };
-    if (tok.type === "number" || tok.type === "string" || tok.type === "boolean" || tok.type === "null") {
-      return { type: "literal", value: tok.value };
-    }
-    if (tok.type === "identifier") {
-      return { type: "identifier", name: tok.value };
-    }
-    if (tok.type === "paren" && tok.value === "(") {
-      const node = parseOr();
-      const next = peek();
-      if (next && next.type === "paren" && next.value === ")") consume();
-      return node;
-    }
-    return { type: "literal", value: undefined };
-  };
-
-  const parseComparison = (): ExprNode => {
-    let left = parsePrimary();
-    const next = peek();
-    if (next && next.type === "op" && ["==", "!=", ">", "<", ">=", "<="].includes(next.value)) {
-      const op = consume().value;
-      const right = parsePrimary();
-      left = { type: "binary", op, left, right };
-    }
-    return left;
-  };
-
-  const parseAnd = (): ExprNode => {
-    let left = parseComparison();
-    while (peek() && peek()!.type === "op" && peek()!.value === "&&") {
-      consume();
-      const right = parseComparison();
-      left = { type: "binary", op: "&&", left, right };
-    }
-    return left;
-  };
-
-  const parseOr = (): ExprNode => {
-    let left = parseAnd();
-    while (peek() && peek()!.type === "op" && peek()!.value === "||") {
-      consume();
-      const right = parseAnd();
-      left = { type: "binary", op: "||", left, right };
-    }
-    return left;
-  };
-
-  return parseOr();
-}
-
-function resolvePathValue(path: string, ctx: any): any {
-  const parts = path.split(".");
-  let current: any = ctx;
-  for (const part of parts) {
-    if (current == null) return undefined;
-    current = (current as any)[part];
-  }
-  return current;
-}
-
-function evalExpressionNode(node: ExprNode, ctx: any): any {
-  switch (node.type) {
-    case "literal":
-      return node.value;
-    case "identifier":
-      return resolvePathValue(node.name, ctx);
-    case "binary": {
-      const left = evalExpressionNode(node.left, ctx);
-      const right = evalExpressionNode(node.right, ctx);
-      switch (node.op) {
-        case "&&":
-          return Boolean(left) && Boolean(right);
-        case "||":
-          return Boolean(left) || Boolean(right);
-        case "==":
-          return left == right;
-        case "!=":
-          return left != right;
-        case ">":
-          return left > right;
-        case "<":
-          return left < right;
-        case ">=":
-          return left >= right;
-        case "<=":
-          return left <= right;
-      }
+function evaluateExpression(expr: string, ctx: Record<string, unknown>): any {
+  const trimmed = (expr ?? "").trim();
+  if (!trimmed) return undefined;
+  // Rewrite hyphenated context keys to bracket notation
+  let processed = trimmed;
+  for (const key of Object.keys(ctx)) {
+    if (key.includes("-")) {
+      processed = processed.replace(
+        new RegExp(`\\b${key.replace(/-/g, "\\-")}\\b`, "g"),
+        `__ctx__["${key}"]`,
+      );
     }
   }
-}
-
-function templateToExpression(template: string): string {
-  const nodes = parseTemplate(template);
-  return nodes
-    .map((node) => {
-      if (node.type === "expr") return node.expr;
-      if (node.type === "text") return node.value;
-      return "";
-    })
-    .join("");
-}
-
-function evaluateExpression(expr: string, ctx: any): any {
-  const normalized = templateToExpression(expr ?? "");
-  if (!normalized.trim()) return undefined;
+  const keys = Object.keys(ctx).filter((k) => !k.includes("-"));
+  const values = keys.map((k) => ctx[k]);
   try {
-    const ast = parseExpressionAst(normalized);
-    return evalExpressionNode(ast, ctx);
+    const fn = new Function("__ctx__", ...keys, `return (${processed});`);
+    return fn(ctx, ...values);
   } catch {
     return undefined;
   }
 }
 
-function collectIdentifiers(expr: string): Set<string> {
-  const normalized = templateToExpression(expr ?? "");
-  const ids = new Set<string>();
-  if (!normalized.trim()) return ids;
-  try {
-    const ast = parseExpressionAst(normalized);
-    const walk = (node: ExprNode) => {
-      if (node.type === "identifier") {
-        ids.add(node.name);
-      } else if (node.type === "binary") {
-        walk(node.left);
-        walk(node.right);
-      }
-    };
-    walk(ast);
-  } catch {
-    return ids;
-  }
-  return ids;
-}
-
-function collectDepsFromExpression(expr: string): Set<string> {
+function collectDepsFromExpression(expr: string, knownStepIds?: Set<string>): Set<string> {
   const deps = new Set<string>();
-  const ids = collectIdentifiers(expr);
-  for (const id of ids) {
-    const root = id.split(".")[0]!;
-    if (!TOON_RESERVED.has(root)) {
+  const raw = (expr ?? "").trim();
+  if (!raw) return deps;
+  // Strip string literals to avoid false positives
+  const stripped = raw.replace(/(["'`])(?:\\.|(?!\1).)*\1/g, "");
+  // Extract identifiers (word chars, may include dots and hyphens for step IDs)
+  const matches = stripped.match(/[A-Za-z_$][A-Za-z0-9_$-]*/g);
+  if (!matches) return deps;
+  for (const m of matches) {
+    const root = m.split(".")[0]!;
+    if (TOON_RESERVED.has(root)) continue;
+    // JS keywords/builtins to ignore
+    if (JS_KEYWORDS.has(root)) continue;
+    if (knownStepIds) {
+      if (knownStepIds.has(root)) deps.add(root);
+    } else {
       deps.add(root);
     }
   }
   return deps;
 }
 
-function collectDepsFromTemplate(template: string): Set<string> {
+const JS_KEYWORDS = new Set([
+  "break", "case", "catch", "continue", "debugger", "default", "delete",
+  "do", "else", "finally", "for", "function", "if", "in", "instanceof",
+  "new", "return", "switch", "this", "throw", "try", "typeof", "var",
+  "void", "while", "with", "class", "const", "enum", "export", "extends",
+  "import", "super", "implements", "interface", "let", "package", "private",
+  "protected", "public", "static", "yield", "undefined", "NaN", "Infinity",
+  "Math", "Date", "JSON", "String", "Number", "Boolean", "Array", "Object",
+  "RegExp", "Error", "Map", "Set", "Promise", "Symbol", "parseInt",
+  "parseFloat", "isNaN", "isFinite", "console", "window", "document",
+  "globalThis", "eval", "arguments", "of", "from",
+]);
+
+function collectDepsFromTemplate(template: string, knownStepIds?: Set<string>): Set<string> {
   const deps = new Set<string>();
   const nodes = parseTemplate(template ?? "");
-  const walkNodes = (items: TemplateNode[]) => {
-    for (const node of items) {
-      if (node.type === "expr") {
-        for (const dep of collectDepsFromExpression(node.expr)) deps.add(dep);
-      } else if (node.type === "if") {
-        for (const dep of collectDepsFromExpression(node.expr)) deps.add(dep);
-        walkNodes(node.children);
-      }
+  for (const node of nodes) {
+    if (node.type === "expr") {
+      for (const dep of collectDepsFromExpression(node.expr, knownStepIds)) deps.add(dep);
     }
-  };
-  walkNodes(nodes);
+  }
   return deps;
 }
 
@@ -1397,11 +1201,6 @@ function renderTemplateNodes(nodes: TemplateNode[], ctx: any): string {
     } else if (node.type === "expr") {
       const value = evaluateExpression(node.expr, ctx);
       out += formatTemplateValue(value);
-    } else if (node.type === "if") {
-      const cond = evaluateExpression(node.expr, ctx);
-      if (cond) {
-        out += renderTemplateNodes(node.children, ctx);
-      }
     }
   }
   return out;
@@ -2099,7 +1898,7 @@ function compileNode(node: any, env: ToonEnv): BuilderNode {
   }
   if (kind === "branch") {
     const conditionRaw = applyComponentId(node.condition ?? "", env.componentId) as string;
-    const deps = collectDepsFromExpression(conditionRaw);
+    const deps = collectDepsFromExpression(conditionRaw, env.seenIds);
     const needs = buildNeedsMap(env, deps);
     const thenNodes = Array.isArray(node.then) ? node.then : [];
     const elseNodes = Array.isArray(node.else) ? node.else : [];
@@ -2121,7 +1920,7 @@ function compileNode(node: any, env: ToonEnv): BuilderNode {
     const children = Array.isArray(node.children) ? node.children : [];
     const childNode = compileNodes(children, env);
     const skipIfRaw = node.skipIf ? String(applyComponentId(node.skipIf, env.componentId)) : undefined;
-    const skipDeps = skipIfRaw ? collectDepsFromExpression(skipIfRaw) : new Set<string>();
+    const skipDeps = skipIfRaw ? collectDepsFromExpression(skipIfRaw, env.seenIds) : new Set<string>();
     const needs = skipDeps.size ? buildNeedsMap(env, skipDeps) : undefined;
     return {
       kind: "worktree",
@@ -2154,9 +1953,9 @@ function compileNode(node: any, env: ToonEnv): BuilderNode {
       if (typeof value === "string") {
         const applied = String(applyComponentId(value, env.componentId));
         if (applied.includes("{")) {
-          for (const dep of collectDepsFromTemplate(applied)) deps.add(dep);
+          for (const dep of collectDepsFromTemplate(applied, env.seenIds)) deps.add(dep);
         } else {
-          for (const dep of collectDepsFromExpression(applied)) deps.add(dep);
+          for (const dep of collectDepsFromExpression(applied, env.seenIds)) deps.add(dep);
         }
       }
     }
@@ -2203,7 +2002,7 @@ function compileNode(node: any, env: ToonEnv): BuilderNode {
     const paramDeps = new Set<string>();
     for (const value of Object.values(appliedParams)) {
       if (typeof value === "string") {
-        for (const dep of collectDepsFromTemplate(value)) paramDeps.add(dep);
+        for (const dep of collectDepsFromTemplate(value, env.seenIds)) paramDeps.add(dep);
       }
     }
     const nextEnv: ToonEnv = {
@@ -2228,9 +2027,9 @@ function compileNode(node: any, env: ToonEnv): BuilderNode {
     const summaryTemplate = node.request?.summary
       ? String(applyComponentId(node.request.summary, env.componentId))
       : undefined;
-    for (const dep of collectDepsFromTemplate(titleTemplate)) deps.add(dep);
+    for (const dep of collectDepsFromTemplate(titleTemplate, env.seenIds)) deps.add(dep);
     if (summaryTemplate) {
-      for (const dep of collectDepsFromTemplate(summaryTemplate)) deps.add(dep);
+      for (const dep of collectDepsFromTemplate(summaryTemplate, env.seenIds)) deps.add(dep);
     }
     const needs = buildNeedsMap(env, deps);
     const request = (ctx: Record<string, unknown>) => {
@@ -2297,11 +2096,11 @@ function compileNode(node: any, env: ToonEnv): BuilderNode {
   }
 
   if (prompt) {
-    for (const dep of collectDepsFromTemplate(prompt)) deps.add(dep);
+    for (const dep of collectDepsFromTemplate(prompt, env.seenIds)) deps.add(dep);
   }
   const skipIfRaw = node.skipIf !== undefined ? String(applyComponentId(node.skipIf, env.componentId)) : undefined;
   if (skipIfRaw) {
-    for (const dep of collectDepsFromExpression(skipIfRaw)) deps.add(dep);
+    for (const dep of collectDepsFromExpression(skipIfRaw, env.seenIds)) deps.add(dep);
   }
   if (env.componentParamDeps) {
     for (const dep of env.componentParamDeps) deps.add(dep);
@@ -2323,9 +2122,9 @@ function compileNode(node: any, env: ToonEnv): BuilderNode {
       .filter((value: string) => value.length > 0);
     for (const entry of byEntries) {
       if (entry.includes("{")) {
-        for (const dep of collectDepsFromTemplate(entry)) deps.add(dep);
+        for (const dep of collectDepsFromTemplate(entry, env.seenIds)) deps.add(dep);
       } else {
-        for (const dep of collectDepsFromExpression(entry)) deps.add(dep);
+        for (const dep of collectDepsFromExpression(entry, env.seenIds)) deps.add(dep);
       }
     }
     if (byEntries.length > 0 || version) {
