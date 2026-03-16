@@ -884,12 +884,47 @@ async function computeTaskStates(
         desc.iteration,
       );
       if (approval?.status === "denied") {
-        const state: TaskState =
-          desc.approvalMode === "decision" && desc.approvalOnDeny !== "fail"
-            ? "pending"
-            : desc.continueOnFail
-              ? "skipped"
-              : "failed";
+        if (desc.approvalMode === "decision" && desc.approvalOnDeny !== "fail") {
+          // Decision-mode denial with onDeny=continue|skip: check whether the
+          // computeFn has already run and written an output row. If so, the
+          // task is finished; otherwise it is still pending (scheduled to run).
+          const outputRow = await selectOutputRow<any>(db, desc.outputTable as any, {
+            runId,
+            nodeId: desc.nodeId,
+            iteration: desc.iteration,
+          });
+          if (outputRow) {
+            const valid = validateExistingOutput(desc.outputTable as any, outputRow);
+            if (valid.ok) {
+              stateMap.set(key, "finished");
+              await adapter.insertNode({
+                runId,
+                nodeId: desc.nodeId,
+                iteration: desc.iteration,
+                state: "finished",
+                lastAttempt: null,
+                updatedAtMs: nowMs(),
+                outputTable: desc.outputTableName,
+                label: desc.label ?? null,
+              });
+              continue;
+            }
+          }
+          stateMap.set(key, "pending");
+          await adapter.insertNode({
+            runId,
+            nodeId: desc.nodeId,
+            iteration: desc.iteration,
+            state: "pending",
+            lastAttempt: null,
+            updatedAtMs: nowMs(),
+            outputTable: desc.outputTableName,
+            label: desc.label ?? null,
+          });
+          await maybeEmitStateEvent("pending", desc);
+          continue;
+        }
+        const state: TaskState = desc.continueOnFail ? "skipped" : "failed";
         stateMap.set(key, state);
         await adapter.insertNode({
           runId,
@@ -902,9 +937,6 @@ async function computeTaskStates(
           label: desc.label ?? null,
         });
         await maybeEmitStateEvent(state, desc);
-        if (state === "pending") {
-          continue;
-        }
         continue;
       }
       if (!approval || approval.status !== "approved") {
