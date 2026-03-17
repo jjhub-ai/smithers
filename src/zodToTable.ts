@@ -6,7 +6,7 @@ import {
 } from "drizzle-orm/sqlite-core";
 import { z } from "zod";
 import { unwrapZodType } from "./unwrapZodType";
-import { camelToSnake } from "./camelToSnake";
+import { camelToSnake } from "./utils/camelToSnake";
 
 /**
  * Determines the Zod base type name from a (possibly unwrapped) Zod type.

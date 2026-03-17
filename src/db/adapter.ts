@@ -467,7 +467,7 @@ export class SmithersDb {
           }
 
           return yield* fromSync("insert event transaction", () => {
-            client.exec("BEGIN IMMEDIATE");
+            client.run("BEGIN IMMEDIATE");
             try {
               const res = client
                 .query(
@@ -480,11 +480,11 @@ export class SmithersDb {
                   "INSERT INTO _smithers_events (run_id, seq, timestamp_ms, type, payload_json) VALUES (?, ?, ?, ?, ?)",
                 )
                 .run(row.runId, seq, row.timestampMs, row.type, row.payloadJson);
-              client.exec("COMMIT");
+              client.run("COMMIT");
               return seq;
             } catch (error) {
               try {
-                client.exec("ROLLBACK");
+                client.run("ROLLBACK");
               } catch {
                 // ignore rollback failures
               }

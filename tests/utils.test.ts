@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { camelToSnake } from "../src/camelToSnake";
+import { camelToSnake } from "../src/utils/camelToSnake";
 import { unwrapZodType } from "../src/unwrapZodType";
 import { SmithersError, isSmithersError, errorToJson } from "../src/utils/errors";
 import { newRunId } from "../src/utils/ids";

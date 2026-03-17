@@ -131,13 +131,9 @@ export {
   vcsDuration,
 } from "./observability";
 
-// Effect builder
+// Effect builder (internal, exposes Toon + SQLite helpers)
 export { Smithers } from "./effect/builder";
-export type {
-  BuiltSmithersWorkflow,
-  ComponentDefinition,
-  SmithersSqliteOptions,
-} from "./effect/builder";
+export type { SmithersSqliteOptions } from "./effect/builder";
 
 // DB
 export { SmithersDb } from "./db/adapter";
@@ -151,22 +147,6 @@ export type { HostContainer } from "./dom/renderer";
 export { revertToAttempt } from "./revert";
 export type { RevertOptions, RevertResult } from "./revert";
 
-// Linear
-export { useLinear, linearTools, getLinearClient } from "./linear/index";
-export {
-  startWebhookServer,
-  useLinearWebhook,
-  LinearWebhookListener,
-} from "./linear/index";
-export type { LinearIssue, LinearTeam, LinearComment } from "./linear/index";
-export type {
-  WebhookServerOptions,
-  WebhookServer,
-  UseLinearWebhookOptions,
-  UseLinearWebhookResult,
-  WebhookIssueEvent,
-  LinearWebhookListenerProps,
-} from "./linear/index";
 
 // Utilities
 export { mdxPlugin } from "./mdx-plugin";
@@ -174,6 +154,6 @@ export { markdownComponents } from "./markdownComponents";
 export { renderMdx } from "./renderMdx";
 export { zodToTable } from "./zodToTable";
 export { zodToCreateTableSQL } from "./zodToCreateTableSQL";
-export { camelToSnake } from "./camelToSnake";
+export { camelToSnake } from "./utils/camelToSnake";
 export { unwrapZodType } from "./unwrapZodType";
 export { zodSchemaToJsonExample } from "./zod-to-example";

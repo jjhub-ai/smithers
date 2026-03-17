@@ -212,7 +212,7 @@ export function generateLlmsFull(rootDir = process.cwd()) {
 
   let output = `# Smithers
 
-> Deterministic, resumable AI workflow orchestration using TOON, JSX, and Effect Builder.
+> Deterministic, resumable AI workflow orchestration using TOON and JSX.
 > Source: https://smithers.sh
 > GitHub: https://github.com/evmts/smithers
 > Package: smithers-orchestrator on npm

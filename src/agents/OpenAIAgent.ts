@@ -5,15 +5,13 @@ import { resolveSdkModel, type SdkAgentOptions } from "./sdk-shared";
 export type OpenAIAgentOptions<
   CALL_OPTIONS = never,
   TOOLS extends ToolSet = {},
-  OUTPUT = any,
-> = SdkAgentOptions<CALL_OPTIONS, TOOLS, OUTPUT, ReturnType<typeof openai>>;
+> = SdkAgentOptions<CALL_OPTIONS, TOOLS, ReturnType<typeof openai>>;
 
 export class OpenAIAgent<
   CALL_OPTIONS = never,
   TOOLS extends ToolSet = {},
-  OUTPUT = any,
-> extends ToolLoopAgent<CALL_OPTIONS, TOOLS, OUTPUT> {
-  constructor(opts: OpenAIAgentOptions<CALL_OPTIONS, TOOLS, OUTPUT>) {
+> extends ToolLoopAgent<CALL_OPTIONS, TOOLS> {
+  constructor(opts: OpenAIAgentOptions<CALL_OPTIONS, TOOLS>) {
     const { model, ...rest } = opts;
     super({
       ...rest,

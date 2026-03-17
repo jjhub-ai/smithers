@@ -16,7 +16,7 @@ import type { ApprovalProps, WorkflowProps, TaskProps } from "./components";
 
 import { zodToTable } from "./zodToTable";
 import { zodToCreateTableSQL } from "./zodToCreateTableSQL";
-import { camelToSnake } from "./camelToSnake";
+import { camelToSnake } from "./utils/camelToSnake";
 import { resolve } from "node:path";
 import type { z } from "zod";
 
@@ -110,9 +110,9 @@ export function createSmithers<
 
   // 2. Create SQLite db
   const sqlite = new Database(dbPath);
-  sqlite.exec(`PRAGMA journal_mode = ${opts?.journalMode ?? "WAL"}`);
-  sqlite.exec("PRAGMA busy_timeout = 5000");
-  sqlite.exec("PRAGMA foreign_keys = ON");
+  sqlite.run(`PRAGMA journal_mode = ${opts?.journalMode ?? "WAL"}`);
+  sqlite.run("PRAGMA busy_timeout = 5000");
+  sqlite.run("PRAGMA foreign_keys = ON");
 
   // Register a process-exit hook to explicitly close the Database.
   // bun:sqlite's GC finalizer calls sqlite3_close() which fatally aborts if
@@ -136,7 +136,7 @@ export function createSmithers<
     }>;
     const hasPayload = cols.some((col) => col?.name === "payload");
     if (!hasPayload) {
-      sqlite.exec(`ALTER TABLE "input" ADD COLUMN payload TEXT`);
+      sqlite.run(`ALTER TABLE "input" ADD COLUMN payload TEXT`);
     }
   } catch {
     // ignore - older SQLite or permission issues; input payload remains best-effort
@@ -145,7 +145,7 @@ export function createSmithers<
   for (const [name, zodSchema] of Object.entries(schemas)) {
     const tableName = camelToSnake(name);
     const ddl = zodToCreateTableSQL(tableName, zodSchema);
-    sqlite.exec(ddl);
+    sqlite.run(ddl);
   }
 
   // 4. Create Drizzle instance with all tables in the schema

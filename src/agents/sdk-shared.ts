@@ -3,9 +3,8 @@ import type { ToolLoopAgentSettings, ToolSet } from "ai";
 export type SdkAgentOptions<
   CALL_OPTIONS = never,
   TOOLS extends ToolSet = {},
-  OUTPUT = any,
   MODEL = any,
-> = Omit<ToolLoopAgentSettings<CALL_OPTIONS, TOOLS, OUTPUT>, "model"> & {
+> = Omit<ToolLoopAgentSettings<CALL_OPTIONS, TOOLS>, "model"> & {
   /**
    * Either a provider model id string or a preconstructed AI SDK language model.
    * Passing a model instance is mainly useful for tests and advanced provider setup.

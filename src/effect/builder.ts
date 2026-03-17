@@ -43,7 +43,7 @@ import {
   Worktree,
   Workflow,
 } from "../components";
-import { camelToSnake } from "../camelToSnake";
+import { camelToSnake } from "../utils/camelToSnake";
 
 type AnySchema = any;
 type AnyEffect = any;
@@ -818,14 +818,14 @@ function createInputTable() {
 
 function createBuilderDb(filename: string, handles: BuilderStepHandle[]) {
   const sqlite = new Database(filename);
-  sqlite.exec("PRAGMA journal_mode = WAL");
-  sqlite.exec("PRAGMA busy_timeout = 5000");
-  sqlite.exec("PRAGMA foreign_keys = ON");
-  sqlite.exec(
+  sqlite.run("PRAGMA journal_mode = WAL");
+  sqlite.run("PRAGMA busy_timeout = 5000");
+  sqlite.run("PRAGMA foreign_keys = ON");
+  sqlite.run(
     `CREATE TABLE IF NOT EXISTS "input" (run_id TEXT PRIMARY KEY, payload TEXT)`,
   );
   for (const handle of handles) {
-    sqlite.exec(
+    sqlite.run(
       `CREATE TABLE IF NOT EXISTS "${handle.tableName}" (` +
         `run_id TEXT NOT NULL, ` +
         `node_id TEXT NOT NULL, ` +
@@ -2438,10 +2438,6 @@ function loadToon(path: string): BuiltSmithersWorkflow {
 }
 
 export const Smithers = {
-  workflow: createWorkflow,
-  component: createComponent,
   sqlite,
   loadToon,
 };
-
-export type { ComponentDefinition };

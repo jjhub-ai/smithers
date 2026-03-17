@@ -150,7 +150,7 @@ export function ensureSmithersTablesEffect(
       `ALTER TABLE _smithers_runs ADD COLUMN vcs_revision TEXT`,
     ];
     for (const statement of migrations) {
-      yield* Effect.either(fromSync("run smithers migration", () => client.exec(statement)));
+      yield* Effect.either(fromSync("run smithers migration", () => client.run(statement)));
     }
   }).pipe(Effect.withLogSpan("db:ensure-smithers-tables"));
 }
