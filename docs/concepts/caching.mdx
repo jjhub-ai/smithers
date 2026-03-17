@@ -30,21 +30,6 @@ steps[1]:
       version: analysis-v1
 ```
 
-**In the Effect builder:**
-
-```ts
-const analyze = $.step("analyze", {
-  output: Analysis,
-  cache: {
-    by: ({ input }) => ({
-      ticketId: input.ticketId,
-      description: input.description,
-    }),
-    version: "analysis-v1",
-  },
-  run: ({ input }) => ...,
-});
-```
 
 This says:
 

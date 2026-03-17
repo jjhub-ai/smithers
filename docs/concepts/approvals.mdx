@@ -23,7 +23,7 @@ Instead of:
 needsApproval: true
 ```
 
-approvals are explicit nodes in JSX, TOON, and the Effect builder.
+approvals are explicit nodes in JSX and TOON.
 
 **In JSX:**
 
@@ -95,31 +95,6 @@ steps[3]:
       url: string
 ```
 
-**In the Effect builder:**
-
-```ts
-const build = $.step("build", {
-  output: BuildResult,
-  run: ...,
-});
-
-const approveDeploy = $.approval("approve-deploy", {
-  needs: { build },
-  request: ({ build }) => ({
-    title: `Deploy ${build.version}?`,
-    summary: `Commit ${build.commitSha} passed all checks.`,
-  }),
-  onDeny: "fail",
-});
-
-const deploy = $.step("deploy", {
-  output: Deployment,
-  needs: { build, approval: approveDeploy },
-  run: ({ build }) => ...,
-});
-
-return $.sequence(build, approveDeploy, deploy);
-```
 
 This is better for three reasons:
 

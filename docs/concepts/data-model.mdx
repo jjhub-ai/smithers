@@ -23,18 +23,8 @@ input:
   description: string
 ```
 
-**In the Effect builder:**
 
-```ts
-import { Schema } from "effect";
-
-class Input extends Schema.Class<Input>("Input")({
-  ticketId: Schema.String,
-  description: Schema.String,
-}) {}
-```
-
-Both compile to the same `Schema` validation. Smithers validates input against this schema before the workflow starts. After validation, steps receive a typed `input` value.
+Smithers validates input against this schema before the workflow starts. After validation, steps receive a typed `input` value.
 
 Use `Schema` for input because:
 
@@ -58,24 +48,8 @@ steps[1]:
 
 TOON output schemas compile to `Model.Class` definitions automatically.
 
-**In the Effect builder:**
 
-```ts
-import { Model } from "@effect/sql";
-import { Schema } from "effect";
-
-class Analysis extends Model.Class<Analysis>("Analysis")({
-  summary: Schema.String,
-  severity: Schema.Literal("low", "medium", "high"),
-}) {}
-
-class Fix extends Model.Class<Fix>("Fix")({
-  patch: Schema.String,
-  explanation: Schema.String,
-}) {}
-```
-
-The important point is that these are **domain models**, not workflow bookkeeping types.
+TOON output schemas compile to model definitions automatically.
 
 You should not need to add fields like:
 

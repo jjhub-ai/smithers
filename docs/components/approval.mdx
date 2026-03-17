@@ -4,10 +4,10 @@ description: A first-class JSX approval node that pauses durably and resolves to
 ---
 
 <Warning>
-  **JSX API** — This page documents the JSX-based API. For alternative approaches, see [TOON](/toon/overview) (declarative) or the [Effect builder](/effect/overview) (TypeScript).
+  **JSX API** — This page documents the JSX-based API. For the declarative alternative, see [TOON](/toon/overview).
 </Warning>
 
-`<Approval>` is the explicit approval-node counterpart to `$.approval()` in the Effect builder and `kind: approval` in TOON.
+`<Approval>` is the explicit approval-node counterpart to `kind: approval` in TOON.
 
 It pauses the workflow until a human approves or denies the node, then writes an `ApprovalDecision` row to the configured output table:
 
