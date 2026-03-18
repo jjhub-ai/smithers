@@ -36,6 +36,7 @@ import {
 import { runWithToolContext } from "../tools/context";
 import { EventBus } from "../events";
 import { getJjPointer } from "../vcs/jj";
+import { findVcsRoot } from "../vcs/find-root";
 import { z } from "zod";
 import { eq, getTableName } from "drizzle-orm";
 import { getTableColumns } from "drizzle-orm/utils";
@@ -110,21 +111,6 @@ async function runGitCommand(
   });
 }
 
-/**
- * Walk up from `startDir` to find the nearest directory containing `.git` or `.jj`.
- * Returns the VCS type and root path, or null if neither is found.
- */
-function findVcsRoot(startDir: string): { type: "git" | "jj"; root: string } | null {
-  let dir = resolve(startDir);
-  const { root: fsRoot } = require("node:path").parse(dir);
-  while (true) {
-    if (existsSync(resolve(dir, ".git"))) return { type: "git", root: dir };
-    if (existsSync(resolve(dir, ".jj"))) return { type: "jj", root: dir };
-    const parent = dirname(dir);
-    if (parent === dir || dir === fsRoot) return null;
-    dir = parent;
-  }
-}
 
 /**
  * Ensure a worktree exists at `worktreePath`, creating it from `rootDir`
