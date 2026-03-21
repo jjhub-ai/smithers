@@ -156,8 +156,10 @@ async function ensureWorktree(
   // Walk up from rootDir to find the actual VCS root
   const vcs = findVcsRoot(rootDir);
   if (!vcs) {
-    throw new Error(
+    throw new SmithersError(
+      "VCS_NOT_FOUND",
       `Cannot create worktree: no git or jj repository found from ${rootDir}`,
+      { rootDir },
     );
   }
 
@@ -179,8 +181,10 @@ async function ensureWorktree(
     const name = worktreePath.split("/").pop() ?? "worktree";
     const wsResult = await workspaceAdd(name, worktreePath, { cwd: vcs.root, atRev: baseBranch });
     if (!wsResult.success) {
-      throw new Error(
+      throw new SmithersError(
+        "WORKTREE_CREATE_FAILED",
         `Failed to create jj workspace at ${worktreePath}: ${wsResult.error}`,
+        { worktreePath, vcsType: "jj" },
       );
     }
     // Create a bookmark pointing at the new workspace's working copy
@@ -189,8 +193,10 @@ async function ensureWorktree(
         cwd: worktreePath,
       });
       if (setRes.code !== 0) {
-        throw new Error(
+        throw new SmithersError(
+          "WORKTREE_CREATE_FAILED",
           `Failed to set jj bookmark ${branch} in ${worktreePath}: ${setRes.stderr || `exit ${setRes.code}`}`,
+          { worktreePath, branch, vcsType: "jj" },
         );
       }
     }
@@ -218,8 +224,10 @@ async function ensureWorktree(
         failures.push(`${ref}: ${result.stderr || `exit ${result.code}`}`);
       }
       if (!created) {
-        throw new Error(
+        throw new SmithersError(
+          "WORKTREE_CREATE_FAILED",
           `Failed to create git worktree at ${worktreePath} on branch ${branch}. Tried main, origin/main, and HEAD. ${failures.join(" | ")}`,
+          { worktreePath, branch, vcsType: "git" },
         );
       }
     } else {
@@ -239,8 +247,10 @@ async function ensureWorktree(
         failures.push(`${ref}: ${result.stderr || `exit ${result.code}`}`);
       }
       if (!created) {
-        throw new Error(
+        throw new SmithersError(
+          "WORKTREE_CREATE_FAILED",
           `Failed to create git worktree at ${worktreePath}. Tried main, origin/main, and HEAD. ${failures.join(" | ")}`,
+          { worktreePath, vcsType: "git" },
         );
       }
     }
@@ -1799,7 +1809,7 @@ async function executeTask(
                 debugSteps[debugSteps.length - 1]?.text?.slice(0, 500) ??
                 "none",
             }, "engine:task-json");
-            throw new Error("No valid JSON output found in agent response");
+            throw new SmithersError("INVALID_OUTPUT", "No valid JSON output found in agent response");
           }
         }
 
@@ -1813,7 +1823,8 @@ async function executeTask(
               "/tmp/smithers_debug.log",
               `[JSON Debug] output is string, length=${output.length}, preview: ${output.slice(0, 500)}\n`,
             );
-            throw new Error(
+            throw new SmithersError(
+              "INVALID_OUTPUT",
               `Failed to parse agent output as JSON. Output starts with: "${output.slice(0, 100)}"`,
             );
           }
