@@ -58,14 +58,22 @@ export class ClaudeCodeAgent extends BaseCliAgent {
   private readonly opts: ClaudeCodeAgentOptions;
 
   constructor(opts: ClaudeCodeAgentOptions = {}) {
-    // Unset ANTHROPIC_API_KEY so Claude Code uses the subscription instead of API billing.
-    // If you want API billing, use ToolLoopAgent from "ai" with anthropic() provider instead.
+    // Clear env vars that cause "Cannot run nested Claude Code instances" errors.
+    // CLAUDE_CODE_ENTRYPOINT / CLAUDECODE are set by a parent Claude Code process;
+    // child instances refuse to start when they detect these.
+    // ANTHROPIC_API_KEY is cleared so Claude Code uses the subscription instead of API billing.
+    const parentEnvOverrides: Record<string, string> = {};
+    if (process.env.CLAUDE_CODE_ENTRYPOINT) parentEnvOverrides.CLAUDE_CODE_ENTRYPOINT = "";
+    if (process.env.CLAUDECODE) parentEnvOverrides.CLAUDECODE = "";
     if (process.env.ANTHROPIC_API_KEY) {
       console.warn(
         "[smithers] ClaudeCodeAgent: unsetting ANTHROPIC_API_KEY so Claude Code uses your subscription. " +
         "To use API billing instead, use ToolLoopAgent from 'ai' with anthropic() provider.",
       );
-      opts = { ...opts, env: { ...opts.env, ANTHROPIC_API_KEY: "" } };
+      parentEnvOverrides.ANTHROPIC_API_KEY = "";
+    }
+    if (Object.keys(parentEnvOverrides).length > 0) {
+      opts = { ...opts, env: { ...parentEnvOverrides, ...opts.env } };
     }
     super(opts);
     this.opts = opts;
