@@ -26,6 +26,7 @@
   "files": [
     "src/",
     "docs/",
+    "observability/",
     "README.md",
     "LICENSE"
   ],
