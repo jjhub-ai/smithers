@@ -186,6 +186,16 @@ const hostConfig: any = {
 
 const reconciler = Reconciler(hostConfig);
 
+// Register with React DevTools hook (if present).
+// This enables Bippy, react-devtools-inline, and other devtools that listen
+// for fiber commits via __REACT_DEVTOOLS_GLOBAL_HOOK__.
+(reconciler as any).injectIntoDevTools({
+  bundleType: typeof process !== "undefined" && process.env.NODE_ENV === "production" ? 0 : 1,
+  version: "0.1.0",
+  rendererPackageName: "smithers",
+  findFiberByHostInstance: () => null,
+});
+
 export class SmithersRenderer {
   private container: HostContainer;
   private root: any;

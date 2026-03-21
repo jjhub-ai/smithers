@@ -1038,9 +1038,24 @@ const cli = Cli.create({
     },
   });
 
+const KNOWN_COMMANDS = new Set([
+  "run", "resume", "approve", "deny", "status", "frames",
+  "list", "graph", "revert", "cancel", "observability", "tui",
+]);
+
 async function main() {
   const rawArgv = process.argv.slice(2);
-  const argv = rawArgv.map((arg) => (arg === "-v" ? "--version" : arg));
+  let argv = rawArgv.map((arg) => (arg === "-v" ? "--version" : arg));
+
+  // Allow running workflow files directly: `smithers workflow.toon` → `smithers run workflow.toon`
+  const firstPositional = argv.find((arg) => !arg.startsWith("-"));
+  if (
+    firstPositional &&
+    !KNOWN_COMMANDS.has(firstPositional) &&
+    (firstPositional.endsWith(".toon") || firstPositional.endsWith(".tsx"))
+  ) {
+    argv = ["run", ...argv];
+  }
 
   // --mcp mode: the MCP server needs to stay alive listening on stdin.
   // Do not call process.exit() — let the process stay open until stdin closes.

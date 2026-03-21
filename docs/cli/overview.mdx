@@ -19,6 +19,14 @@ Execute a workflow from a `.tsx` or `.toon` file.
 smithers run <workflow.tsx | workflow.toon> [options]
 ```
 
+You can also pass a workflow file directly without the `run` subcommand:
+
+```bash
+smithers workflow.toon --input '{"topic": "Zig"}'
+```
+
+This is equivalent to `smithers run workflow.toon --input '{"topic": "Zig"}'`.
+
 | Option | Description |
 |---|---|
 | `--input JSON` | Input data as a JSON string. Parsed and passed to `runWorkflow`. |

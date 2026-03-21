@@ -81,6 +81,7 @@
     "@types/react-dom": "^19.2.3",
     "@types/react-reconciler": "^0.28.9",
     "ai": "^6.0.69",
+    "bippy": "^0.5.32",
     "diff": "^5.2.0",
     "drizzle-orm": "^0.45.1",
     "drizzle-zod": "^0.8.3",

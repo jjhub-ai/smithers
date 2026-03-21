@@ -189,7 +189,7 @@ async function ensureWorktree(
     }
     // Create a bookmark pointing at the new workspace's working copy
     if (branch) {
-      const setRes = await runJj(["bookmark", "set", branch, "-r", "@"], {
+      const setRes = await runJj(["bookmark", "set", branch, "-r", "@", "--allow-backwards"], {
         cwd: worktreePath,
       });
       if (setRes.code !== 0) {
