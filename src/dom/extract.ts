@@ -7,6 +7,7 @@ import {
   DEFAULT_MERGE_QUEUE_CONCURRENCY,
   WORKTREE_EMPTY_PATH_ERROR,
 } from "../constants";
+import { SmithersError } from "../utils/errors";
 
 export type HostNode = HostElement | HostText;
 
@@ -159,14 +160,14 @@ export function extractFromHost(
 
     if (node.tag === "smithers:ralph") {
       if (ctx.parentIsRalph) {
-        throw new Error("Nested <Ralph> is not supported.");
+        throw new SmithersError("NESTED_LOOP", "Nested <Ralph> is not supported.");
       }
       const logicalId = resolveStableId(node.rawProps?.id, "ralph", ctx.path);
       // Scope ralph ID by ancestor loop iterations for nested loops
       const scope = buildLoopScope(loopStack);
       const id = logicalId + scope;
       if (seenRalph.has(id)) {
-        throw new Error(`Duplicate Ralph id detected: ${id}`);
+        throw new SmithersError("DUPLICATE_ID", `Duplicate Ralph id detected: ${id}`, { kind: "ralph", id });
       }
       seenRalph.add(id);
       ralphId = id;
@@ -198,12 +199,12 @@ export function extractFromHost(
     if (node.tag === "smithers:worktree") {
       const id = resolveStableId(node.rawProps?.id, "worktree", ctx.path);
       if (seenWorktree.has(id)) {
-        throw new Error(`Duplicate Worktree id detected: ${id}`);
+        throw new SmithersError("DUPLICATE_ID", `Duplicate Worktree id detected: ${id}`, { kind: "worktree", id });
       }
       seenWorktree.add(id);
       let pathVal = String(node.rawProps?.path ?? "").trim();
       if (!pathVal) {
-        throw new Error(WORKTREE_EMPTY_PATH_ERROR);
+        throw new SmithersError("WORKTREE_EMPTY_PATH", WORKTREE_EMPTY_PATH_ERROR);
       }
       const baseRoot = opts?.baseRootDir;
       const base =
@@ -221,7 +222,7 @@ export function extractFromHost(
       const raw = node.rawProps || {};
       const logicalNodeId = raw.id;
       if (!logicalNodeId || typeof logicalNodeId !== "string") {
-        throw new Error("Task id is required and must be a string.");
+        throw new SmithersError("TASK_ID_REQUIRED", "Task id is required and must be a string.");
       }
       // Scope task nodeId by ancestor loops (all except the innermost, which
       // is already captured by desc.iteration).
@@ -231,13 +232,13 @@ export function extractFromHost(
           : "";
       const nodeId = logicalNodeId + ancestorScope;
       if (seen.has(nodeId)) {
-        throw new Error(`Duplicate Task id detected: ${nodeId}`);
+        throw new SmithersError("DUPLICATE_ID", `Duplicate Task id detected: ${nodeId}`, { kind: "task", id: nodeId });
       }
       seen.add(nodeId);
 
       const outputRaw = raw.output;
       if (!outputRaw) {
-        throw new Error(`Task ${nodeId} is missing output.`);
+        throw new SmithersError("TASK_MISSING_OUTPUT", `Task ${nodeId} is missing output.`, { nodeId });
       }
 
       const outputTable: any = isDrizzleTable(outputRaw) ? outputRaw : null;
@@ -274,7 +275,8 @@ export function extractFromHost(
       const isAgent = kind === "agent" || Boolean(agent);
       const prompt = isAgent ? String(raw.children ?? "") : undefined;
       if (prompt === "[object Object]") {
-        throw new Error(
+        throw new SmithersError(
+          "MDX_PRELOAD_INACTIVE",
           `Task "${raw.id ?? nodeId}" prompt resolved to [object Object] — MDX preload is likely not active.\n` +
             `Check that bunfig.toml has a top-level preload (not under [run]) and mdxPlugin() is registered.`,
         );

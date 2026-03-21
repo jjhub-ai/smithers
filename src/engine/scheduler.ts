@@ -2,6 +2,7 @@ import type { XmlNode } from "../XmlNode";
 import type { TaskDescriptor } from "../TaskDescriptor";
 import { resolveStableId } from "../utils/tree-ids";
 import { parseBool, parseNum } from "../utils/parse";
+import { SmithersError } from "../utils/errors";
 
 export type PlanNode =
   | { kind: "task"; nodeId: string }
@@ -86,7 +87,7 @@ export function buildPlanTree(
     const tag = node.tag;
 
     if (ctx.parentIsRalph && tag === "smithers:ralph") {
-      throw new Error("Nested <Ralph> is not supported.");
+      throw new SmithersError("NESTED_LOOP", "Nested <Ralph> is not supported.");
     }
 
     let loopStack = ctx.loopStack;
@@ -150,7 +151,7 @@ export function buildPlanTree(
     if (tag === "smithers:ralph") {
       const id = scopedRalphId!;
       if (seenRalph.has(id)) {
-        throw new Error(`Duplicate Ralph id detected: ${id}`);
+        throw new SmithersError("DUPLICATE_ID", `Duplicate Ralph id detected: ${id}`, { kind: "ralph", id });
       }
       seenRalph.add(id);
       const until = parseBool(node.props.until);
