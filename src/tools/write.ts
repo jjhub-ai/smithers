@@ -9,6 +9,7 @@ import { fromSync } from "../effect/interop";
 import { runPromise } from "../effect/runtime";
 import { resolveSandboxPath, assertPathWithinRootEffect } from "./utils";
 import { getToolContext } from "./context";
+import { SmithersError } from "../utils/errors";
 import { logToolCallEffect, logToolCallStartEffect } from "./logToolCall";
 
 export function writeToolEffect(path: string, content: string) {
@@ -27,7 +28,7 @@ export function writeToolEffect(path: string, content: string) {
     );
     yield* assertPathWithinRootEffect(root, resolved);
     if (contentBytes > max) {
-      throw new Error(`Content too large (${contentBytes} bytes)`);
+      throw new SmithersError("TOOL_CONTENT_TOO_LARGE", `Content too large (${contentBytes} bytes)`);
     }
     yield* fs.makeDirectory(dirname(resolved), { recursive: true });
     yield* fs.writeFileString(resolved, content, { flag: "w" });

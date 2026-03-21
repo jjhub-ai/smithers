@@ -7,6 +7,7 @@ import { fromSync } from "../effect/interop";
 import { runPromise } from "../effect/runtime";
 import { resolveSandboxPath, assertPathWithinRootEffect } from "./utils";
 import { getToolContext } from "./context";
+import { SmithersError } from "../utils/errors";
 import {
   logToolCallEffect,
   logToolCallStartEffect,
@@ -28,7 +29,7 @@ export function readToolEffect(path: string) {
     const max = ctx?.maxOutputBytes ?? 200_000;
     const stats = yield* fs.stat(resolved);
     if (Number(stats.size) > max) {
-      throw new Error(`File too large (${stats.size} bytes)`);
+      throw new SmithersError("TOOL_FILE_TOO_LARGE", `File too large (${stats.size} bytes)`);
     }
     const content = yield* fs.readFileString(resolved, "utf8");
     const output = truncateToBytes(content, max);

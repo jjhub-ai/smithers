@@ -7,6 +7,7 @@ import { fromSync } from "../effect/interop";
 import { runPromise } from "../effect/runtime";
 import { resolveSandboxPath, assertPathWithinRootEffect } from "./utils";
 import { getToolContext } from "./context";
+import { SmithersError } from "../utils/errors";
 import {
   logToolCallEffect,
   logToolCallStartEffect,
@@ -43,12 +44,12 @@ export function bashToolEffect(
         "pip",
       ];
       if (networkCommands.some((fragment) => hay.includes(fragment))) {
-        throw new Error("Network access is disabled for bash tool");
+        throw new SmithersError("TOOL_NETWORK_DISABLED", "Network access is disabled for bash tool");
       }
       if (hay.includes("git")) {
         const gitRemoteOps = ["push", "pull", "fetch", "clone", "remote"];
         if (gitRemoteOps.some((op) => hay.includes(op))) {
-          throw new Error("Git remote operations are disabled for bash tool");
+          throw new SmithersError("TOOL_GIT_REMOTE_DISABLED", "Git remote operations are disabled for bash tool");
         }
       }
     }
@@ -67,7 +68,7 @@ export function bashToolEffect(
       maxOutputBytes,
     );
     if (result.exitCode !== 0) {
-      throw new Error(`Command failed with exit code ${result.exitCode}`);
+      throw new SmithersError("TOOL_COMMAND_FAILED", `Command failed with exit code ${result.exitCode}`);
     }
     yield* logToolCallEffect(
       "bash",

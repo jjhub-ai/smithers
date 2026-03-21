@@ -7,6 +7,7 @@ import { fromSync } from "../effect/interop";
 import { runPromise } from "../effect/runtime";
 import { resolveSandboxPath, assertPathWithinRootEffect } from "./utils";
 import { getToolContext } from "./context";
+import { SmithersError } from "../utils/errors";
 import { logToolCallEffect, logToolCallStartEffect } from "./logToolCall";
 
 export function grepToolEffect(pattern: string, path?: string) {
@@ -34,7 +35,7 @@ export function grepToolEffect(pattern: string, path?: string) {
     );
     const logOutput = { output: result.stdout, stderr: result.stderr };
     if (result.exitCode === 2) {
-      throw new Error(result.stderr || "rg failed");
+      throw new SmithersError("TOOL_GREP_FAILED", result.stderr || "rg failed");
     }
     yield* logToolCallEffect(
       "grep",

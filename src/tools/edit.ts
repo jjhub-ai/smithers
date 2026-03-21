@@ -9,6 +9,7 @@ import { fromSync } from "../effect/interop";
 import { runPromise } from "../effect/runtime";
 import { resolveSandboxPath, assertPathWithinRootEffect } from "./utils";
 import { getToolContext } from "./context";
+import { SmithersError } from "../utils/errors";
 import { logToolCallEffect, logToolCallStartEffect } from "./logToolCall";
 
 export function editToolEffect(path: string, patch: string) {
@@ -27,18 +28,18 @@ export function editToolEffect(path: string, patch: string) {
     );
     yield* assertPathWithinRootEffect(root, resolved);
     if (patchBytes > max) {
-      throw new Error(`Patch too large (${patchBytes} bytes)`);
+      throw new SmithersError("TOOL_PATCH_TOO_LARGE", `Patch too large (${patchBytes} bytes)`);
     }
     const stats = yield* fs.stat(resolved);
     if (Number(stats.size) > max) {
-      throw new Error(`File too large (${stats.size} bytes)`);
+      throw new SmithersError("TOOL_FILE_TOO_LARGE", `File too large (${stats.size} bytes)`);
     }
     const current = yield* fs.readFileString(resolved, "utf8");
     const updated = yield* fromSync("apply unified diff patch", () =>
       applyPatch(current, patch),
     );
     if (updated === false) {
-      throw new Error("Failed to apply patch");
+      throw new SmithersError("TOOL_PATCH_FAILED", "Failed to apply patch");
     }
     yield* fs.writeFileString(resolved, updated, { flag: "w" });
     yield* logToolCallEffect(
