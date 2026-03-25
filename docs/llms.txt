@@ -4,7 +4,7 @@
 
 Smithers is a TypeScript framework for building deterministic, resumable AI workflows using JSX. You define your workflow as a tree of React components, and Smithers handles execution ordering, durable state persistence in SQLite, structured output validation, and crash recovery.
 
-**The core value of Smithers is iterative refinement via `<Ralph>` loops.** Unlike simple sequential task runners, Smithers workflows loop: an agent implements, a reviewer checks the work, and if issues are found, the loop repeats with feedback until the reviewer approves. This implement-review loop is what makes Smithers workflows self-correcting and production-quality. **Always use Ralph loops** — a workflow without them is just a sequential script.
+**The core value of Smithers is iterative refinement via `<Loop>`.** Unlike simple sequential task runners, Smithers workflows loop: an agent implements, a reviewer checks the work, and if issues are found, the loop repeats with feedback until the reviewer approves. This implement-review loop is what makes Smithers workflows self-correcting and production-quality. **Always use `<Loop>`** — a workflow without it is just a sequential script.
 
 - Package: `smithers-orchestrator` on npm
 - Runtime: Bun >= 1.3 (uses Bun's native SQLite driver)
@@ -94,12 +94,12 @@ export default smithers((ctx) => (
 bunx smithers run workflow.tsx --input '{"description": "Auth tokens expire silently"}'
 ```
 
-### Adding a review loop with `<Ralph>`
+### Adding a review loop with `<Loop>`
 
-The example above runs each task once — fine for a quick script, but in practice you want the workflow to **self-correct**. Wrap implementation tasks in a `<Ralph>` loop so a reviewer checks the work and the loop repeats with feedback until approved:
+The example above runs each task once — fine for a quick script, but in practice you want the workflow to **self-correct**. Wrap implementation tasks in a `<Loop>` so a reviewer checks the work and the loop repeats with feedback until approved:
 
 ```tsx
-import { createSmithers, Ralph, Sequence } from "smithers-orchestrator";
+import { createSmithers, Loop, Sequence } from "smithers-orchestrator";
 
 const fixResult = z.object({ summary: z.string(), filesChanged: z.array(z.string()) });
 const reviewResult = z.object({ approved: z.boolean(), issues: z.array(z.string()) });
@@ -111,7 +111,7 @@ const { Workflow, Task, smithers } = createSmithers({
 
 export default smithers((ctx) => (
   <Workflow name="bugfix">
-    <Ralph
+    <Loop
       until={ctx.latest(reviewResult, "review")?.approved === true}
       maxIterations={3}
       onMaxReached="return-last"
@@ -127,16 +127,16 @@ ${ctx.latest(reviewResult, "review")?.issues?.length
           Review the changes. If correct, return approved: true. If issues remain, return approved: false with a list of issues.
         </Task>
       </Sequence>
-    </Ralph>
+    </Loop>
   </Workflow>
 ));
 ```
 
-This is the fundamental Smithers pattern: **implement → review → loop until approved.** The reviewer's issues are fed back into the next attempt. **Every non-trivial workflow should use Ralph loops** — without them, you're just running a linear script with no quality checks.
+This is the fundamental Smithers pattern: **implement → review → loop until approved.** The reviewer's issues are fed back into the next attempt. **Every non-trivial workflow should use `<Loop>`** — without it, you're just running a linear script with no quality checks.
 
 ## Core Concepts
 
-- **Ralph** (most important): Iterative implement-review loop. Repeats children until `until` condition is true or `maxIterations` is reached. This is the core primitive that makes Smithers workflows self-correcting. **Every non-trivial workflow should use Ralph.** Use `ctx.latest()` to read the reviewer's output and feed issues back into the next iteration.
+- **Loop** (most important): Iterative implement-review loop. Repeats children until `until` condition is true or `maxIterations` is reached. This is the core primitive that makes Smithers workflows self-correcting. **Every non-trivial workflow should use `<Loop>`.** Use `ctx.latest()` to read the reviewer's output and feed issues back into the next iteration.
 - **Workflow**: JSX tree defining the execution graph. Re-renders after each task completes.
 - **Task**: Single unit of work (AI agent call, compute callback, or static data). Identified by `id` prop.
 - **Sequence**: Tasks run top-to-bottom. Default behavior inside `<Workflow>`.
@@ -389,7 +389,7 @@ The `{props.schema}` variable is auto-injected by Smithers with the Zod schema d
 
 ### Pattern 1: Dynamic Ticket Discovery
 
-> **Note:** This pattern should always be combined with Pattern 2 (Ralph loops). Without review loops, discovered tickets are implemented once with no quality checks.
+> **Note:** This pattern should always be combined with Pattern 2 (`<Loop>` review loops). Without review loops, discovered tickets are implemented once with no quality checks.
 
 **For large projects (>20 tasks)**, prefer dynamic ticket discovery over hardcoding a task list. An agent explores the codebase, compares current state to specs, and generates tickets at runtime. This lets the project evolve naturally as tickets are completed.
 
