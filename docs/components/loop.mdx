@@ -3,10 +3,6 @@ title: <Loop>
 description: Iterative loop that re-executes its children until a condition is met or the maximum iteration count is reached.
 ---
 
-<Warning>
-  **JSX API** — This page documents the JSX-based API.
-</Warning>
-
 `<Loop>` repeats its children in a loop. On each iteration, the `until` condition is re-evaluated. When the condition becomes `true`, the loop stops. A `maxIterations` safety limit prevents infinite loops.
 
 ## Import
@@ -236,19 +232,19 @@ Internally, `<Loop>` renders as a `<smithers:ralph>` host element (or `null` whe
 
 ## Nested loops
 
-Direct nesting — placing a `<Ralph>` as an immediate child of another `<Ralph>` — is not supported and throws `"Nested <Ralph> is not supported."` at render time. However, you can nest loops by wrapping the inner `<Ralph>` in a `<Sequence>`:
+Direct nesting — placing a `<Loop>` as an immediate child of another `<Loop>` — is not supported and throws at render time. However, you can nest loops by wrapping the inner `<Loop>` in a `<Sequence>`:
 
 ```tsx
 <Workflow name="nested-loops">
-  <Ralph id="outer" until={outerDone} maxIterations={5}>
+  <Loop id="outer" until={outerDone} maxIterations={5}>
     <Sequence>
-      <Ralph id="inner" until={innerDone} maxIterations={3}>
+      <Loop id="inner" until={innerDone} maxIterations={3}>
         <Task id="innerTask" output="innerOutput" agent={agent}>
           Run the inner loop body.
         </Task>
-      </Ralph>
+      </Loop>
     </Sequence>
-  </Ralph>
+  </Loop>
 </Workflow>
 ```
 
