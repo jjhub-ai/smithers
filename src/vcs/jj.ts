@@ -188,6 +188,23 @@ export function workspaceAddEffect(
   attempts.push(["workspace", "add", "--wc-path", path, name, ...revTail]);
 
   return Effect.gen(function* () {
+    // Pre-check: forget stale workspace + ensure parent dir exists
+    const listRes = yield* runJjEffect(["workspace", "list"], { cwd: opts.cwd });
+    if (listRes.code === 0 && listRes.stdout.includes(`${name}:`)) {
+      yield* runJjEffect(["workspace", "forget", name], { cwd: opts.cwd });
+    }
+    try {
+      const fs = require("node:fs");
+      const nodePath = require("node:path");
+      if (fs.existsSync(path)) {
+        fs.rmSync(path, { recursive: true, force: true });
+      }
+      const parentDir = nodePath.dirname(path);
+      if (!fs.existsSync(parentDir)) {
+        fs.mkdirSync(parentDir, { recursive: true });
+      }
+    } catch {}
+
     let lastErr = "";
     for (const args of attempts) {
       const res = yield* runJjEffect(args, { cwd: opts.cwd });

@@ -47,7 +47,7 @@ The Core Concepts, Runtime, CLI, and Integrations sections describe the shared e
 > Install Smithers for JSX-based workflow authoring.
 > Source: https://smithers.sh/installation
 
-Smithers' public authoring path is JSX. The full setup guide lives on the JSX installation page.
+Smithers workflows are authored in JSX. The full setup guide lives on the JSX installation page.
 
 ## Installation Guide
 
@@ -75,15 +75,15 @@ Every Smithers workflow uses the same underlying runtime, so these show up every
 > Start with the JSX quickstart for Smithers workflows.
 > Source: https://smithers.sh/quickstart
 
-Smithers' public quickstart is JSX-based and walks through the core workflow authoring loop: define schemas, create tasks, run the workflow, and inspect the result.
+The quickstart walks through the core workflow authoring loop: define schemas, create tasks, run the workflow, and inspect the result.
 
 ## Quickstart
 
 - [JSX Quickstart](/jsx/quickstart) — Build a TSX workflow with `<Task>` components and `ctx.outputMaybe(...)`.
 
-## Same Runtime, Different Authoring Style
+## What the Runtime Gives You
 
-The quickstart lands on the same durable runtime used everywhere else:
+Every Smithers workflow runs on the same durable runtime:
 
 - steps are persisted to SQLite
 - completed work resumes after restarts
@@ -124,7 +124,7 @@ Every workflow run follows the same high-level cycle:
               -> repeat until terminal
 ```
 
-Unlike the old JSX API, the workflow definition is not re-rendered after each step. The graph is already explicit.
+The workflow definition is not re-rendered after each step. The graph is already explicit.
 
 ## Phase 1: Build the Graph
 
@@ -437,7 +437,7 @@ To run durably, Smithers needs internal state that is distinct from user models:
 
 This data should live in framework-managed tables, not inside every output model.
 
-That separation is the main difference from the old API, where the user had to think in terms of `(runId, nodeId, iteration)` rows.
+This separation means you never have to think in terms of `(runId, nodeId, iteration)` rows — Smithers manages that bookkeeping internally.
 
 ## What Gets Persisted
 
@@ -5865,9 +5865,6 @@ bun run main.ts
 > Root container that defines a named, cacheable workflow with implicit sequential execution of its children.
 > Source: https://smithers.sh/components/workflow
 
-> **Warning:** **JSX API** — This page documents the JSX-based API.
-
-
 `<Workflow>` is the root component of every Smithers workflow. It wraps all tasks and control-flow components into a single named unit that can be executed, cached, and resumed.
 
 ## Import
@@ -6008,9 +6005,6 @@ Internally, `<Workflow>` renders as a `<smithers:workflow>` host element. The ru
 
 > A single executable node that produces output by calling an AI agent, running a compute callback, or emitting a static payload.
 > Source: https://smithers.sh/components/task
-
-> **Warning:** **JSX API** — This page documents the JSX-based API.
-
 
 `<Task>` is the fundamental unit of work in a Smithers workflow. Every task has a unique `id` and an `output` destination. Tasks operate in one of three modes:
 
@@ -6299,9 +6293,6 @@ export default smithers(db, (ctx) => (
 > Execute child tasks one after another in the order they appear.
 > Source: https://smithers.sh/components/sequence
 
-> **Warning:** **JSX API** — This page documents the JSX-based API.
-
-
 `<Sequence>` groups its children and executes them **one at a time, in order**, from top to bottom. Each child must complete before the next one starts.
 
 ## Import
@@ -6400,9 +6391,6 @@ Internally, `<Sequence>` renders as a `<smithers:sequence>` host element (or `nu
 
 > Execute child tasks concurrently with optional concurrency limits.
 > Source: https://smithers.sh/components/parallel
-
-> **Warning:** **JSX API** — This page documents the JSX-based API.
-
 
 `<Parallel>` groups its children and executes them **concurrently**. All children start at the same time (subject to the concurrency limit) rather than waiting for the previous child to complete.
 
@@ -6513,9 +6501,6 @@ Internally, `<Parallel>` renders as a `<smithers:parallel>` host element (or `nu
 
 > Conditional branching that executes one of two paths based on a boolean condition.
 > Source: https://smithers.sh/components/branch
-
-> **Warning:** **JSX API** — This page documents the JSX-based API.
-
 
 `<Branch>` evaluates a boolean condition and executes exactly one of two branches: the `then` element when the condition is `true`, or the optional `else` element when the condition is `false`.
 
@@ -6653,9 +6638,6 @@ Internally, `<Branch>` renders the chosen child (`then` or `else`) wrapped in a 
 
 > Iterative loop that re-executes its children until a condition is met or the maximum iteration count is reached.
 > Source: https://smithers.sh/components/loop
-
-> **Warning:** **JSX API** — This page documents the JSX-based API.
-
 
 `<Loop>` repeats its children in a loop. On each iteration, the `until` condition is re-evaluated. When the condition becomes `true`, the loop stops. A `maxIterations` safety limit prevents infinite loops.
 
@@ -6885,19 +6867,19 @@ Internally, `<Loop>` renders as a `<smithers:ralph>` host element (or `null` whe
 
 ## Nested loops
 
-Direct nesting — placing a `<Ralph>` as an immediate child of another `<Ralph>` — is not supported and throws `"Nested <Ralph> is not supported."` at render time. However, you can nest loops by wrapping the inner `<Ralph>` in a `<Sequence>`:
+Direct nesting — placing a `<Loop>` as an immediate child of another `<Loop>` — is not supported and throws at render time. However, you can nest loops by wrapping the inner `<Loop>` in a `<Sequence>`:
 
 ```tsx
 <Workflow name="nested-loops">
-  <Ralph id="outer" until={outerDone} maxIterations={5}>
+  <Loop id="outer" until={outerDone} maxIterations={5}>
     <Sequence>
-      <Ralph id="inner" until={innerDone} maxIterations={3}>
+      <Loop id="inner" until={innerDone} maxIterations={3}>
         <Task id="innerTask" output="innerOutput" agent={agent}>
           Run the inner loop body.
         </Task>
-      </Ralph>
+      </Loop>
     </Sequence>
-  </Ralph>
+  </Loop>
 </Workflow>
 ```
 
@@ -6922,10 +6904,7 @@ A common pattern is an outer loop driving the overall pipeline with an inner loo
 > A first-class JSX approval node that pauses durably and resolves to an ApprovalDecision value.
 > Source: https://smithers.sh/components/approval
 
-> **Warning:** **JSX API** — This page documents the JSX-based API.
-
-
-`<Approval>` is the explicit approval node in Smithers' JSX API.
+`<Approval>` is the explicit approval node in Smithers.
 
 It pauses the workflow until a human approves or denies the node, then writes an `ApprovalDecision` row to the configured output table:
 
@@ -7053,9 +7032,6 @@ Use `needsApproval` on `<Task>` when you only need a simple pause before the tas
 > Queue tasks so at most maxConcurrency run; defaults to 1.
 > Source: https://smithers.sh/components/merge-queue
 
-> **Warning:** **JSX API** — This page documents the JSX-based API.
-
-
 ## Import
 
 ```tsx
@@ -7123,9 +7099,6 @@ Internally, `<MergeQueue>` renders as a `<smithers:merge-queue>` host element (o
 
 > Execute a subtree in a separate JJ worktree rooted at `path`.
 > Source: https://smithers.sh/components/worktree
-
-> **Warning:** **JSX API** — This page documents the JSX-based API.
-
 
 ## Import
 
