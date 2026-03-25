@@ -14,7 +14,7 @@ Smithers is a TypeScript framework for building deterministic, resumable AI work
 ## Full Documentation
 
 For the complete documentation with all code examples, API references, and guides, see:
-- [llms-full.txt](https://smithers.sh/llms-full.txt): Complete inline documentation (~76k tokens)
+- [llms-full.txt](https://smithers.sh/llms-full.txt): Complete inline documentation (~112k tokens)
 
 ## Recommended Models
 
