@@ -1,20 +1,19 @@
 ---
 title: Introduction
-description: Choose the Smithers API that matches how you want to author workflows.
+description: Build Smithers workflows with JSX components on top of a durable runtime.
 ---
 
-Smithers supports two authoring APIs. They both compile to the same durable execution engine, but they optimize for different ways of building workflows.
+Smithers is a JSX-first framework for building deterministic, resumable AI workflows. You define the workflow as a TypeScript component tree, and Smithers handles execution ordering, persistence, approvals, retries, and observability.
 
-## Choose an API
+## Start Here
 
-| API | Best for | Start here |
-| --- | --- | --- |
-| **TOON** | Prompt-first workflows and the fastest path to a working flow | [Overview](/toon/overview), [Installation](/toon/installation), [Quickstart](/toon/quickstart) |
-| **JSX** | TSX composition, render-time branching, and MDX prompts | [Overview](/jsx/overview), [Installation](/jsx/installation), [Quickstart](/jsx/quickstart) |
+- [JSX API](/jsx/overview) — Learn the component model and how execution works.
+- [Installation](/jsx/installation) — Set up TypeScript, TSX, and optional MDX prompts.
+- [Quickstart](/jsx/quickstart) — Build and run a two-step workflow.
 
 ## Shared Runtime
 
-No matter which API you choose, Smithers handles the same runtime concerns:
+No matter how large the workflow gets, Smithers handles the same runtime concerns:
 
 - durable execution and resumability
 - retries, timeouts, and approval gates
@@ -22,9 +21,10 @@ No matter which API you choose, Smithers handles the same runtime concerns:
 - parallel execution and loops
 - structured events, metrics, and observability
 
-The sidebar sections for Core Concepts, Runtime, CLI, and Integrations are shared across both API tabs because they describe the common engine underneath the authoring layers.
+The Core Concepts, Runtime, CLI, and Integrations sections describe the shared engine underneath that JSX authoring layer.
 
 ## Next Steps
 
-- [TOON Overview](/toon/overview) — Start with the declarative API.
 - [JSX API](/jsx/overview) — Build workflows as TSX components.
+- [CLI Reference](/cli/overview) — Run, resume, and inspect workflows from the terminal.
+- [Execution Model](/concepts/execution-model) — Understand how Smithers plans and executes runs durably.

@@ -13,19 +13,19 @@ bunx smithers <command> [options]
 
 ### run
 
-Execute a workflow from a `.tsx` or `.toon` file.
+Execute a workflow from a `.tsx` file.
 
 ```bash
-smithers run <workflow.tsx | workflow.toon> [options]
+smithers run <workflow.tsx> [options]
 ```
 
 You can also pass a workflow file directly without the `run` subcommand:
 
 ```bash
-smithers workflow.toon --input '{"topic": "Zig"}'
+smithers workflow.tsx --input '{"topic": "Zig"}'
 ```
 
-This is equivalent to `smithers run workflow.toon --input '{"topic": "Zig"}'`.
+This is equivalent to `smithers run workflow.tsx --input '{"topic": "Zig"}'`.
 
 | Option | Description |
 |---|---|
@@ -56,7 +56,7 @@ The command prints the `RunResult` as JSON to stdout and exits with the appropri
 Resume a paused or crashed run. Smithers reloads persisted state from SQLite and continues from the last checkpoint.
 
 ```bash
-smithers resume <workflow.tsx | workflow.toon> --run-id ID [options]
+smithers resume <workflow.tsx> --run-id ID [options]
 ```
 
 Accepts the same options as `run`. Use `--hot` to enable hot reload during resumed runs.
@@ -351,17 +351,6 @@ export default smithers((ctx) => (
 ```
 
 The workflow file is dynamically imported at runtime, so it can use any TypeScript features supported by Bun.
-
-### `.toon` workflows
-
-A `.toon` file defines a workflow using the TOON declarative format. When a `.toon` file is passed to `run` or `resume`, Smithers loads it via `Smithers.loadToon()` and stores its database at `smithers.db` in the same directory as the workflow file.
-
-```bash
-smithers run workflow.toon --input '{"description": "Fix auth bug"}'
-smithers resume workflow.toon --run-id abc123
-```
-
-See the [TOON documentation](/toon/overview) for the full `.toon` file format reference.
 
 ## Typical Workflow
 

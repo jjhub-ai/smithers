@@ -71,25 +71,6 @@ The constructors forward the normal AI SDK `ToolLoopAgent` settings, including:
 
 The only Smithers-specific difference is the `model` prop: the wrapper resolves model-id strings for you.
 
-## TOON Support
-
-TOON agent configs can now use direct SDK agent types directly:
-
-```toon
-agents:
-  planner:
-    type: anthropic
-    model: claude-opus-4-6
-    instructions: You are a careful planner.
-
-  implementer:
-    type: openai
-    model: gpt-5.3-codex
-    instructions: You are a precise implementation agent.
-```
-
-The older `type: api` shape with `provider` + `model` still works.
-
 ## CLI vs SDK
 
 - Use [CLI Agents](/integrations/cli-agents) when you want the provider's native CLI tool ecosystem and subscription billing.

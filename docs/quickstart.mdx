@@ -1,20 +1,17 @@
 ---
 title: Quickstart
-description: Choose the quickstart for the Smithers API you want to use.
+description: Start with the JSX quickstart for Smithers workflows.
 ---
 
-Smithers has a different quickstart for each authoring API.
+Smithers' public quickstart is JSX-based and walks through the core workflow authoring loop: define schemas, create tasks, run the workflow, and inspect the result.
 
-## Pick a Quickstart
+## Quickstart
 
-| API | What you build | Quickstart |
-| --- | --- | --- |
-| **TOON** | A declarative `.toon` workflow with inline schemas and prompts | [TOON Quickstart](/toon/quickstart) |
-| **JSX** | A TSX workflow with `<Task>` components and `ctx.outputMaybe(...)` | [JSX Quickstart](/jsx/quickstart) |
+- [JSX Quickstart](/jsx/quickstart) — Build a TSX workflow with `<Task>` components and `ctx.outputMaybe(...)`.
 
 ## Same Runtime, Different Authoring Style
 
-Both quickstarts end up on the same runtime:
+The quickstart lands on the same durable runtime used everywhere else:
 
 - steps are persisted to SQLite
 - completed work resumes after restarts
@@ -23,5 +20,6 @@ Both quickstarts end up on the same runtime:
 
 ## Next Steps
 
-- [TOON Quickstart](/toon/quickstart) — Start with the declarative flow.
 - [JSX Quickstart](/jsx/quickstart) — Build a render-driven TSX workflow.
+- [Hello World Example](/examples/hello-world) — See the smallest complete workflow.
+- [Review Loop Guide](/guides/review-loop) — Move from a linear flow to iterative refinement.

@@ -39,7 +39,7 @@ The primary view is the React fiber tree — the literal component tree that Smi
 - **Node state** is reflected visually in real-time: pending, running, finished, failed, retrying, waiting-approval, skipped, cancelled
 - **Props** from each fiber's `memoizedProps` are inspectable — `__smithersKind`, agent references, labels, output schemas, iteration counts
 - **Re-render tracking** — see when the tree updates (frame commits), what changed between renders
-- **Layout** follows the natural nesting of the workflow definition (TOON or JSX) — sequences flow top-to-bottom, parallel groups fan out horizontally
+- **Layout** follows the natural nesting of the workflow definition — sequences flow top-to-bottom, parallel groups fan out horizontally
 - The tree updates live as the engine emits events via SSE
 
 #### Loop Handling
@@ -203,4 +203,4 @@ The Electrobun app connects via HTTP to the Smithers server. The Bun main proces
 1. **Graph layout algorithm** — what library/approach for rendering a live, animated DAG that handles the variety of Smithers workflow shapes (deep sequences, wide parallel fans, nested loops)?
 2. **Agent chat log formats** — what exactly does each agent store and where? Need to audit Claude Code, Codex, and Gemini CLI conversation storage to design the adapter interface.
 3. **Agent session persistence for steering** — what's the feasibility of keeping agent sessions alive or resumable? This varies significantly by agent type and is the main blocker for v2 steering features.
-4. **TOON vs JSX parity** — do TOON workflows produce identical fiber trees to JSX workflows, or are there differences the devtools needs to account for?
+4. **Internal builder parity** — do all workflow sources produce identical fiber trees, or are there internal differences the devtools needs to account for?

@@ -79,10 +79,12 @@ Use `smithers(db, build)` with explicit Drizzle table objects when you want lowe
 
 Both styles compile to the same JSX renderer and execution engine.
 
-## How It Relates to the Other APIs
+## Why JSX Works Well
 
-- [TOON](/toon/overview) is the declarative path. It is better when prompts are the main thing you are authoring.
-- JSX is more dynamic than TOON, giving you component composition and render-time branching.
+- component composition keeps large workflows modular
+- normal JSX conditions make branching and gating easy to read
+- TypeScript and Zod keep workflow data explicit and type-checked
+- MDX prompts fit naturally into the same authoring model
 
 ## Next Steps
 

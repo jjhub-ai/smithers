@@ -1,20 +1,17 @@
 ---
 title: Installation
-description: Choose the installation guide for the Smithers API you want to use.
+description: Install Smithers for JSX-based workflow authoring.
 ---
 
-Smithers has separate installation guides for each authoring API.
+Smithers' public authoring path is JSX. The full setup guide lives on the JSX installation page.
 
-## Pick an Installation Guide
+## Installation Guide
 
-| API | Use this when | Installation guide |
-| --- | --- | --- |
-| **TOON** | You want declarative `.toon` files and the least setup | [TOON Installation](/toon/installation) |
-| **JSX** | You want TSX workflows, MDX prompts, and render-time branching | [JSX Installation](/jsx/installation) |
+- [JSX Installation](/jsx/installation) — Install the package, configure TSX, and optionally add MDX prompts.
 
 ## Shared Requirements
 
-Both APIs run on the same underlying runtime, so these show up everywhere:
+Every Smithers workflow uses the same underlying runtime, so these show up everywhere:
 
 - Bun
 - local SQLite persistence
@@ -23,5 +20,6 @@ Both APIs run on the same underlying runtime, so these show up everywhere:
 
 ## Next Steps
 
-- [TOON Installation](/toon/installation) — Start with the declarative path.
 - [JSX Installation](/jsx/installation) — Set up TSX and optional MDX prompts.
+- [CLI Reference](/cli/overview) — See how workflows are executed and resumed.
+- [Tools Integration](/integrations/tools) — Learn about the built-in tool sandbox.
