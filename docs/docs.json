@@ -10,10 +10,18 @@
     { "source": "/docs/introduction", "destination": "/introduction" },
     { "source": "/docs/installation", "destination": "/installation" },
     { "source": "/docs/quickstart", "destination": "/quickstart" },
-    { "source": "/toon", "destination": "/toon/overview" },
+    { "source": "/toon", "destination": "/jsx/overview" },
+    { "source": "/toon/overview", "destination": "/jsx/overview" },
+    { "source": "/toon/installation", "destination": "/jsx/installation" },
+    { "source": "/toon/quickstart", "destination": "/jsx/quickstart" },
+    { "source": "/toon/schemas", "destination": "/concepts/data-model" },
+    { "source": "/toon/nodes", "destination": "/components/workflow" },
+    { "source": "/toon/components", "destination": "/jsx/overview" },
+    { "source": "/toon/prompts", "destination": "/guides/mdx-prompts" },
+    { "source": "/toon/inline-code", "destination": "/components/task" },
+    { "source": "/toon/imports", "destination": "/guides/project-structure" },
     { "source": "/jsx", "destination": "/jsx/overview" },
-    { "source": "/effect", "destination": "/toon/overview" },
-    { "source": "/effect/:slug*", "destination": "/toon/overview" },
+    { "source": "/effect", "destination": "/jsx/overview" },
     { "source": "/docs/concepts/:slug*", "destination": "/concepts/:slug*" },
     { "source": "/docs/components/:slug*", "destination": "/components/:slug*" },
     { "source": "/docs/guides/:slug*", "destination": "/guides/:slug*" },
@@ -31,7 +39,12 @@
     { "source": "/docs/parallel", "destination": "/components/parallel" },
     { "source": "/docs/branch", "destination": "/components/branch" },
     { "source": "/docs/structured-output", "destination": "/guides/structured-output" },
-    { "source": "/concepts/context", "destination": "/toon/overview" },
+    { "source": "/concepts/context", "destination": "/concepts/execution-model" },
+    { "source": "/examples/toon-hello", "destination": "/examples/hello-world" },
+    { "source": "/examples/toon-bugfix", "destination": "/examples/workflow-quickstart" },
+    { "source": "/examples/toon-review-loop", "destination": "/examples/loop" },
+    { "source": "/examples/toon-parallel", "destination": "/examples/multi-agent-review" },
+    { "source": "/reference/toon-spec", "destination": "/jsx/overview" },
     { "source": "/concepts/renderer-internals", "destination": "/concepts/planner-internals" }
   ],
   "navigation": {
@@ -91,46 +104,6 @@
       ]
     },
     "tabs": [
-      {
-        "tab": "TOON",
-        "groups": [
-          {
-            "group": "Getting Started",
-            "pages": [
-              "toon/overview",
-              "toon/installation",
-              "toon/quickstart"
-            ]
-          },
-          {
-            "group": "Authoring",
-            "pages": [
-              "toon/schemas",
-              "toon/nodes",
-              "toon/components",
-              "toon/prompts",
-              "toon/inline-code",
-              "toon/imports"
-            ]
-          },
-          {
-            "group": "Examples",
-            "pages": [
-              "examples/toon-hello",
-              "examples/toon-bugfix",
-              "examples/toon-review-loop",
-              "examples/toon-parallel"
-            ]
-          },
-          {
-            "group": "Reference",
-            "pages": [
-              "reference/toon-spec",
-              "reference/errors"
-            ]
-          }
-        ]
-      },
       {
         "tab": "JSX",
         "groups": [
