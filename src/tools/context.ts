@@ -8,6 +8,8 @@ export type ToolContext = {
   nodeId: string;
   iteration: number;
   attempt: number;
+  workflowPath?: string | null;
+  workflowHash?: string | null;
   rootDir: string;
   allowNetwork: boolean;
   maxOutputBytes: number;
