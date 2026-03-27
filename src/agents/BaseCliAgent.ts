@@ -13,6 +13,7 @@ import { spawnCaptureEffect } from "../effect/child-process";
 import { runPromise } from "../effect/runtime";
 import { getToolContext } from "../tools/context";
 import { SmithersError } from "../utils/errors";
+import { launchDiagnostics, enrichReportWithErrorAnalysis } from "./diagnostics";
 
 type TimeoutInput = number | { totalMs?: number; idleMs?: number } | undefined;
 
@@ -904,6 +905,10 @@ export abstract class BaseCliAgent implements Agent<any, any, any> {
     const commandEnv = commandSpec.env
       ? ({ ...env, ...commandSpec.env } as Record<string, string>)
       : env;
+
+    // Launch diagnostics optimistically alongside the agent
+    const diagnosticsPromise = launchDiagnostics(commandSpec.command, commandEnv, cwd);
+
     try {
       const result = await runCommand(commandSpec.command, commandSpec.args, {
         cwd,
@@ -1010,6 +1015,16 @@ export abstract class BaseCliAgent implements Agent<any, any, any> {
         this.model ?? commandSpec.command,
         usage,
       );
+    } catch (err) {
+      // Enrich error with diagnostics on failure
+      if (diagnosticsPromise) {
+        const report = await diagnosticsPromise.catch(() => null);
+        if (report && err instanceof SmithersError) {
+          enrichReportWithErrorAnalysis(report, err.message);
+          err.details = { ...err.details, diagnostics: report };
+        }
+      }
+      throw err;
     } finally {
       if (commandSpec.cleanup) {
         await commandSpec.cleanup().catch(() => undefined);
