@@ -1490,6 +1490,9 @@ async function executeTask(
       effectiveAgent = agents.length > 0
         ? agents[Math.min(attemptNo - 1, agents.length - 1)]
         : allAgents[Math.min(attemptNo - 1, allAgents.length - 1)]; // fallback to disabled agent if all disabled
+      // Capture the agent result at this scope so schema-retry can build
+      // conversation history from the original response messages.
+      let agentResult: any;
       if (effectiveAgent) {
         // Use fallback agent on retry attempts when available
         const result = await runWithToolContext(
@@ -1554,6 +1557,8 @@ async function executeTask(
             });
           },
         );
+
+        agentResult = result;
 
         // --- Track prompt/response sizes ---
         const promptBytes = Buffer.byteLength(desc.prompt ?? "", "utf8");
@@ -1897,10 +1902,36 @@ async function executeTask(
       }
 
       // Schema-validation retry: if the agent returned parseable JSON but it
-      // doesn't match the Zod schema, re-prompt with the error and expected
-      // shape up to 2 times before giving up.
-      const MAX_SCHEMA_RETRIES = 2;
+      // doesn't match the Zod schema, resume the SAME agent conversation with
+      // the validation error up to 3 times before giving up.  These attempts
+      // are NOT counted as normal task retries — the agent did the work, it
+      // just formatted the output wrong.
+      const MAX_SCHEMA_RETRIES = 3;
       let schemaRetry = 0;
+
+      // Build a conversation history so each schema-fix attempt resumes the
+      // same conversation instead of starting fresh.  For SDK-based agents
+      // this means true multi-turn; for CLI agents `extractPrompt` will
+      // flatten the messages to text which is the best we can do.
+      let schemaRetryMessages: Array<{ role: string; content: string }> = [];
+      if (!validation.ok && desc.agent && effectiveAgent) {
+        // Seed from the original result when available
+        const originalResponseMessages = agentResult?.response?.messages;
+        if (Array.isArray(originalResponseMessages) && originalResponseMessages.length > 0) {
+          // Start with the original prompt as a user message
+          schemaRetryMessages = [
+            { role: "user", content: desc.prompt ?? "" },
+            ...originalResponseMessages,
+          ];
+        } else {
+          // Fallback: reconstruct from the text we captured
+          schemaRetryMessages = [
+            { role: "user", content: desc.prompt ?? "" },
+            { role: "assistant", content: responseText ?? "" },
+          ];
+        }
+      }
+
       while (!validation.ok && desc.agent && schemaRetry < MAX_SCHEMA_RETRIES) {
         schemaRetry++;
         const schemaDesc = describeSchemaShape(desc.outputTable as any, desc.outputSchema);
@@ -1911,8 +1942,10 @@ async function executeTask(
             )
             .join("\n") ?? "Unknown validation error";
         const schemaRetryPrompt = [
-          `Your previous output did not match the required schema. Validation errors:`,
+          `Your output didn't match the required schema. Validation errors:`,
           zodIssues,
+          ``,
+          `Please return valid JSON matching the schema exactly.`,
           ``,
           `You MUST output ONLY a valid JSON object with exactly these fields and types:`,
           schemaDesc,
@@ -1920,18 +1953,48 @@ async function executeTask(
           `Output ONLY the JSON object, no other text.`,
         ].join("\n");
 
+        logInfo("schema validation retry", {
+          runId,
+          nodeId: desc.nodeId,
+          iteration: desc.iteration,
+          attempt: attemptNo,
+          schemaRetry,
+          maxSchemaRetries: MAX_SCHEMA_RETRIES,
+          zodIssues,
+        }, "engine:schema-retry");
+
+        // Append the correction as a user message to the conversation
+        const retryMessages = [
+          ...schemaRetryMessages,
+          { role: "user", content: schemaRetryPrompt },
+        ];
+
         const schemaRetryResult = await (effectiveAgent as any).generate({
           options: undefined as any,
           abortSignal: signal,
-          prompt: schemaRetryPrompt,
+          messages: retryMessages,
           timeout: desc.timeoutMs ? { totalMs: desc.timeoutMs } : undefined,
         });
         const retryText = ((schemaRetryResult as any).text ?? "").trim();
 
+        // Update conversation history for the next iteration
+        const retryResponseMessages = (schemaRetryResult as any)?.response?.messages;
+        if (Array.isArray(retryResponseMessages) && retryResponseMessages.length > 0) {
+          schemaRetryMessages = [
+            ...retryMessages,
+            ...retryResponseMessages,
+          ];
+        } else {
+          schemaRetryMessages = [
+            ...retryMessages,
+            { role: "assistant", content: retryText },
+          ];
+        }
+
         // Try to parse the retry response
         let retryOutput: any;
         try {
-          if (retryText.startsWith("{")) {
+          if (retryText.startsWith("{") || retryText.startsWith("[")) {
             retryOutput = JSON.parse(retryText);
           }
         } catch {
@@ -1946,6 +2009,32 @@ async function executeTask(
             try {
               retryOutput = JSON.parse(fenceMatch[1]!);
             } catch {}
+          }
+        }
+        if (retryOutput === undefined) {
+          // Try balanced JSON extraction as a last resort
+          const jsonStart = retryText.indexOf("{");
+          if (jsonStart !== -1) {
+            let depth = 0;
+            let inStr = false;
+            let esc = false;
+            for (let i = jsonStart; i < retryText.length; i++) {
+              const c = retryText[i];
+              if (esc) { esc = false; continue; }
+              if (c === "\\") { esc = true; continue; }
+              if (c === '"' && !esc) { inStr = !inStr; continue; }
+              if (inStr) continue;
+              if (c === "{") depth++;
+              else if (c === "}") {
+                depth--;
+                if (depth === 0) {
+                  try {
+                    retryOutput = JSON.parse(retryText.slice(jsonStart, i + 1));
+                  } catch {}
+                  break;
+                }
+              }
+            }
           }
         }
 
@@ -1967,6 +2056,13 @@ async function executeTask(
           }
           if (validation.ok) {
             payload = validation.data;
+            logInfo("schema validation retry succeeded", {
+              runId,
+              nodeId: desc.nodeId,
+              iteration: desc.iteration,
+              attempt: attemptNo,
+              schemaRetry,
+            }, "engine:schema-retry");
           }
         }
       }
