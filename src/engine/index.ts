@@ -2907,12 +2907,61 @@ async function runWorkflowBody<Schema>(
         }
 
         if (schedule.readyRalphs.length > 0) {
+          // Re-evaluate each ralph's `until` with the correct per-ralph
+          // iteration context.  The plan tree's `until` was rendered with
+          // `defaultIteration` which may not reflect each ralph's own
+          // iteration (especially with multiple parallel loops).  When
+          // there is a single ralph, `defaultIteration` already tracks
+          // it correctly, so skip the extra work.
+          const freshUntilMap = new Map<string, boolean>();
+          if (!singleRalphId) {
+            const freshOutputs = await loadOutputs(db, schema, runId);
+            const evalRenderer = new SmithersRenderer();
+            for (const ralph of schedule.readyRalphs) {
+              const rState = ralphState.get(ralph.id);
+              const ralphIteration = rState?.iteration ?? 0;
+              const perRalphCtx = buildContext<Schema>({
+                runId,
+                iteration: ralphIteration,
+                iterations: ralphIterationsObject(ralphState),
+                input: inputRow,
+                outputs: freshOutputs,
+                zodToKeyName: workflow.zodToKeyName,
+              });
+              const { xml: freshXml } = await evalRenderer.render(
+                workflowRef.build(perRalphCtx),
+                {
+                  ralphIterations: ralphIterationsFromState(ralphState),
+                  defaultIteration: ralphIteration,
+                  baseRootDir: rootDir,
+                },
+              );
+              const { ralphs: freshRalphs } = buildPlanTree(freshXml, ralphState);
+              const freshRalph = freshRalphs.find((r) => r.id === ralph.id);
+              freshUntilMap.set(ralph.id, freshRalph?.until ?? ralph.until);
+            }
+          }
+
           for (const ralph of schedule.readyRalphs) {
             const state = ralphState.get(ralph.id) ?? {
               iteration: defaultIteration,
               done: false,
             };
-            if (state.done || ralph.until) continue;
+            const freshUntil = freshUntilMap.get(ralph.id) ?? ralph.until;
+            if (state.done || freshUntil) {
+              // Fresh re-evaluation says the condition is now met — mark done.
+              if (freshUntil && !state.done) {
+                ralphState.set(ralph.id, { ...state, done: true });
+                await adapter.insertOrUpdateRalph({
+                  runId,
+                  ralphId: ralph.id,
+                  iteration: state.iteration,
+                  done: true,
+                  updatedAtMs: nowMs(),
+                });
+              }
+              continue;
+            }
             if (state.iteration + 1 < ralph.maxIterations) {
               state.iteration += 1;
               ralphState.set(ralph.id, { ...state, done: false });
