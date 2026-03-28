@@ -30,7 +30,9 @@ export class EventBus extends EventEmitter {
       }
     }).pipe(
       Effect.annotateLogs({ runId: event.runId, eventType: event.type }),
+      Effect.annotateSpans({ runId: event.runId, eventType: event.type }),
       Effect.withLogSpan(`event:${event.type}`),
+      Effect.withSpan(`event:${event.type}`, { attributes: { runId: event.runId, eventType: event.type } }),
     );
   }
 
@@ -44,7 +46,9 @@ export class EventBus extends EventEmitter {
       yield* this.persistEffect(event);
     }).pipe(
       Effect.annotateLogs({ runId: event.runId, eventType: event.type }),
+      Effect.annotateSpans({ runId: event.runId, eventType: event.type }),
       Effect.withLogSpan(`event:${event.type}:persist`),
+      Effect.withSpan(`event:${event.type}:persist`, { attributes: { runId: event.runId, eventType: event.type } }),
     );
   }
 
@@ -65,7 +69,10 @@ export class EventBus extends EventEmitter {
         this.persistError = null;
         throw err;
       }
-    }).pipe(Effect.withLogSpan("event:flush"));
+    }).pipe(
+      Effect.withLogSpan("event:flush"),
+      Effect.withSpan("event:flush"),
+    );
   }
 
   async flush(): Promise<void> {
@@ -83,7 +90,9 @@ export class EventBus extends EventEmitter {
       }
     }).pipe(
       Effect.annotateLogs({ runId: event.runId, eventType: event.type }),
+      Effect.annotateSpans({ runId: event.runId, eventType: event.type }),
       Effect.withLogSpan("event:persist"),
+      Effect.withSpan("event:persist", { attributes: { runId: event.runId, eventType: event.type } }),
     );
   }
 

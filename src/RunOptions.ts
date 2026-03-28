@@ -27,4 +27,5 @@ export type RunOptions = {
   maxOutputBytes?: number;
   toolTimeoutMs?: number;
   hot?: boolean | HotReloadOptions;
+  annotations?: Record<string, string | number | boolean>;
 };

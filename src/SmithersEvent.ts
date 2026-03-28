@@ -1,4 +1,5 @@
 import type { RunStatus } from "./RunStatus";
+import type { AgentTraceSummary, CanonicalAgentTraceEvent } from "./agent-trace";
 
 export type SmithersEvent =
   | { type: "RunStarted"; runId: string; timestampMs: number }
@@ -193,5 +194,23 @@ export type SmithersEvent =
       cacheReadTokens?: number;
       cacheWriteTokens?: number;
       reasoningTokens?: number;
+      timestampMs: number;
+    }
+  | {
+      type: "AgentTraceEvent";
+      runId: string;
+      nodeId: string;
+      iteration: number;
+      attempt: number;
+      trace: CanonicalAgentTraceEvent;
+      timestampMs: number;
+    }
+  | {
+      type: "AgentTraceSummary";
+      runId: string;
+      nodeId: string;
+      iteration: number;
+      attempt: number;
+      summary: AgentTraceSummary;
       timestampMs: number;
     };

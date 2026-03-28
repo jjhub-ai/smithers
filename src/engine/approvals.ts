@@ -47,7 +47,9 @@ export function approveNodeEffect(
     });
   }).pipe(
     Effect.annotateLogs({ runId, nodeId, iteration, approvalStatus: "approved" }),
+    Effect.annotateSpans({ runId, nodeId, iteration, approvalStatus: "approved" }),
     Effect.withLogSpan("approval:grant"),
+    Effect.withSpan("approval:grant", { attributes: { runId, nodeId, iteration, approvalStatus: "approved" } }),
   );
 }
 
@@ -108,7 +110,9 @@ export function denyNodeEffect(
     });
   }).pipe(
     Effect.annotateLogs({ runId, nodeId, iteration, approvalStatus: "denied" }),
+    Effect.annotateSpans({ runId, nodeId, iteration, approvalStatus: "denied" }),
     Effect.withLogSpan("approval:deny"),
+    Effect.withSpan("approval:deny", { attributes: { runId, nodeId, iteration, approvalStatus: "denied" } }),
   );
 }
 

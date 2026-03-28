@@ -172,6 +172,22 @@ export function spawnCaptureEffect(
       timeoutMs: timeoutMs ?? null,
       idleTimeoutMs: idleTimeoutMs ?? null,
     }),
+    Effect.annotateSpans({
+      command,
+      args: args.join(" "),
+      cwd,
+      timeoutMs: timeoutMs ?? null,
+      idleTimeoutMs: idleTimeoutMs ?? null,
+    }),
     Effect.withLogSpan(`process:${command}`),
+    Effect.withSpan(`process:${command}`, {
+      attributes: {
+        command,
+        args: args.join(" "),
+        cwd,
+        timeoutMs: timeoutMs ?? null,
+        idleTimeoutMs: idleTimeoutMs ?? null,
+      },
+    }),
   );
 }

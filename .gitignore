@@ -53,6 +53,8 @@ deno.lock
 reference/
 codex/
 ghostty/
+observability/data/
+tmp/verification/
 
 # Worktree script SQLite artifacts
 scripts/worktree-feature/*.db*

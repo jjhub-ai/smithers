@@ -54,6 +54,7 @@ import { spawn as nodeSpawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { platform } from "node:os";
 import { withTaskRuntime } from "../effect/task-runtime";
+import { AgentTraceCollector } from "../agent-trace";
 
 /**
  * Track which worktree paths have already been created this run so we don't
@@ -1291,6 +1292,12 @@ async function executeTask(
   },
   workflowName: string,
   cacheEnabled: boolean,
+  traceContext?: {
+    workflowPath?: string | null;
+    workflowHash?: string | null;
+    logDir?: string;
+    annotations?: Record<string, string | number | boolean>;
+  },
   signal?: AbortSignal,
   disabledAgents?: Set<any>,
 ) {
@@ -1495,6 +1502,21 @@ async function executeTask(
       let agentResult: any;
       if (effectiveAgent) {
         // Use fallback agent on retry attempts when available
+        const traceCollector = new AgentTraceCollector({
+          eventBus,
+          runId,
+          workflowPath: traceContext?.workflowPath ?? null,
+          workflowHash: traceContext?.workflowHash ?? null,
+          nodeId: desc.nodeId,
+          iteration: desc.iteration,
+          attempt: attemptNo,
+          agent: effectiveAgent,
+          agentId: (effectiveAgent as any).id,
+          model: (effectiveAgent as any).model,
+          logDir: traceContext?.logDir,
+          annotations: traceContext?.annotations,
+        });
+        traceCollector.begin();
         const result = await runWithToolContext(
           {
             db: adapter,
@@ -1545,6 +1567,8 @@ async function executeTask(
                 stream,
                 timestampMs: nowMs(),
               });
+              if (stream === "stdout") traceCollector.onStdout(text);
+              else traceCollector.onStderr(text);
             };
             return (effectiveAgent as any).generate({
               options: undefined as any,
@@ -1556,7 +1580,15 @@ async function executeTask(
               outputSchema: desc.outputSchema,
             });
           },
-        );
+        ).then(async (result) => {
+          traceCollector.observeResult(result);
+          await traceCollector.flush();
+          return result;
+        }, async (error) => {
+          traceCollector.observeError(error);
+          await traceCollector.flush();
+          throw error;
+        });
 
         agentResult = result;
 
@@ -2299,12 +2331,15 @@ export function renderFrameEffect<Schema>(
   ctx: any,
   opts?: { baseRootDir?: string },
 ) {
+  const spanAttributes = {
+    runId: ctx?.runId ?? "",
+    iteration: ctx?.iteration ?? 0,
+  };
   return fromPromise("render frame", () => renderFrameAsync(workflow, ctx, opts)).pipe(
-    Effect.annotateLogs({
-      runId: ctx?.runId ?? "",
-      iteration: ctx?.iteration ?? 0,
-    }),
+    Effect.annotateLogs(spanAttributes),
+    Effect.annotateSpans(spanAttributes),
     Effect.withLogSpan("engine:render-frame"),
+    Effect.withSpan("engine:render-frame", { attributes: spanAttributes }),
   );
 }
 
@@ -3090,6 +3125,12 @@ async function runWorkflowBody<Schema>(
           toolConfig,
           workflowName,
           cacheEnabled,
+          {
+            workflowPath: resolvedWorkflowPath ?? opts.workflowPath ?? null,
+            workflowHash: runMetadata.workflowHash,
+            logDir: logDir ?? undefined,
+            annotations: opts.annotations,
+          },
           runAbortController.signal,
           disabledAgents,
         ).finally(() => inflight.delete(p));
@@ -3164,14 +3205,17 @@ export function runWorkflowEffect<Schema>(
   workflow: SmithersWorkflow<Schema>,
   opts: RunOptions,
 ) {
+  const spanAttributes = {
+    runId: opts.runId ?? "",
+    workflowPath: opts.workflowPath ?? "",
+    maxConcurrency: opts.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY,
+    hot: Boolean(opts.hot),
+  };
   return fromPromise("run workflow", () => runWorkflowAsync(workflow, opts)).pipe(
-    Effect.annotateLogs({
-      runId: opts.runId ?? "",
-      workflowPath: opts.workflowPath ?? "",
-      maxConcurrency: opts.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY,
-      hot: Boolean(opts.hot),
-    }),
+    Effect.annotateLogs(spanAttributes),
+    Effect.annotateSpans(spanAttributes),
     Effect.withLogSpan("engine:run-workflow"),
+    Effect.withSpan("engine:run-workflow", { attributes: spanAttributes }),
   );
 }
 

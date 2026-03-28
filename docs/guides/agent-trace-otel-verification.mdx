@@ -1,0 +1,200 @@
+---
+title: Agent Trace OTEL Log Verification
+description: Reproducible local verification for canonical agent trace OTEL log export with Loki.
+---
+
+## Local stack
+
+Start the local stack:
+
+```bash
+smithers observability --detach
+```
+
+Expected endpoints:
+
+- Grafana: `http://localhost:3001`
+- Prometheus: `http://localhost:9090`
+- Tempo: `http://localhost:3200`
+- Loki: `http://localhost:3100`
+- OTEL collector HTTP: `http://localhost:4318`
+
+Validate the stack:
+
+```bash
+docker compose -f observability/docker-compose.otel.yml ps
+curl -sf http://localhost:3100/ready
+curl -sf http://localhost:3001/api/datasources | jq 'map({name,type,url})'
+docker logs observability-otel-collector-1 | tail -n 80
+```
+
+## Enable OTEL export
+
+```bash
+export SMITHERS_OTEL_ENABLED=1
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_SERVICE_NAME=smithers-dev
+export SMITHERS_LOG_FORMAT=json
+```
+
+## Demo workflow
+
+Use the built-in reproducible workflow at `workflows/agent-trace-otel-demo.tsx`.
+It emits:
+
+- one Pi-like high-fidelity attempt with text deltas, thinking deltas, tool lifecycle, usage, and a redaction fixture
+- one SDK-style final-only attempt
+- stable run annotations for Loki queries
+
+Run the success case:
+
+```bash
+smithers run workflows/agent-trace-otel-demo.tsx \
+  --run-id agent-trace-otel-demo \
+  --annotations '{"custom.demo":true,"custom.ticket":"OBS-123"}'
+```
+
+Run the malformed JSON failure case:
+
+```bash
+smithers run workflows/agent-trace-otel-demo.tsx \
+  --run-id agent-trace-otel-demo-fail \
+  --input '{"failureMode":"malformed-json"}' \
+  --annotations '{"custom.demo":true,"custom.ticket":"OBS-ERR"}'
+```
+
+Optional durable-local verification:
+
+```bash
+jq 'select(.type == "AgentTraceEvent" or .type == "AgentTraceSummary")' \
+  .smithers/executions/agent-trace-otel-demo/logs/stream.ndjson
+
+find .smithers/executions/agent-trace-otel-demo/logs/agent-trace -type f -maxdepth 1 -print
+```
+
+## Loki queries
+
+Smithers OTEL attributes are exposed to Loki as sanitized structured metadata fields such as:
+
+- `run_id`
+- `workflow_path`
+- `node_id`
+- `node_attempt`
+- `agent_family`
+- `agent_capture_mode`
+- `trace_completeness`
+- `event_kind`
+
+Use `{service_name="smithers-dev"}` as the stream selector, then filter on structured metadata in the LogQL pipeline. Use `| json` to inspect the structured log body.
+
+All events for one run:
+
+```logql
+{service_name="smithers-dev"} | run_id="agent-trace-otel-demo"
+```
+
+One node attempt:
+
+```logql
+{service_name="smithers-dev"} | run_id="agent-trace-otel-demo" | node_id="pi-rich-trace" | node_attempt="1"
+```
+
+Thinking deltas only:
+
+```logql
+{service_name="smithers-dev"} | run_id="agent-trace-otel-demo" | event_kind="assistant.thinking.delta"
+```
+
+Tool execution only:
+
+```logql
+{service_name="smithers-dev"} | run_id="agent-trace-otel-demo" | event_kind=~"tool\.execution\..*"
+```
+
+Capture errors only:
+
+```logql
+{service_name="smithers-dev"} | event_kind="capture.error"
+```
+
+Inspect the structured JSON body for one run:
+
+```logql
+{service_name="smithers-dev"} | run_id="agent-trace-otel-demo" | json
+```
+
+Redaction proof query:
+
+```logql
+{service_name="smithers-dev"} | run_id="agent-trace-otel-demo" |= "REDACTED"
+```
+
+## API query examples
+
+Equivalent direct Loki API checks:
+
+```bash
+curl -sG 'http://localhost:3100/loki/api/v1/query_range' \
+  --data-urlencode 'query={service_name="smithers-dev"} | run_id="agent-trace-otel-demo"' \
+  --data-urlencode 'limit=200' | jq '.data.result[] | {stream, values: (.values | length)}'
+
+curl -sG 'http://localhost:3100/loki/api/v1/query_range' \
+  --data-urlencode 'query={service_name="smithers-dev"} | run_id="agent-trace-otel-demo" | event_kind="assistant.thinking.delta"' \
+  --data-urlencode 'limit=20' | jq '.data.result[]?.values[]?[1]'
+```
+
+## Tempo trace checks
+
+Tempo search should show Smithers spans once a workflow has run:
+
+```bash
+curl -s http://localhost:3200/api/search | jq .
+curl -s http://localhost:3200/api/search/tags | jq .
+curl -s 'http://localhost:3200/api/search/tag/service.name/values' | jq .
+curl -s 'http://localhost:3200/api/search/tag/runId/values' | jq .
+```
+
+Inspect one trace directly:
+
+```bash
+TRACE_ID=$(curl -s http://localhost:3200/api/search \
+  | jq -r '.traces[] | select(.rootTraceName=="engine:run-workflow") | .traceID' \
+  | head -n 1)
+
+curl -s http://localhost:3200/api/traces/$TRACE_ID | jq .
+```
+
+Expected trace attributes include at least:
+
+- `service.name = smithers-dev`
+- `runId = <RUN_ID>`
+- `workflowPath = <workflow path>`
+
+## Verification checklist
+
+- stack starts successfully in Docker
+- Loki is present and queryable
+- collector logs pipeline is active
+- Pi traces show text deltas, thinking deltas, tool execution lifecycle, final message, usage, and run/node/attempt correlation
+- second agent family is exported with truthful `final-only` completeness classification
+- Gemini `stream-json` attempts preserve structured deltas truthfully
+- Kimi `stream-json` attempts preserve structured tool lifecycle truthfully
+- malformed or truncated structured streams emit `capture.error` and classify as `capture-failed`
+- artifact write failures emit `capture.warning` and degrade to `partial-observed` without losing durable DB truth
+- Tempo search shows Smithers spans and trace attributes including `runId`
+- Prometheus is still scraping the collector successfully
+- secrets are redacted from canonical events, OTEL log bodies, and persisted trace artifacts
+
+## Automated coverage
+
+The fixture-style and workflow-backed tests in `tests/agent-trace.test.tsx` now cover:
+
+- Pi rich success and malformed JSON failure
+- SDK truthful `final-only`
+- Claude Code structured stream preservation
+- Codex structured delta + usage preservation
+- Gemini structured `stream-json` and coarse `cli-json` classification
+- Kimi structured `stream-json` tool lifecycle preservation
+- truncated structured stream failure classification
+- artifact write failure classification
+- OTEL body/attribute shaping for Loki query fields

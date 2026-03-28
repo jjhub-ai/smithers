@@ -58,6 +58,7 @@ type RunRpcCommandOptions = {
   idleTimeoutMs?: number;
   signal?: AbortSignal;
   maxOutputBytes?: number;
+  onStdout?: (chunk: string) => void;
   onStderr?: (chunk: string) => void;
   onExtensionUiRequest?: (request: PiExtensionUiRequest) =>
     | Promise<PiExtensionUiResponse | null>
@@ -594,7 +595,19 @@ export function runCommandEffect(
       agentArgs: args.join(" "),
       cwd,
     }),
+    Effect.annotateSpans({
+      agentCommand: command,
+      agentArgs: args.join(" "),
+      cwd,
+    }),
     Effect.withLogSpan(`agent:${command}`),
+    Effect.withSpan(`agent:${command}`, {
+      attributes: {
+        agentCommand: command,
+        agentArgs: args.join(" "),
+        cwd,
+      },
+    }),
   );
 }
 
@@ -613,7 +626,7 @@ export function runRpcCommandEffect(command: string, args: string[], options: Ru
    exitCode: number | null;
    usage?: any;
  }, Error> {
-   const { cwd, env, prompt, timeoutMs, idleTimeoutMs, signal, maxOutputBytes, onStderr, onExtensionUiRequest } = options;
+   const { cwd, env, prompt, timeoutMs, idleTimeoutMs, signal, maxOutputBytes, onStdout, onStderr, onExtensionUiRequest } = options;
    return Effect.async<{
      text: string;
      output: unknown;
@@ -823,8 +836,10 @@ export function runRpcCommandEffect(command: string, args: string[], options: Ru
        });
      });
 
-     child.stdout?.on("data", () => {
+     child.stdout?.on("data", (chunk) => {
        inactivity.reset();
+       const text = chunk.toString("utf8");
+       onStdout?.(text);
      });
 
      child.stderr?.on("data", (chunk) => {
@@ -882,7 +897,21 @@ export function runRpcCommandEffect(command: string, args: string[], options: Ru
        cwd,
        rpc: true,
      }),
+     Effect.annotateSpans({
+       agentCommand: command,
+       agentArgs: args.join(" "),
+       cwd,
+       rpc: true,
+     }),
      Effect.withLogSpan(`agent:${command}:rpc`),
+     Effect.withSpan(`agent:${command}:rpc`, {
+       attributes: {
+         agentCommand: command,
+         agentArgs: args.join(" "),
+         cwd,
+         rpc: true,
+       },
+     }),
    );
 }
 

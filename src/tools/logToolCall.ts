@@ -37,6 +37,14 @@ export function logToolCallEffect(
     status,
     timestampMs: finished,
   });
+  const spanAttributes = {
+    runId: ctx.runId,
+    nodeId: ctx.nodeId,
+    iteration: ctx.iteration,
+    attempt: ctx.attempt,
+    toolName,
+    toolStatus: status,
+  };
   return Metric.update(toolDuration, durationMs).pipe(
     Effect.andThen(
       ctx.db.insertToolCallEffect({
@@ -54,15 +62,10 @@ export function logToolCallEffect(
         errorJson,
       }),
     ),
-    Effect.annotateLogs({
-      runId: ctx.runId,
-      nodeId: ctx.nodeId,
-      iteration: ctx.iteration,
-      attempt: ctx.attempt,
-      toolName,
-      toolStatus: status,
-    }),
+    Effect.annotateLogs(spanAttributes),
+    Effect.annotateSpans(spanAttributes),
     Effect.withLogSpan(`tool:${toolName}:log`),
+    Effect.withSpan(`tool:${toolName}:log`, { attributes: spanAttributes }),
   );
 }
 
