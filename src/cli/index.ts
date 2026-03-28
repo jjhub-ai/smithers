@@ -949,120 +949,6 @@ const cronCli = Cli.create({
     },
   });
 
-// ---------------------------------------------------------------------------
-// MCP subcommand
-// ---------------------------------------------------------------------------
-
-const mcpServeOptions = z.object({
-  transport: z.enum(["stdio", "http"]).default("stdio").describe("MCP transport (stdio or http)"),
-  port: z.number().int().min(1).default(3001).describe("HTTP port (with --transport http)"),
-});
-
-const mcpCli = Cli.create({
-  name: "mcp",
-  description: "Expose smithers tools, agents, and workflows via Model Context Protocol.",
-})
-  .command("serve", {
-    description: "Start the MCP server for external AI tool integration.",
-    options: mcpServeOptions,
-    alias: { transport: "t", port: "p" },
-    async run(c) {
-      try {
-        const { createSmithersMcpServer } = await import("../mcp/server");
-        const { tools } = await import("../tools/index");
-
-        // Discover workflows if available
-        let workflows: Record<string, any> = {};
-        try {
-          const discovered = discoverWorkflows(process.cwd());
-          for (const w of discovered) {
-            const abs = resolve(process.cwd(), w.entryFile);
-            mdxPlugin();
-            const mod = await import(pathToFileURL(abs).href);
-            if (mod.default) {
-              workflows[w.id] = mod.default;
-            }
-          }
-        } catch {
-          // No workflows discovered — that's fine
-        }
-
-        const server = createSmithersMcpServer({
-          name: "smithers",
-          version: readPackageVersion(),
-          tools,
-          workflows: Object.keys(workflows).length > 0 ? workflows : undefined,
-        });
-
-        await server.start({
-          transport: c.options.transport as "stdio" | "http",
-          port: c.options.port,
-        });
-
-        if (c.options.transport === "http") {
-          process.stderr.write(
-            `[smithers] MCP server running on http://127.0.0.1:${c.options.port}/mcp\n` +
-            `[smithers] Press Ctrl+C to stop.\n`,
-          );
-        }
-
-        // Keep alive until signal
-        await new Promise<void>((resolvePromise) => {
-          process.once("SIGINT", () => {
-            server.close().finally(() => resolvePromise());
-          });
-          process.once("SIGTERM", () => {
-            server.close().finally(() => resolvePromise());
-          });
-        });
-
-        return c.ok({ transport: c.options.transport, status: "stopped" });
-      } catch (err: any) {
-        console.error(`Error: ${err?.message ?? String(err)}`);
-        return c.error({ code: "MCP_SERVE_FAILED", message: err?.message ?? String(err) });
-      }
-    },
-  })
-  .command("list-tools", {
-    description: "List tools that would be exposed via MCP.",
-    async run(c) {
-      try {
-        const { buildMcpToolList } = await import("../mcp/tool-mapper");
-        const { tools } = await import("../tools/index");
-
-        // Discover workflows
-        let workflows: Record<string, any> = {};
-        try {
-          const discovered = discoverWorkflows(process.cwd());
-          for (const w of discovered) {
-            const abs = resolve(process.cwd(), w.entryFile);
-            mdxPlugin();
-            const mod = await import(pathToFileURL(abs).href);
-            if (mod.default) {
-              workflows[w.id] = mod.default;
-            }
-          }
-        } catch {
-          // No workflows
-        }
-
-        const mcpTools = buildMcpToolList({
-          tools,
-          workflows: Object.keys(workflows).length > 0 ? workflows : undefined,
-        });
-
-        for (const tool of mcpTools) {
-          console.log(`  ${pc.bold(tool.name)} — ${tool.description}`);
-        }
-        console.log(`\n  ${mcpTools.length} tool(s) total`);
-
-        return c.ok({ tools: mcpTools.map((t) => ({ name: t.name, description: t.description })) });
-      } catch (err: any) {
-        console.error(`Error: ${err?.message ?? String(err)}`);
-        return c.error({ code: "MCP_LIST_FAILED", message: err?.message ?? String(err) });
-      }
-    },
-  });
 
 // ---------------------------------------------------------------------------
 // OpenAPI subcommand
@@ -2550,7 +2436,7 @@ const cli = Cli.create({
   .command(workflowCli)
   .command(cronCli)
   .command(ragCli)
-  .command(mcpCli)
+
   .command(memoryCli)
   .command(openapiCli);
 
@@ -2561,7 +2447,7 @@ const cli = Cli.create({
 const KNOWN_COMMANDS = new Set([
   "init", "up", "down", "ps", "logs", "chat", "inspect", "approve", "deny",
   "cancel", "graph", "revert", "scores", "observability", "workflow", "ask", "cron",
-  "replay", "diff", "fork", "timeline", "rag", "mcp", "memory", "openapi",
+  "replay", "diff", "fork", "timeline", "rag", "memory", "openapi",
 ]);
 
 const BUILTIN_FLAGS_WITH_VALUES = new Set([

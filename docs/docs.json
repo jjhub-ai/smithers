@@ -39,7 +39,7 @@
               "concepts/time-travel",
               "concepts/evals",
               "concepts/voice",
-              "concepts/mcp-server",
+
               "concepts/memory",
               "concepts/openapi-tools"
             ]
@@ -104,7 +104,7 @@
               "guides/time-travel-quickstart",
               "guides/evals-quickstart",
               "guides/voice-quickstart",
-              "guides/mcp-server-quickstart",
+
               "guides/memory-quickstart",
               "guides/openapi-tools-quickstart",
               "guides/troubleshooting"

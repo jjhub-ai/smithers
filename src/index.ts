@@ -254,23 +254,6 @@ export type {
   RagToolOptions,
 } from "./rag";
 
-// MCP Server
-export { createSmithersMcpServer, SmithersMcpServer } from "./mcp";
-export type {
-  SmithersMcpServerConfig,
-  McpCapabilities,
-  McpToolDefinition,
-  McpResourceDefinition,
-  McpTransport,
-  McpServerStartOptions,
-} from "./mcp";
-export { McpService, createMcpLayer, startMcpServer, stopMcpServer } from "./mcp";
-export {
-  smithersToolToMcp,
-  smithersAgentToMcp,
-  smithersWorkflowToMcp,
-  buildMcpToolList,
-} from "./mcp";
 
 // Memory
 export {
