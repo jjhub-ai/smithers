@@ -949,7 +949,7 @@ const cli = Cli.create({
           await new Promise((resolve) => setTimeout(resolve, 500));
 
           const attempts = await adapter.listAttemptsForRun(runId);
-          const selectedAttempts = syncAttempts(attempts as any[]);
+          syncAttempts(attempts as any[]);
 
           const newRows = await adapter.listEvents(runId, lastSeq, 200);
           const newBlocks: Array<{ attemptKey: string; blockId: string; timestampMs: number; text: string }> = [];
