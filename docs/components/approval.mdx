@@ -3,9 +3,7 @@ title: <Approval>
 description: A first-class JSX approval node that pauses durably and resolves to an ApprovalDecision value.
 ---
 
-`<Approval>` is the explicit approval node in Smithers.
-
-It pauses the workflow until a human approves or denies the node, then writes an `ApprovalDecision` row to the configured output table:
+Pauses the workflow until a human approves or denies. Writes an `ApprovalDecision` to the configured output:
 
 ```ts
 type ApprovalDecision = {
@@ -26,21 +24,21 @@ import { Approval, approvalDecisionSchema } from "smithers-orchestrator";
 
 | Prop | Type | Default | Description |
 | --- | --- | --- | --- |
-| `id` | `string` | **(required)** | Stable node id. Must be unique within the workflow. |
-| `output` | `z.ZodObject \| Table \| string` | **(required)** | Where to persist the `ApprovalDecision` output. Pass a Zod schema from `outputs` (recommended), a Drizzle table, or a string key. |
-| `outputSchema` | `z.ZodObject` | `approvalDecisionSchema` | Override the decision schema when using the manual DB API. |
-| `request` | `{ title: string; summary?: string; metadata?: Record<string, unknown> }` | **(required)** | Human-facing approval request metadata. `title` becomes the node label; `summary` and `metadata` are stored in task metadata. |
-| `onDeny` | `"fail" \| "continue" \| "skip"` | `"fail"` | What happens after a denial. `"continue"` and `"skip"` still persist a denial decision object. |
-| `dependsOn` | `string[]` | `undefined` | Explicit dependency on other task node IDs. The approval will not run until all listed tasks complete. |
-| `needs` | `Record<string, string>` | `undefined` | Named dependencies on other tasks. Keys become context keys, values are task node IDs. |
-| `skipIf` | `boolean` | `false` | Skip the approval node entirely. |
-| `timeoutMs` | `number` | `undefined` | Maximum time in milliseconds to wait for an approval decision. The node fails if it exceeds this duration. |
-| `retries` | `number` | `0` | Number of retry attempts on failure before the node is marked as failed. |
-| `retryPolicy` | `RetryPolicy` | `undefined` | Retry timing configuration. `{ backoff?: "fixed" \| "linear" \| "exponential", initialDelayMs?: number }`. Controls the delay between retry attempts. |
-| `continueOnFail` | `boolean` | `false` | When `true`, the workflow continues executing subsequent nodes even if this approval fails. |
-| `cache` | `CachePolicy` | `undefined` | Caching configuration. `{ by?: (ctx) => unknown, version?: string }`. When provided, the engine can skip re-execution if a cached result with the same key and version exists. |
-| `label` | `string` | `request.title` | Optional display label override. |
-| `meta` | `Record<string, unknown>` | `undefined` | Additional metadata merged with `request.summary` / `request.metadata`. |
+| `id` | `string` | **(required)** | Unique node id within the workflow. |
+| `output` | `z.ZodObject \| Table \| string` | **(required)** | Where to persist the decision. Zod schema from `outputs` (recommended), Drizzle table, or string key. |
+| `outputSchema` | `z.ZodObject` | `approvalDecisionSchema` | Override the decision schema (manual DB API). |
+| `request` | `{ title: string; summary?: string; metadata?: Record<string, unknown> }` | **(required)** | Human-facing request. `title` becomes the node label. |
+| `onDeny` | `"fail" \| "continue" \| "skip"` | `"fail"` | Behavior after denial. `"continue"` and `"skip"` still persist the denial. |
+| `dependsOn` | `string[]` | `undefined` | Task IDs that must complete first. |
+| `needs` | `Record<string, string>` | `undefined` | Named deps. Keys become context keys, values are task IDs. |
+| `skipIf` | `boolean` | `false` | Skip this node entirely. |
+| `timeoutMs` | `number` | `undefined` | Max wait in ms. Node fails on timeout. |
+| `retries` | `number` | `0` | Retry attempts before failure. |
+| `retryPolicy` | `RetryPolicy` | `undefined` | `{ backoff?: "fixed" \| "linear" \| "exponential", initialDelayMs?: number }` |
+| `continueOnFail` | `boolean` | `false` | Workflow continues even if this node fails. |
+| `cache` | `CachePolicy` | `undefined` | `{ by?: (ctx) => unknown, version?: string }`. Skip re-execution on cache hit. |
+| `label` | `string` | `request.title` | Display label override. |
+| `meta` | `Record<string, unknown>` | `undefined` | Extra metadata merged with request fields. |
 
 ## Schema-driven Example
 
@@ -96,7 +94,7 @@ export default smithers((ctx) => {
 
 ## Manual API Example
 
-When you use the lower-level manual JSX API, pass `outputSchema={approvalDecisionSchema}` if your `output` prop is a Drizzle table instead of a schema key.
+Pass `outputSchema={approvalDecisionSchema}` when `output` is a Drizzle table.
 
 ```tsx
 <Approval
@@ -112,14 +110,15 @@ When you use the lower-level manual JSX API, pass `outputSchema={approvalDecisio
 
 ## Behavior
 
-- The workflow enters `waiting-approval` when the node is reached.
-- `smithers approve` or `smithers deny` updates the approval record durably.
-- On resume, the node resolves to a decision object and downstream JSX can branch on that value.
-- `onDeny="fail"` behaves like a hard gate.
-- `onDeny="continue"` lets you branch explicitly on `decision.approved`.
+- Workflow enters `waiting-approval` when this node is reached.
+- `smithers approve` / `smithers deny` updates the record durably.
+- On resume, the node resolves to a decision object; downstream JSX branches on the value.
+- `onDeny="fail"` -- hard gate.
+- `onDeny="continue"` -- branch on `decision.approved`.
 
-## When to Use `<Approval>` vs `needsApproval`
+## `<Approval>` vs `needsApproval`
 
-Use `<Approval>` when the approval is a real workflow node whose decision should be persisted as data and reused by downstream logic.
-
-Use `needsApproval` on `<Task>` when you only need a simple pause before the task runs and you do not need a separate decision value in the graph.
+| Use | When |
+| --- | --- |
+| `<Approval>` | Decision must be persisted as data and consumed by downstream nodes. |
+| `needsApproval` on `<Task>` | Simple pause before a task; no separate decision value needed. |

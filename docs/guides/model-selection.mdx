@@ -3,7 +3,9 @@ title: Model Selection
 description: Which AI models to use for each step in a Smithers workflow, and how to configure CLI vs API agents.
 ---
 
-Choosing the right model for each task has a significant impact on workflow quality and cost. This guide covers recommended models, when to use CLI agents vs the AI SDK, and how to set up a dual-agent configuration.
+Not all tasks are created equal. An implementation task needs a model that writes correct code. A review task needs a model that reasons about architecture. A simple file-reading task needs a model that is fast and cheap.
+
+Choosing the right model for each task is the difference between a workflow that works and one that burns money on overkill -- or worse, fails because you used a cheap model for a hard job.
 
 ## Recommended Models
 
@@ -17,7 +19,7 @@ Codex is the strongest model for writing and modifying code. Use it for:
 - Refactoring code
 - Fixing review issues
 
-**Reasoning effort**: Set to `high` by default. Use `xhigh` for especially complex tasks (architectural refactors, multi-file changes with tricky dependencies).
+**Reasoning effort**: Set to `high` by default. Use `xhigh` for especially complex tasks -- architectural refactors, multi-file changes with tricky dependencies.
 
 ### Claude Opus (claude-opus-4-6) -- Planning and Review
 
@@ -31,7 +33,7 @@ Claude Opus is the strongest model for reasoning about architecture and evaluati
 
 ### Claude Sonnet (claude-sonnet-4-5-20250929) -- Simple Tasks
 
-Sonnet is fast, cheap, and good enough for straightforward tasks. Use it for:
+Sonnet is fast, cheap, and good enough for straightforward work. Use it for:
 
 - Simple tool calling (reading files, running commands)
 - Lightweight reviews where deep reasoning is not needed
@@ -50,13 +52,15 @@ Sonnet is fast, cheap, and good enough for straightforward tasks. Use it for:
 | Report generation | Claude Sonnet or Opus | Depends on complexity |
 | Ticket discovery | Codex or Claude Opus | Both work well for codebase analysis |
 
+The parallel review row deserves special attention. Running two different models on the same review catches more bugs than running one model twice. They have different blind spots.
+
 ## CLI Agents vs AI SDK Agents
 
-Smithers supports two ways to run each model:
+Smithers supports two ways to run each model. The choice depends on how you pay.
 
 ### CLI Agents (subscription-based)
 
-Use `ClaudeCodeAgent`, `CodexAgent`, and `KimiAgent` when you have a subscription to the respective service. The agent runs as a subprocess using the CLI binary, which provides its native tool ecosystem (file editing, shell access, etc.).
+Use `ClaudeCodeAgent`, `CodexAgent`, and `KimiAgent` when you have a subscription to the respective service. The agent runs as a subprocess using the CLI binary, which provides its native tool ecosystem -- file editing, shell access, and everything else the CLI supports.
 
 ```ts
 import { ClaudeCodeAgent, CodexAgent, KimiAgent } from "smithers-orchestrator";
@@ -86,7 +90,7 @@ const kimi = new KimiAgent({
 
 ### AI SDK Agents (API billing)
 
-Use `AnthropicAgent` and `OpenAIAgent` when you want API billing instead of a subscription, or when you want sandboxed tools from Smithers:
+Use `AnthropicAgent` and `OpenAIAgent` when you want per-token billing instead of a subscription, or when you want sandboxed tools from Smithers:
 
 ```ts
 import { stepCountIs } from "ai";
@@ -109,7 +113,7 @@ const codex = new OpenAIAgent({
 
 ## Dual-Agent Setup
 
-The recommended pattern is to define both CLI and API versions and switch with an environment variable:
+In practice, you want the flexibility to switch between CLI and API agents without rewriting your workflow. Define both and let an environment variable decide:
 
 ```ts
 // agents.ts
@@ -182,7 +186,7 @@ const kimiCli = new KimiAgent({
 export const kimi = kimiCli; // Kimi is CLI-only
 ```
 
-Switch between modes at launch:
+Switch at launch time:
 
 ```bash
 # Use CLI agents (subscription)
@@ -192,9 +196,11 @@ USE_CLI_AGENTS=1 SMITHERS_UNSAFE=1 bunx smithers run workflow.tsx
 USE_CLI_AGENTS=0 bunx smithers run workflow.tsx
 ```
 
+Your workflow code never changes. Only the agent wiring does.
+
 ## Assigning Models to Steps
 
-In a typical workflow with a [review loop](/guides/review-loop), assign models by their strengths:
+In a typical workflow with a [review loop](/guides/review-loop), assign models by what they are good at:
 
 | Step | Agent | Reasoning |
 | --- | --- | --- |
@@ -207,9 +213,11 @@ In a typical workflow with a [review loop](/guides/review-loop), assign models b
 | ReviewFix | `codex` | Fixing code is implementation work |
 | Report | `claude` | Good at summarization |
 
+Notice the pattern: Codex does the hands-on coding, Claude does the thinking and judging. The review step uses both because that is where coverage matters most.
+
 ## Codex Reasoning Effort
 
-The `model_reasoning_effort` config controls how much thinking Codex does. Higher effort produces better results but is slower and more expensive:
+The `model_reasoning_effort` config controls how much thinking Codex does before it generates. Higher effort produces better results but costs more time and tokens.
 
 ```ts
 const codex = new CodexAgent({
@@ -223,6 +231,8 @@ const codex = new CodexAgent({
 | `medium` | Simple, well-defined changes with clear instructions |
 | `high` | Default. Most implementation and review tasks |
 | `xhigh` | Complex architectural changes, multi-file refactors, tricky edge cases |
+
+When in doubt, use `high`. You can always bump it to `xhigh` for the tasks that keep failing.
 
 ## Next Steps
 

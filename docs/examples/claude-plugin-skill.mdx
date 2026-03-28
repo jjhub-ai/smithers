@@ -6,7 +6,7 @@ description: "Example from ~/.claude/plugins/smithers/ — A Claude Code plugin 
 # Claude Code Plugin — Smithers Skill
 
 <Note>
-**Ghost doc** — This is a real Claude Code plugin found at `~/.claude/plugins/smithers/` on the development machine. It registers the `smithers` skill so Claude Code knows how to create and run Smithers workflows.
+**Ghost doc** — Real Claude Code plugin at `~/.claude/plugins/smithers/`. Registers the `smithers` skill so Claude Code can create and run workflows.
 </Note>
 
 ## plugin.json
@@ -24,9 +24,7 @@ description: "Example from ~/.claude/plugins/smithers/ — A Claude Code plugin 
 }
 ```
 
-## SKILL.md — Core Skill Definition
-
-The skill document teaches Claude Code how to use Smithers:
+## SKILL.md
 
 ```markdown
 ---
@@ -51,19 +49,17 @@ recommend-plan-mode: true
 4. Run with `smithers run workflow.tsx --input '{}'`
 ```
 
-## EXAMPLES.md — Working Examples
+## EXAMPLES.md
 
-The plugin includes 5 complete workflow examples:
+Five complete workflow examples:
 
-1. **Simple Sequential Workflow** — Three-phase research/implement/test pipeline
+1. **Simple Sequential** — Three-phase research/implement/test pipeline
 2. **Conditional Branching** — Branches based on analysis results
-3. **Parallel Execution** — Frontend/backend/database agents running simultaneously
+3. **Parallel Execution** — Frontend/backend/database agents simultaneously
 4. **Error Handling and Retry** — Automatic retry with recovery fallback
 5. **Data Flow Between Phases** — Requirements/design/implement/test with structured data passing
 
-## REFERENCE.md — API Reference
-
-Documents all core components:
+## REFERENCE.md
 
 | Component | Purpose |
 |-----------|---------|
@@ -73,9 +69,3 @@ Documents all core components:
 | `<Parallel>` | Runs children concurrently with optional `maxConcurrency` |
 | `<Branch>` | Conditional rendering — `if`/`then`/`else` |
 | `<Loop>` | Loop controller — iterates `until` condition or `maxIterations` |
-
-## What This Demonstrates
-
-- **Claude Code plugin system** — A `plugin.json` + `skills/` directory registers custom capabilities with Claude Code.
-- **Skill metadata** — `allowed-tools`, `user-invocable`, and `recommend-plan-mode` control how Claude Code uses the skill.
-- **Self-documenting patterns** — The skill document teaches the LLM both the API and the architectural patterns.

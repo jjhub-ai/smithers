@@ -6,18 +6,19 @@ description: Execute a subtree in a separate JJ worktree rooted at `path`.
 ## Import
 
 ```tsx
-import { Worktree, Task, Parallel, MergeQueue } from "smithers";
+import { Worktree, Task, Parallel, MergeQueue } from "smithers-orchestrator";
 ```
 
 ## Props
 
 | Prop | Type | Default | Description |
 | --- | --- | --- | --- |
-| `id` | `string` | auto-generated | Optional stable id for tracking and deduping. |
-| `path` | `string` | — | Filesystem path for the JJ workspace root. Required; non-empty. |
-| `branch` | `string` | `undefined` | Git/JJ branch name to check out in the worktree. When omitted, the worktree uses the current branch. |
-| `skipIf` | `boolean` | `false` | Skip the subtree when true. |
-| `children` | `ReactNode` | — | Nested tasks and control-flow nodes. |
+| `id` | `string` | auto-generated | Stable id for tracking/deduping. |
+| `path` | `string` | -- | Filesystem path for the JJ workspace root. Required; non-empty. |
+| `branch` | `string` | `undefined` | Branch to check out. Omit to use the current branch. |
+| `baseBranch` | `string` | `"main"` | Base branch/revision for sync or creation. |
+| `skipIf` | `boolean` | `false` | Skip the subtree. |
+| `children` | `ReactNode` | -- | Nested tasks and control-flow nodes. |
 
 ## Basics
 
@@ -36,17 +37,19 @@ import { Worktree, Task, Parallel, MergeQueue } from "smithers";
 </Worktree>
 ```
 
-All descendant tasks within the `<Worktree>` receive `worktreeId` and a normalized absolute `worktreePath` in their task descriptors. The engine uses this `worktreePath` as the `cwd` for JJ operations and as the task root when executing tools.
+Descendant tasks receive `worktreeId` and a normalized absolute `worktreePath` in their descriptors. The engine uses `worktreePath` as `cwd` for JJ operations and tool execution.
 
 ## Path Resolution
 
-- Relative `path` values resolve against the workflow's base directory (engine `baseRootDir` when provided, otherwise `process.cwd()`).
-- Absolute paths are preserved and normalized.
-- Empty or whitespace-only `path` is rejected: `<Worktree> requires a non-empty path prop`.
+| Input | Behavior |
+| --- | --- |
+| Relative path | Resolves against `baseRootDir` (or `process.cwd()`). |
+| Absolute path | Preserved and normalized. |
+| Empty/whitespace | Rejected: `<Worktree> requires a non-empty path prop`. |
 
 ## Nesting
 
-Nested `<Worktree>` components are supported. The innermost worktree in scope for a task determines its effective `worktreeId`/`worktreePath`.
+Innermost `<Worktree>` in scope determines a task's effective `worktreeId`/`worktreePath`.
 
 ```tsx
 <Worktree id="outer" path="/tmp/wt-outer">
@@ -58,8 +61,6 @@ Nested `<Worktree>` components are supported. The innermost worktree in scope fo
 ```
 
 ## With Parallel and MergeQueue
-
-Worktrees compose with concurrency primitives. For example, queue serialized patch application inside a dedicated workspace:
 
 ```tsx
 <Worktree path="/tmp/wt-queue">
@@ -73,14 +74,14 @@ Worktrees compose with concurrency primitives. For example, queue serialized pat
 </Worktree>
 ```
 
-## Rendering Internals
+## Internals
 
-- Renders to a `<smithers:worktree>` host node.
+- Renders to `<smithers:worktree>`.
 - Extraction assigns `worktreeId` and `worktreePath` to every descendant task descriptor.
-- The scheduler remains unaware of worktrees; the engine consumes these fields to scope JJ operations and reverts.
+- The scheduler is unaware of worktrees; the engine consumes these fields to scope JJ operations and reverts.
 
 ## Notes
 
 - Duplicate `id` values are rejected.
-- Prefer absolute, ephemeral paths for isolation when running CI.
-- Relative paths aid portability for local development.
+- Use `baseBranch` to create/rebase from something other than `main`.
+- Prefer absolute ephemeral paths in CI; relative paths for local portability.

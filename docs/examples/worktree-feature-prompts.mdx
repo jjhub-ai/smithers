@@ -6,12 +6,12 @@ description: "Example from scripts/worktree-feature/components/*.mdx — MDX pro
 # scripts/worktree-feature/ — MDX Prompt Templates
 
 <Note>
-**Ghost doc** — These are real MDX prompt files from the `scripts/worktree-feature/components/` directory. They demonstrate how to use MDX as structured, interpolated prompt templates for agent tasks.
+**Ghost doc** — Real MDX prompt files from `scripts/worktree-feature/components/`.
 </Note>
 
-## How MDX Prompts Work
+## Usage
 
-Each `.mdx` file is imported as a JSX component and rendered as children of a `<Task>`. Props are interpolated via `{props.xxx}` syntax:
+Each `.mdx` file is imported as a JSX component and rendered as children of `<Task>`. Props interpolate via `{props.xxx}`:
 
 ```tsx
 import ImplementPrompt from "./Implement.mdx";
@@ -27,8 +27,6 @@ import ImplementPrompt from "./Implement.mdx";
 ```
 
 ## Discover.mdx
-
-Prompt for breaking a PRD into ordered implementation tickets.
 
 ```mdx
 TICKET DISCOVERY — Break PRD into Ordered Implementation Tickets
@@ -47,8 +45,6 @@ TICKET ID RULES:
 ```
 
 ## Implement.mdx
-
-Prompt for full end-to-end ticket implementation with iterative feedback.
 
 ```mdx
 IMPLEMENTATION — Ticket: {props.ticketId} — {props.ticketTitle}
@@ -83,8 +79,6 @@ IMPLEMENTATION RULES:
 
 ## Review.mdx
 
-Prompt for extremely strict code review against PRD specifications.
-
 ```mdx
 CODE REVIEW — Ticket: {props.ticketId} — {props.ticketTitle} — Reviewer: {props.reviewer}
 
@@ -107,8 +101,6 @@ APPROVAL POLICY:
 
 ## Validate.mdx
 
-Prompt for independent verification of implementation correctness.
-
 ```mdx
 VALIDATION — Ticket: {props.ticketId} — {props.ticketTitle}
 
@@ -124,8 +116,6 @@ ZERO TOLERANCE:
 ```
 
 ## ReviewFix.mdx
-
-Prompt for addressing all issues from code review.
 
 ```mdx
 REVIEW FIX — Ticket: {props.ticketId} — {props.ticketTitle}
@@ -144,8 +134,6 @@ RULES:
 
 ## Report.mdx
 
-Prompt for generating a concise implementation report.
-
 ```mdx
 REPORTING — Ticket: {props.ticketId} — {props.ticketTitle}
 
@@ -161,7 +149,7 @@ Assess: Anything go wrong? Agent struggle? Lessons for future?
 
 ## System Prompt — system-prompt.mdx
 
-The top-level system prompt is also MDX, using custom components to inject context:
+The top-level system prompt uses custom MDX components to inject context:
 
 ```mdx
 # Smithers Framework — Worktree + MergeQueue Implementation
@@ -178,7 +166,7 @@ The top-level system prompt is also MDX, using custom components to inject conte
 - Atomic commits with emoji prefixes
 ```
 
-The `<Prd />` and `<SmithersContext />` components are injected at render time via `renderMdx()`:
+Components are injected at render time via `renderMdx()`:
 
 ```ts
 import { renderMdx } from "smithers-orchestrator";
@@ -189,9 +177,9 @@ export const SYSTEM_PROMPT = renderMdx(SystemPromptMdx, {
 });
 ```
 
-## What This Demonstrates
+## Key Patterns
 
-- **MDX as prompt templates** — Each `.mdx` file is a structured prompt with JSX interpolation for dynamic content.
-- **Props-driven prompts** — Components pass ticket data, previous results, and feedback as props to MDX templates.
-- **Conditional sections** — `{props.previousImplementation ? ... : ""}` adds context only when iterating.
-- **`renderMdx()`** — Composes large system prompts from multiple sources using custom MDX components.
+- **MDX as prompt templates** -- structured prompts with JSX interpolation for dynamic content.
+- **Props-driven** -- ticket data, previous results, and feedback pass as props.
+- **Conditional sections** -- `{props.previousImplementation ? ... : ""}` adds context only when iterating.
+- **`renderMdx()`** -- composes system prompts from multiple sources using custom MDX components.

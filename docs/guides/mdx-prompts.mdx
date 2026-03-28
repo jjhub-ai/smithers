@@ -1,18 +1,14 @@
 ---
 title: MDX Prompts
-description: How to use MDX files for prompt templates and system prompt composition in Smithers workflows.
+description: Using MDX files for prompt templates and system prompt composition in Smithers workflows.
 ---
 
-MDX lets you write prompts as files with JSX interpolation. This separates prompt engineering from orchestration logic, making prompts easier to read, edit, and maintain. If you want the prompt and output schema to live together in a `.baml` file that imports as a task component, see [BAML](/integrations/baml).
+MDX separates prompt text from orchestration logic. Smithers uses it two ways:
 
-Smithers uses MDX in two ways:
-
-1. **Per-step prompts** -- `.mdx` files with `{props.*}` interpolation, used as children of `<Task>`.
-2. **System prompt composition** -- A master `.mdx` template that assembles a system prompt from multiple markdown docs using JSX component injection.
+1. **Per-step prompts** -- `.mdx` files with `{props.*}` interpolation, used as `<Task>` children.
+2. **System prompt composition** -- A master `.mdx` template that assembles context from multiple markdown docs.
 
 ## Setup
-
-Enable MDX imports in Bun with two files:
 
 ```ts
 // preload.ts
@@ -26,8 +22,6 @@ preload = ["./preload.ts"]
 ```
 
 ## Per-Step Prompts
-
-Each step gets an `.mdx` file that serves as its prompt template. Props are interpolated at render time:
 
 ```mdx
 {/* components/Review.mdx */}
@@ -52,8 +46,6 @@ Modified: {JSON.stringify(props.filesModified)}
 **REQUIRED OUTPUT** -- JSON matching this schema:
 {props.schema}
 ```
-
-Use it in your component:
 
 ```tsx
 // components/Review.tsx
@@ -81,17 +73,11 @@ export function Review({ ticket }) {
 
 ### Auto-injected `{props.schema}`
 
-When a `<Task>` has an `outputSchema` (either explicit or auto-resolved from `createSmithers()`), Smithers auto-injects a `schema` prop into the MDX component. This prop contains a human-readable JSON example generated from the Zod schema, so agents know exactly what structure to produce.
-
-You do not need to pass `schema` manually -- just use `{props.schema}` in your MDX and it will be filled in automatically.
+When a `<Task>` has an output schema (explicit or from `createSmithers()`), Smithers auto-injects a `schema` prop containing a human-readable JSON example from the Zod schema. No manual passing required.
 
 ## System Prompt Composition
 
-For large workflows, the system prompt needs to include project documentation, coding conventions, architecture notes, and more. MDX lets you compose this from standalone markdown files.
-
-### Step 1: Write standalone docs
-
-Keep domain knowledge in `.md` files that are reusable across workflows:
+### 1. Standalone docs
 
 ```
 prompts/
@@ -102,9 +88,7 @@ prompts/
   always-green.md       # "Keep tests passing" rules
 ```
 
-### Step 2: Create component functions
-
-In `system-prompt.ts`, read each doc file and wrap it in a component function:
+### 2. Component functions
 
 ```ts
 import { readFileSync } from "node:fs";
@@ -142,9 +126,7 @@ export const SYSTEM_PROMPT = renderMdx(SystemPromptMdx, {
 });
 ```
 
-### Step 3: Write the master template
-
-The `system-prompt.mdx` uses those components as JSX tags:
+### 3. Master template
 
 ```mdx
 # My Project
@@ -176,16 +158,9 @@ You are building [project description].
 MUST end response with JSON object in code fence. Format specified in task prompt.
 ```
 
-### Benefits
+Each `.md` is standalone, reusable across workflows, and version-controlled. Add or remove sections by adding or removing a component tag.
 
-- **Reusable docs** -- Each `.md` file is standalone and can be used across multiple workflows or shared with human developers.
-- **Composable** -- Add or remove context sections without editing prompt text. Just add/remove a component tag.
-- **Shared across agents** -- All agents in the workflow get the same system prompt, ensuring consistent behavior.
-- **Version-controlled** -- Prompts live in the repo and are tracked by git. Changes are visible in diffs.
-
-## Conditional Sections in Prompts
-
-Use JavaScript ternary expressions for conditional prompt content:
+## Conditional Sections
 
 ```mdx
 {props.previousAttempt
@@ -200,11 +175,7 @@ Fix the issues above before proceeding.`
   : ""}
 ```
 
-This keeps prompts concise on first iterations and adds context only when previous attempts exist.
-
 ## Array Rendering
-
-Render arrays using `.map()` and `.join()`:
 
 ```mdx
 FILES TO MODIFY:

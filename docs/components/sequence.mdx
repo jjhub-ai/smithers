@@ -3,10 +3,6 @@ title: <Sequence>
 description: Execute child tasks one after another in the order they appear.
 ---
 
-`<Sequence>` groups its children and executes them **one at a time, in order**, from top to bottom. Each child must complete before the next one starts.
-
-## Import
-
 ```tsx
 import { Sequence } from "smithers-orchestrator";
 ```
@@ -15,8 +11,8 @@ import { Sequence } from "smithers-orchestrator";
 
 | Prop | Type | Default | Description |
 | --- | --- | --- | --- |
-| `skipIf` | `boolean` | `false` | When `true`, the entire sequence and all its children are skipped. The component returns `null` and no child tasks are mounted. |
-| `children` | `ReactNode` | `undefined` | The tasks and control-flow components to execute sequentially. |
+| `skipIf` | `boolean` | `false` | Skip the entire sequence. Returns `null`; no children are mounted. |
+| `children` | `ReactNode` | `undefined` | Tasks and control-flow components to execute sequentially. |
 
 ## Usage
 
@@ -36,11 +32,9 @@ import { Sequence } from "smithers-orchestrator";
 </Workflow>
 ```
 
-In this example, `fetch` runs first. Only after it completes does `transform` start. `store` runs last.
+## When explicit Sequence is needed
 
-## When to use Sequence explicitly
-
-`<Workflow>` already sequences its direct children implicitly, so a top-level `<Sequence>` is optional. You need an explicit `<Sequence>` when you want to enforce ordering inside other control-flow components:
+`<Workflow>` sequences direct children implicitly. An explicit `<Sequence>` is needed inside other control-flow components:
 
 ```tsx
 <Workflow name="build-and-deploy">
@@ -66,11 +60,9 @@ In this example, `fetch` runs first. Only after it completes does `transform` st
 </Workflow>
 ```
 
-Here, the two `<Sequence>` groups run in parallel with each other, but the tasks within each group run sequentially.
+The two `<Sequence>` groups run in parallel; tasks within each group run sequentially.
 
 ## Conditional skipping
-
-Use `skipIf` to conditionally bypass an entire group of tasks:
 
 ```tsx
 <Sequence skipIf={ctx.input.skipTests}>
@@ -83,14 +75,14 @@ Use `skipIf` to conditionally bypass an entire group of tasks:
 </Sequence>
 ```
 
-When `skipIf` is `true`, the component returns `null`. None of the child tasks are mounted into the workflow graph, so they do not appear in the execution plan at all.
+When `skipIf` is `true`, the component returns `null`. No children are mounted into the execution plan.
 
 ## Rendering
 
-Internally, `<Sequence>` renders as a `<smithers:sequence>` host element (or `null` when skipped). The runtime traverses the element tree and assigns ordinals to tasks in the order they appear.
+`<Sequence>` renders as a `<smithers:sequence>` host element (or `null` when skipped). The runtime assigns ordinals to tasks in source order.
 
 ## Notes
 
-- Child ordering matches JSX source order. The first child in the JSX runs first.
-- `<Sequence>` can be nested inside `<Parallel>`, `<Branch>`, `<Loop>`, or another `<Sequence>`.
-- An empty `<Sequence>` (no children) is valid and produces no tasks.
+- Child ordering matches JSX source order.
+- Nestable inside `<Parallel>`, `<Branch>`, `<Loop>`, or another `<Sequence>`.
+- An empty `<Sequence>` is valid and produces no tasks.

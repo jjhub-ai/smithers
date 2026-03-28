@@ -3,23 +3,35 @@ title: Quickstart
 description: Start with the JSX quickstart for Smithers workflows.
 ---
 
-The quickstart walks through the core workflow authoring loop: define schemas, create tasks, run the workflow, and inspect the result.
+## 1. Initialize
 
-## Quickstart
+```bash
+bunx smithers-orchestrator init
+```
 
-- [JSX Quickstart](/jsx/quickstart) — Build a TSX workflow with `<Task>` components and `ctx.outputMaybe(...)`.
+Scaffolds `.smithers/` with ready-to-use workflows.
 
-## What the Runtime Gives You
+## 2. Run a Workflow
 
-Every Smithers workflow runs on the same durable runtime:
+```bash
+bunx smithers workflow implement --prompt "Add rate limiting to the API"
+```
 
-- steps are persisted to SQLite
-- completed work resumes after restarts
-- retries, approvals, and loops use the same engine
-- observability and CLI tooling are shared
+## 3. Build Your Own
+
+- [JSX Quickstart](/api/quickstart) -- Build a TSX workflow with `<Task>` components and typed `deps`.
+
+## Runtime
+
+Every workflow gets:
+
+- SQLite persistence
+- Resume after restarts
+- Retries, approvals, loops
+- Observability and CLI tooling
 
 ## Next Steps
 
-- [JSX Quickstart](/jsx/quickstart) — Build a render-driven TSX workflow.
-- [Hello World Example](/examples/hello-world) — See the smallest complete workflow.
-- [Review Loop Guide](/guides/review-loop) — Move from a linear flow to iterative refinement.
+- [JSX Quickstart](/api/quickstart) -- Build a render-driven TSX workflow from scratch.
+- [Hello World Example](/examples/hello-world) -- Smallest complete workflow.
+- [Review Loop Guide](/guides/review-loop) -- From linear flow to iterative refinement.

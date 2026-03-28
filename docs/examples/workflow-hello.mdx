@@ -6,7 +6,7 @@ description: "Example from workflows/hello.tsx — A minimal hello-world workflo
 # workflows/hello.tsx
 
 <Note>
-**Ghost doc** — This is a real script found at `workflows/hello.tsx` in the Smithers repository. It demonstrates the simplest possible workflow with direct literal output (no AI agent).
+**Ghost doc** -- Real script from `workflows/hello.tsx`. Demonstrates literal output with no AI agent.
 </Note>
 
 ## Source
@@ -41,17 +41,14 @@ export default smithers((ctx) => (
 smithers run workflows/hello.tsx --input '{"name": "World"}'
 ```
 
-Output:
-
 ```
 [hello] Starting run abc123
 [hello] Done -> { message: "Hello, World!", length: 5 }
 [hello] Completed
 ```
 
-## What This Demonstrates
+## Notes
 
-- **Literal output** — The `Task` receives a plain object instead of an agent prompt, producing deterministic output with no LLM call.
-- **`createSmithers`** — Registers a Zod schema and auto-generates the backing SQLite table. No manual DDL needed.
-- **`ctx.input`** — Access the input payload passed via `--input` on the CLI.
-- **Resumable** — If the workflow crashes after the task completes, re-running skips straight to the end because the output is already persisted.
+- **Literal output** -- `Task` receives a plain object instead of an agent prompt. No LLM call; deterministic output.
+- **`ctx.input`** -- Access the CLI input payload passed via `--input`.
+- **Resumable** -- Output is persisted to SQLite. Re-running after a crash skips completed tasks.

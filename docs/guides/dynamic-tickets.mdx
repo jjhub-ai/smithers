@@ -1,26 +1,18 @@
 ---
 title: Dynamic Tickets
-description: How to use agent-driven ticket discovery for large projects instead of hardcoding task lists.
+description: Agent-driven ticket discovery for large projects instead of hardcoded task lists.
 ---
 
-For large projects with more than about 20 tasks, hardcoding a list of tasks is fragile. The codebase evolves as tickets are completed, and a static list cannot account for emergent requirements, shifting priorities, or work discovered during implementation.
-
-Smithers solves this with **dynamic ticket discovery** -- an agent explores the codebase, compares current state to specs, and generates the next batch of tickets at runtime. When all tickets complete, the workflow re-renders, the Discover agent runs again, and finds the next batch.
-
-## When to Use Dynamic vs Hardcoded
+For projects with more than ~20 tasks, hardcoded task lists are fragile. Smithers supports **dynamic ticket discovery**: an agent explores the codebase, compares state to specs, and generates the next batch of tickets at runtime.
 
 | Approach | Best for | Example |
 | --- | --- | --- |
-| **Dynamic discovery** | Large, evolving projects (more than 20 tasks) | Building a full application from a PRD |
-| **Hardcoded tasks** | Focused features (fewer than 20 tasks) | Adding auth, fixing a bug, a specific refactor |
+| **Dynamic discovery** | Large, evolving projects (>20 tasks) | Building a full application from a PRD |
+| **Hardcoded tasks** | Focused features (<20 tasks) | Adding auth, fixing a bug, a specific refactor |
 
-## Dynamic Discovery Pattern
+## Discovery Pattern
 
-The workflow has three key parts:
-
-1. **Discover** -- An agent generates the next 3-5 tickets by analyzing the codebase.
-2. **TicketPipeline** -- Each ticket goes through research, planning, implementation, review, and reporting.
-3. **Re-render loop** -- When all tickets complete, Discover runs again to find the next batch.
+Three parts: Discover generates tickets, TicketPipeline processes each one, re-render triggers the next batch.
 
 ```tsx
 // workflow.tsx
@@ -48,19 +40,16 @@ export default smithers((ctx) => {
 });
 ```
 
-### How it works
+Execution flow:
 
-1. On first render, `discoverOutput` is `undefined`, so `unfinishedTickets` is empty.
-2. The `Branch` condition is true, so `<Discover />` mounts and runs.
-3. Discover generates tickets as structured JSON and persists them to the `discover` table.
-4. The workflow re-renders. Now `unfinishedTickets` has entries, so the Branch is false (Discover is skipped).
-5. Each ticket maps to a `<TicketPipeline>` that runs research, planning, implementation, and review.
-6. As each ticket completes, its `<Report>` writes to the `report` table.
-7. When all tickets have reports, `unfinishedTickets` is empty again, and Discover runs to find the next batch.
+1. First render: `unfinishedTickets` is empty, `<Discover />` mounts and runs.
+2. Discover persists tickets to the `discover` table.
+3. Re-render: tickets exist, Branch is false, `<TicketPipeline>` components mount.
+4. Each pipeline runs research, planning, implementation, review.
+5. Completed tickets write to `report` table.
+6. When all tickets have reports, `unfinishedTickets` empties, Discover runs again.
 
-## The Discover Component
-
-Discover uses an agent to analyze the codebase and produce structured tickets:
+## Discover Component
 
 ```tsx
 // components/Discover.tsx
@@ -92,8 +81,6 @@ export function Discover() {
 
 ## Ticket Schema
 
-Tickets are structured with kebab-case IDs, descriptions, acceptance criteria, and dependency information:
-
 ```ts
 // components/Discover.schema.ts
 import { z } from "zod";
@@ -114,15 +101,13 @@ export const DiscoverOutput = z.object({
 export type DiscoverOutput = z.infer<typeof DiscoverOutput>;
 ```
 
-### Ticket ID rules
+Ticket ID rules:
 
-- IDs **must** be lowercase kebab-case slugs derived from the title (e.g. `sqlite-wal-init`, `add-auth-middleware`).
-- **Never** use numeric IDs like `T-001` -- they collide across discovery runs.
-- Keep slugs short but descriptive (2-5 words).
+- Lowercase kebab-case slugs derived from the title (e.g. `sqlite-wal-init`, `add-auth-middleware`).
+- Never numeric IDs like `T-001` -- they collide across discovery runs.
+- 2-5 words, short but descriptive.
 
-## The TicketPipeline
-
-Each ticket flows through a pipeline of steps. Use `skipIf` to skip completed tickets on resume:
+## TicketPipeline
 
 ```tsx
 // components/TicketPipeline.tsx
@@ -150,19 +135,15 @@ export function TicketPipeline({ ticket }: { ticket: Ticket }) {
 }
 ```
 
-## Discover Prompt Tips
+## Discover Prompt Guidelines
 
-The Discover prompt should instruct the agent to:
+1. Compare specs vs. current codebase state.
+2. Prioritize foundational work (infrastructure, types) before dependent features.
+3. Keep tickets small -- smallest independently testable unit.
+4. Pass completed ticket IDs to avoid re-discovering finished work.
+5. Limit to 3-5 tickets per batch so each batch benefits from prior implementation context.
 
-1. **Compare specs vs reality** -- Read the project's requirements docs and compare to what actually exists in the codebase.
-2. **Prioritize foundational work** -- Infrastructure and types before features that depend on them.
-3. **Keep tickets small** -- Each ticket should be the smallest independently testable unit.
-4. **Include previous context** -- Pass completed ticket IDs so the agent does not re-discover finished work.
-5. **Limit batch size** -- Generate 3-5 tickets at a time, not the full project backlog. This lets each batch benefit from the context of what was just implemented.
-
-## Hardcoded Tasks (For Smaller Projects)
-
-For projects with fewer than 20 well-defined tasks, hardcoding is simpler and more predictable:
+## Hardcoded Tasks (Smaller Projects)
 
 ```tsx
 const tasks = [
@@ -190,11 +171,11 @@ export default smithers((ctx) => (
 ));
 ```
 
-You can still wrap each task in a [review loop](/guides/review-loop) for quality assurance.
+Each task can still be wrapped in a [review loop](/guides/review-loop).
 
 ## Sprint-Based Discovery
 
-For very large projects, wrap the entire workflow in a `<Loop>` with a sprint tracker. Each sprint discovers work, implements it, and advances a counter:
+For very large projects, wrap the workflow in a `<Loop>` with a sprint tracker:
 
 ```tsx
 export default smithers((ctx) => {
@@ -219,6 +200,6 @@ export default smithers((ctx) => {
 
 ## Next Steps
 
-- [Implement-Review Loop](/guides/review-loop) -- The recommended review loop pattern.
-- [Model Selection](/guides/model-selection) -- Which models to use for discovery vs implementation.
+- [Implement-Review Loop](/guides/review-loop) -- The review loop pattern.
+- [Model Selection](/guides/model-selection) -- Models for discovery vs. implementation.
 - [Best Practices](/guides/best-practices) -- General workflow design guidelines.

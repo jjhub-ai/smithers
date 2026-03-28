@@ -1,23 +1,15 @@
 ---
 title: "Tutorial: Build a Workflow"
-description: Step-by-step guide to building a production-ready Smithers workflow with schemas, agents, sequential tasks, and output access.
+description: Step-by-step guide to building a Smithers workflow with schemas, agents, sequential tasks, and output access.
 ---
 
-This tutorial walks you through building a complete, production-ready workflow from scratch. You will define schemas with `createSmithers`, configure AI agents, compose tasks in a `<Sequence>`, read previous outputs through `ctx`, and inspect the results.
-
-By the end, you will have a three-step code review workflow: analyze a codebase, generate a fix, then produce a summary report.
-
-## Step 1: Project Setup
-
-Create a new directory and install dependencies:
+## 1. Project Setup
 
 ```bash
 mkdir code-review && cd code-review
 bun init -y
 bun add smithers-orchestrator ai @ai-sdk/anthropic zod
 ```
-
-Configure TypeScript for Smithers JSX:
 
 ```json
 // tsconfig.json
@@ -35,25 +27,21 @@ Configure TypeScript for Smithers JSX:
 }
 ```
 
-Set your API key:
-
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
-
-Your project structure will look like this:
 
 ```
 code-review/
   tsconfig.json
   package.json
   workflow.tsx      # Workflow definition
-  main.ts          # Runner (optional -- you can also use the CLI)
+  main.ts          # Runner (optional -- CLI works too)
 ```
 
-## Step 2: Define Schemas
+## 2. Define Schemas
 
-`createSmithers` accepts a record of Zod schemas. Each schema becomes a named output table that Smithers auto-creates in SQLite. You never write SQL or Drizzle table definitions by hand.
+Each Zod schema passed to `createSmithers` becomes a named, auto-created SQLite output table.
 
 ```tsx
 // workflow.tsx
@@ -84,15 +72,9 @@ const { Workflow, smithers, outputs } = createSmithers({
 });
 ```
 
-Three things happened here:
+`outputs` provides typed references (`outputs.analysis` instead of the string `"analysis"`). Typos become compile errors. `runId`, `nodeId`, and `iteration` columns are auto-added.
 
-1. **`outputs`** gives you typed references to each schema — use `outputs.analysis` instead of the string `"analysis"`. Typos become compile-time errors.
-2. **SQLite tables** are auto-created with the correct columns, plus auto-populated `runId`, `nodeId`, and `iteration` columns.
-3. **`Workflow`** and **`smithers`** are returned pre-configured for this schema set.
-
-## Step 3: Configure Agents
-
-Define your AI agents using the Vercel AI SDK. You can use any provider, but this example uses Anthropic:
+## 3. Configure Agents
 
 ```tsx
 // workflow.tsx (continued)
@@ -115,22 +97,17 @@ const reporter = new Agent({
 });
 ```
 
-## Step 4: Build the Workflow
-
-Now compose the tasks. Tasks inside `<Workflow>` run sequentially by default (top to bottom). You can also use `<Sequence>` explicitly for clarity:
+## 4. Build the Workflow
 
 ```tsx
 // workflow.tsx (continued)
 export default smithers((ctx) => {
-  // Read the analysis output (undefined until the task completes)
   const analysis = ctx.outputMaybe(outputs.analysis, { nodeId: "analyze" });
-  // Read the fix output
   const fix = ctx.outputMaybe(outputs.fix, { nodeId: "fix" });
 
   return (
     <Workflow name="code-review">
       <Sequence>
-        {/* Step 1: Analyze the codebase */}
         <Task id="analyze" output={outputs.analysis} agent={analyst}>
           {`Review this code for bugs and issues:
 
@@ -142,7 +119,6 @@ Return JSON with:
 - issues (array): each with file, line, severity, and description`}
         </Task>
 
-        {/* Step 2: Generate a fix (only renders after analysis completes) */}
         {analysis ? (
           <Task id="fix" output={outputs.fix} agent={fixer}>
             {`Fix these issues:
@@ -156,7 +132,6 @@ Return JSON with:
           </Task>
         ) : null}
 
-        {/* Step 3: Generate a summary report */}
         {fix ? (
           <Task id="report" output={outputs.report} agent={reporter}>
             {`Write a code review report.
@@ -179,16 +154,11 @@ Return JSON with:
 });
 ```
 
-Key points about this workflow:
+- `ctx.outputMaybe()` returns `undefined` until the task completes. Safe for conditional rendering.
+- `{analysis ? <Task .../> : null}` gates downstream tasks on upstream completion.
+- `ctx.input` is the runtime input object (here: `{ repo: string, focusArea?: string }`).
 
-- **`ctx.outputMaybe()`** returns `undefined` if the task has not completed yet. This is safe for conditional rendering. Pass the schema reference (e.g. `outputs.analysis`) for type-safe access.
-- **Conditional rendering** (`{analysis ? <Task ... /> : null}`) controls task visibility. The `fix` task only mounts after `analyze` finishes and provides output.
-- **`ctx.input`** contains the input object you pass at run time. Here we expect `{ repo: string, focusArea?: string }`.
-- **`outputs`** references are type-checked — a typo like `outputs.anaylsis` is a compile error, not a runtime surprise.
-
-## Step 5: Create the Runner
-
-You can run the workflow programmatically or via the CLI. Here is the programmatic approach:
+## 5. Create the Runner
 
 ```ts
 // main.ts
@@ -215,73 +185,49 @@ if (result.status === "finished") {
 }
 ```
 
-## Step 6: Run It
+## 6. Run It
 
 ```bash
 bun run main.ts
 ```
 
-Or use the CLI directly (no `main.ts` required):
+Or via CLI (no `main.ts` needed):
 
 ```bash
-bunx smithers run workflow.tsx --input '{"repo": "/path/to/my-project", "focusArea": "authentication"}'
+bunx smithers up workflow.tsx --input '{"repo": "/path/to/my-project", "focusArea": "authentication"}'
 ```
 
-You should see progress events followed by a result:
-
-```
-Starting: analyze
-Finished: analyze
-Starting: fix
-Finished: fix
-Starting: report
-Finished: report
-Status: finished
-Run ID: smth_a1b2c3d4
-```
-
-## Step 7: Inspect Results
-
-Use the CLI to inspect the completed run:
+## 7. Inspect Results
 
 ```bash
-# View run status and node states
-bunx smithers status workflow.tsx --run-id smth_a1b2c3d4
-
-# View the execution graph
+bunx smithers inspect smth_a1b2c3d4
 bunx smithers graph workflow.tsx --run-id smth_a1b2c3d4
-
-# View render frames (useful for debugging re-render cycles)
-bunx smithers frames workflow.tsx --run-id smth_a1b2c3d4 --tail 5
+bunx smithers logs smth_a1b2c3d4 --tail 5 --follow false
 ```
 
-The SQLite database (`smithers.db`) contains the full execution history. You can also query it directly:
+Query SQLite directly:
 
 ```bash
 sqlite3 smithers.db "SELECT * FROM analysis WHERE run_id = 'smth_a1b2c3d4';"
 sqlite3 smithers.db "SELECT * FROM report WHERE run_id = 'smth_a1b2c3d4';"
 ```
 
-## What Happened
+## Execution Model
 
-Here is the execution flow:
+The engine renders the JSX tree repeatedly:
 
-1. **Render 1**: Smithers renders the JSX tree. Only `analyze` is mounted (the other tasks are guarded by `null` checks). The engine executes `analyze`.
-2. **Render 2**: `ctx.outputMaybe(outputs.analysis, ...)` now returns the persisted row. The `fix` task mounts. The engine executes `fix`.
-3. **Render 3**: Both `analysis` and `fix` are available. The `report` task mounts. The engine executes `report`.
-4. **Render 4**: All tasks are finished. No runnable tasks remain. The run completes with status `"finished"`.
+1. **Render 1** -- Only `analyze` is mounted. Engine executes it.
+2. **Render 2** -- `ctx.outputMaybe(outputs.analysis)` returns data. `fix` mounts and executes.
+3. **Render 3** -- Both outputs available. `report` mounts and executes.
+4. **Render 4** -- All tasks finished. Run completes.
 
-If the process had crashed at any point (say, during step 2), you could resume:
+On crash, resume skips completed tasks:
 
 ```bash
-bunx smithers resume workflow.tsx --run-id smth_a1b2c3d4
+bunx smithers up workflow.tsx --run-id smth_a1b2c3d4 --resume true
 ```
 
-The engine would detect that `analyze` already has a valid output row, skip it, and continue from `fix`.
-
 ## Adding Tools
-
-To give your agents access to the filesystem, add built-in tools:
 
 ```tsx
 import { read, grep, bash } from "smithers-orchestrator";
@@ -293,12 +239,12 @@ const analyst = new Agent({
 });
 ```
 
-Tools are sandboxed to the workflow root directory by default. See [Built-in Tools](/integrations/tools) for configuration options.
+Tools are sandboxed to the workflow root by default. See [Built-in Tools](/integrations/tools).
 
 ## Next Steps
 
-- [Structured Output](/guides/structured-output) -- How schema validation works in depth.
-- [Error Handling](/guides/error-handling) -- Add retries, timeouts, and fallback paths.
-- [Resumability](/guides/resumability) -- Understand crash recovery and deterministic replay.
-- [Patterns](/guides/patterns) -- Recommended project structure for larger workflows.
-- [Components](/components/workflow) -- Reference for all JSX components.
+- [Structured Output](/guides/structured-output) -- Schema validation in depth.
+- [Error Handling](/guides/error-handling) -- Retries, timeouts, fallback paths.
+- [Resumability](/guides/resumability) -- Crash recovery and deterministic replay.
+- [Patterns](/guides/patterns) -- Project structure for larger workflows.
+- [Components](/components/workflow) -- JSX component reference.

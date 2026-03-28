@@ -3,28 +3,45 @@ title: Introduction
 description: Build Smithers workflows with JSX components on top of a durable runtime.
 ---
 
-Smithers is a JSX-first framework for building deterministic, resumable AI workflows. You define the workflow as a TypeScript component tree, and Smithers handles execution ordering, persistence, approvals, retries, and observability.
+Smithers is a JSX-first framework for deterministic, resumable AI workflows. Define the workflow as a TypeScript component tree; Smithers handles execution ordering, persistence, approvals, retries, and observability.
 
 ## Start Here
 
-- [JSX API](/jsx/overview) — Learn the component model and how execution works.
-- [Installation](/jsx/installation) — Set up TypeScript, TSX, and optional MDX prompts.
-- [Quickstart](/jsx/quickstart) — Build and run a two-step workflow.
+```bash
+bunx smithers-orchestrator init
+```
 
-## Shared Runtime
+This creates `.smithers/` with pre-built workflows, shared components, prompt templates, and configuration. Run a seeded workflow:
 
-No matter how large the workflow gets, Smithers handles the same runtime concerns:
+```bash
+bunx smithers workflow implement --prompt "Add input validation to the signup form"
+```
 
-- durable execution and resumability
-- retries, timeouts, and approval gates
+- [Quickstart](/api/quickstart) -- Build a custom workflow from scratch.
+- [Workflows Overview](/concepts/workflows-overview) -- Core principles and execution model.
+
+## Concepts
+
+1. [Workflows Overview](/concepts/workflows-overview) -- What workflows are and how execution works.
+2. [Reactivity](/concepts/reactivity) -- How the component model enables plans that evolve.
+3. [Control Flow](/concepts/control-flow) -- Sequential, parallel, conditional, iterative.
+4. [Workflow State](/concepts/workflow-state) -- Data flow between tasks via the context API.
+5. [Agents and Tools](/concepts/agents-and-tools) -- AI agents and built-in tools.
+6. [Suspend and Resume](/concepts/suspend-and-resume) -- Durability, crash recovery, resumability.
+7. [Human-in-the-Loop](/concepts/human-in-the-loop) -- Approval gates and denial policies.
+
+## Runtime
+
+All workflows share:
+
+- Durable execution and resumability
+- Retries, timeouts, approval gates
 - SQLite persistence
-- parallel execution and loops
-- structured events, metrics, and observability
-
-The Core Concepts, Runtime, CLI, and Integrations sections describe the shared engine underneath that JSX authoring layer.
+- Parallel execution and loops
+- Structured events, metrics, observability
 
 ## Next Steps
 
-- [JSX API](/jsx/overview) — Build workflows as TSX components.
-- [CLI Reference](/cli/overview) — Run, resume, and inspect workflows from the terminal.
-- [Execution Model](/concepts/execution-model) — Understand how Smithers plans and executes runs durably.
+- [JSX API](/api/overview) -- Component model and authoring layer.
+- [CLI Reference](/cli/overview) -- Run, resume, inspect workflows.
+- [Implement-Review Loop](/guides/review-loop) -- Recommended production pattern.

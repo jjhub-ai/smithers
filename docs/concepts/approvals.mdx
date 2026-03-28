@@ -3,6 +3,10 @@ title: Approvals
 description: Model human review as an explicit durable gate in the workflow graph.
 ---
 
+What happens when your workflow reaches a point where a human needs to say "yes" or "no"?
+
+You could bolt a `needsApproval: true` flag onto a task and let the scheduler figure it out. But think about what that actually means. The approval isn't a property of the task -- it's a *separate decision* with its own lifecycle, its own persistence requirements, and its own downstream consequences. Treating it as a boolean flag hides all of that.
+
 Approvals should be explicit workflow nodes, not a boolean flag on an otherwise normal step.
 
 From first principles, an approval is:
@@ -44,7 +48,7 @@ const { smithers, outputs } = createSmithers({
 });
 
 export default smithers((ctx) => {
-  const approval = ctx.outputMaybe("approval", { nodeId: "approve-deploy" });
+  const approval = ctx.outputMaybe(outputs.approval, { nodeId: "approve-deploy" });
 
   return (
     <Workflow name="deploy">
@@ -70,6 +74,8 @@ export default smithers((ctx) => {
 });
 ```
 
+Look at what you gain. The `Approval` node is right there in the graph, visible to anyone reading the workflow. It has an id, an output type, a request, and an explicit denial policy. Nothing is hidden.
+
 This is better for three reasons:
 
 1. the approval is visible in the graph
@@ -89,7 +95,9 @@ type ApprovalDecision = {
 };
 ```
 
-That lets downstream nodes depend on the decision as data, not only as scheduler side effects.
+Not just a boolean. A full record: who decided, when, and why. Downstream nodes can depend on the decision as data, not only as scheduler side effects.
+
+"Why does `decidedBy` matter in the type?" Because six months from now, when someone asks who approved the deploy that broke prod, you want the answer in the workflow output -- not buried in a Slack thread.
 
 ## Lifecycle
 
@@ -112,6 +120,8 @@ More concretely:
 5. The node resolves according to its policy.
 6. Downstream nodes become eligible to run.
 
+Step 3 is where the magic -- or rather, the engineering -- happens. The process can crash, restart, sleep for a week. When it comes back, the approval request is still there in durable storage, and the execution picks up where it left off.
+
 If the process restarts while waiting, the approval request still exists and the execution can resume later.
 
 ## Request Shape
@@ -131,7 +141,11 @@ request: ({ build }) => ({
 
 That request is what Smithers persists, displays in UIs, and exposes through CLI or API tooling.
 
+Notice: the request doesn't reach out to external systems or compute new data. It takes what the workflow already knows and shapes it into something a human can act on. Pure function of upstream outputs. That's what makes it safe to persist and replay.
+
 ## Denial Policies
+
+What should happen when someone says "no"? That depends entirely on context. A compliance gate should halt the workflow. A review gate might just record the rejection and move on.
 
 An approval gate should make denial behavior explicit.
 
@@ -149,7 +163,7 @@ The gate resolves to a denial decision and the workflow continues. Downstream lo
 
 The protected branch is skipped, but the rest of the workflow continues.
 
-The important part is that denial handling is declared in the workflow, not buried inside scheduler heuristics.
+The important part is that denial handling is declared in the workflow, not buried inside scheduler heuristics. You read the workflow definition and know exactly what "denied" means for each gate.
 
 ## Branching on Approval
 
@@ -174,6 +188,8 @@ return $.match(approval, {
 
 This is a better fit for builder-based workflows than implicit hidden states.
 
+Read the `Branch`. If approved, publish. If denied, record the rejection. Both paths are visible in the workflow definition, both produce typed outputs, both are part of the graph. No hidden conditional logic in the scheduler.
+
 ## Storage Model
 
 Approval state belongs to Smithers-managed workflow metadata, not to domain models.
@@ -195,6 +211,8 @@ That gives you:
 - UI/API query support
 - explicit graph semantics
 
+This is not incidental bookkeeping. It's the foundation for answering "who approved what, when, and why" -- the question every production system eventually needs to answer.
+
 ## Approvals and Effect Primitives
 
 Approvals map naturally onto durable Effect concepts:
@@ -205,7 +223,11 @@ Approvals map naturally onto durable Effect concepts:
 
 Smithers should compile approval nodes onto durable primitives rather than inventing bespoke in-memory waiting logic.
 
+Why does this matter? Because in-memory waiting dies when the process dies. Durable primitives survive restarts by design. An approval that might wait hours or days *must* be durable. The abstraction choice isn't academic -- it determines whether your approvals actually work in production.
+
 ## Notifications and Automation
+
+An approval sitting in durable storage is useless if nobody knows about it.
 
 Approval creation should emit a durable event so other systems can react:
 
@@ -220,6 +242,8 @@ The important boundary is:
 - external systems subscribe and notify
 - the human decision flows back into the same durable gate
 
+Smithers owns the state. External systems own the notification. Neither crosses into the other's territory.
+
 ## CLI and API Shape
 
 The control plane should target approval nodes directly.
@@ -233,6 +257,8 @@ smithers deny workflow.ts --run-id <id> --node-id approve-deploy --note "Blocked
 
 The exact transport can vary, but the key should be `(runId, nodeId)`, not a hidden internal row id.
 
+Simple, direct, auditable. The run ID tells you which execution. The node ID tells you which gate. The note tells you why. That's everything you need.
+
 ## Why Explicit Gates Matter
 
 An explicit approval node is easier to reason about than a property on a task because it makes the workflow honest.
@@ -245,6 +271,8 @@ You can see:
 - what downstream work depends on the decision
 
 That is the right abstraction for a durable workflow system.
+
+When you look at a workflow graph and see an `Approval` node, you know immediately: the workflow pauses here for a human. You know what data the human sees. You know what happens on "yes" and what happens on "no." There's nothing to guess.
 
 ## Next Steps
 

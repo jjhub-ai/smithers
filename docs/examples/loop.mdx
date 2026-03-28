@@ -5,7 +5,7 @@ description: An iterative review loop where an agent writes code and a reviewer 
 
 # Loop
 
-`<Loop>` is the looping primitive in Smithers. It re-executes its children until a condition is met or a maximum iteration count is reached. This example demonstrates a write-then-review cycle: one agent writes code, another reviews it, and the loop continues until the reviewer approves.
+`<Loop>` re-executes its children until a condition is met or a maximum iteration count is reached.
 
 ## Workflow Definition
 
@@ -73,7 +73,6 @@ export default smithers((ctx) => {
           </Sequence>
         </Loop>
 
-        {/* After the loop ends, emit the final result */}
         <Task id="final" output={outputs.finalOutput}>
           {{
             source: latestCode?.source ?? "",
@@ -86,13 +85,11 @@ export default smithers((ctx) => {
 });
 ```
 
-## Running the Workflow
+## Running
 
 ```bash
 smithers run review-loop.tsx --input '{}'
 ```
-
-Example output showing two iterations before approval:
 
 ```
 [review-loop] Starting run ghi789
@@ -106,46 +103,27 @@ Example output showing two iterations before approval:
 [review-loop] Completed
 ```
 
-## How Loop Works
+## Loop Props
 
 | Prop | Description |
 |------|-------------|
 | `id` | Unique identifier for the loop node. |
-| `until` | A boolean expression. When `true`, the loop stops. |
+| `until` | Boolean expression. When `true`, the loop stops. |
 | `maxIterations` | Safety cap on iterations (default: 5). |
-| `onMaxReached` | `"fail"` throws an error; `"return-last"` exits gracefully with the last output. |
+| `onMaxReached` | `"fail"` throws an error; `"return-last"` exits with the last output. |
 
-- Each iteration re-renders the children with updated context. The `ctx.outputMaybe` calls always return the latest value from the most recent iteration.
-- Use `ctx.iterationCount(table, nodeId)` to find out how many times a particular task has executed.
-- All intermediate outputs are persisted, so the loop is resumable. If the workflow crashes mid-iteration, it restarts from the last incomplete task within the current iteration.
+## Context Methods
 
-## Understanding `ctx.outputMaybe()` and `ctx.latest()` parameter types
+- `ctx.outputMaybe(schemaKey, { nodeId })` returns the latest value from the most recent iteration. The first argument is the schema key from `createSmithers`, not a table name.
+- `ctx.iterationCount(schemaKey, nodeId)` returns how many times a task has executed.
+- `ctx.latest(schemaKey, nodeId)` always returns the highest-iteration row. Inside loops, this is often more convenient than `ctx.outputMaybe`.
 
-In the example above, `ctx.outputMaybe("review", { nodeId: "review" })` takes a **schema key** as the first argument -- that is, the key from the object you passed to `createSmithers()`. This is `"review"` because the schema was defined as:
+All intermediate outputs are persisted. If the workflow crashes mid-iteration, it restarts from the last incomplete task.
 
-```tsx
-const { Workflow, smithers, outputs } = createSmithers({
-  code: z.object({ ... }),     // schema key: "code"
-  review: z.object({ ... }),   // schema key: "review"
-  finalOutput: z.object({ ... }), // schema key: "finalOutput"
-});
-```
+## Re-render Cycle
 
-The schema key is **not** the SQLite table name. Smithers converts camelCase keys to snake_case table names internally (e.g. `"finalOutput"` becomes `"final_output"` in SQLite). Always use the original camelCase key when calling context methods.
-
-Similarly, `ctx.latest("code", "write")` uses:
-- `"code"` -- the schema key, matching the key in `createSmithers()`
-- `"write"` -- the `id` prop of the `<Task id="write" ...>` element
-
-You can also use `ctx.latest()` instead of `ctx.outputMaybe()` inside loops. The difference is that `ctx.latest()` always returns the highest-iteration row, while `ctx.outputMaybe()` defaults to matching the current iteration. Inside a loop, `ctx.latest()` is often more convenient because it finds the most recent output without you needing to specify an iteration number.
-
-## The re-render cycle
-
-The loop drives iteration through tree re-rendering:
-
-1. The workflow builder function `(ctx) => (...)` is called on every render frame.
-2. On the first render, `ctx.outputMaybe("review", { nodeId: "review" })` returns `undefined`. The write task has no feedback to work from, so it produces an initial draft.
-3. After both tasks in the sequence complete, the renderer persists their outputs and re-renders the tree.
-4. On the second render, `latestReview` is now populated with the iteration-0 review. The loop evaluates `until={latestReview?.approved === true}`.
-5. If not approved, the loop body executes again. The write task now sees the review feedback and revises its code.
-6. This cycle repeats until approved or `maxIterations` is reached.
+1. The builder function `(ctx) => (...)` runs on every render frame.
+2. First render: `ctx.outputMaybe("review", ...)` returns `undefined`. The write task produces an initial draft.
+3. After both tasks complete, the renderer persists outputs and re-renders.
+4. Next render: `latestReview` is populated. The loop evaluates `until`. If not approved, the body executes again with the review feedback.
+5. Repeats until approved or `maxIterations` is reached.

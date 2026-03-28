@@ -6,12 +6,10 @@ description: "Example from scripts/worktree-feature/components/*.schema.ts — Z
 # scripts/worktree-feature/ — Zod Output Schemas
 
 <Note>
-**Ghost doc** — These are real schema files from the `scripts/worktree-feature/components/` directory. They demonstrate how to define Zod output schemas for each stage of a multi-agent pipeline, then register them with `createSmithers`.
+**Ghost doc** — Real schema files from `scripts/worktree-feature/components/`.
 </Note>
 
 ## Discover Schema
-
-Defines the ticket structure output by the discovery agent.
 
 ```ts
 // components/Discover.schema.ts
@@ -37,8 +35,6 @@ export type DiscoverOutput = z.infer<typeof DiscoverOutput>;
 
 ## Implement Schema
 
-Captures implementation results including files changed, tests, and commit messages.
-
 ```ts
 // components/Implement.schema.ts
 import { z } from "zod";
@@ -58,8 +54,6 @@ export type ImplementOutput = z.infer<typeof ImplementOutput>;
 
 ## Validate Schema
 
-Simple pass/fail result from running the test suite.
-
 ```ts
 // components/Validate.schema.ts
 import { z } from "zod";
@@ -73,8 +67,6 @@ export type ValidateOutput = z.infer<typeof ValidateOutput>;
 ```
 
 ## Review Schema
-
-Structured review output with severity-classified issues and quality assessments.
 
 ```ts
 // components/Review.schema.ts
@@ -98,8 +90,6 @@ export type ReviewOutput = z.infer<typeof ReviewOutput>;
 ```
 
 ## ReviewFix Schema
-
-Tracks fixes applied and false positives identified.
 
 ```ts
 // components/ReviewFix.schema.ts
@@ -126,8 +116,6 @@ export type ReviewFixOutput = z.infer<typeof ReviewFixOutput>;
 
 ## Report Schema
 
-Final report capturing implementation status and lessons learned.
-
 ```ts
 // components/Report.schema.ts
 import { z } from "zod";
@@ -145,9 +133,9 @@ export const ReportOutput = z.object({
 export type ReportOutput = z.infer<typeof ReportOutput>;
 ```
 
-## Registering Schemas with createSmithers
+## Registration
 
-All schemas are registered in a single `createSmithers` call:
+All schemas register in one `createSmithers` call:
 
 ```ts
 // smithers.ts
@@ -169,13 +157,13 @@ export const { Workflow, Task, useCtx, smithers, tables, outputs } = createSmith
 });
 ```
 
-Then use `outputs.discover`, `outputs.review`, etc. as the `output` prop on `<Task>` components.
+Use `outputs.discover`, `outputs.review`, etc. as the `output` prop on `<Task>`.
 
-## What This Demonstrates
+## Key Patterns
 
-- **Dual type export pattern** — Each file exports both the Zod schema (`DiscoverOutput`) and its inferred TypeScript type (`type DiscoverOutput = z.infer<...>`), giving you runtime validation and compile-time types from one source.
-- **`.describe()` annotations** — Every field includes `.describe()` which Smithers passes to the LLM as field-level instructions in the structured output schema.
-- **Nullable fields** — Using `.nullable()` for optional data (e.g., `dependencies`, `failingSummary`, `struggles`) ensures the field is always present in the output JSON.
-- **Enum constraints** — `z.enum(["critical", "major", "minor", "nit"])` restricts agent output to valid severity levels.
-- **Schema composition** — `Ticket` is defined once and used in both `DiscoverOutput.tickets` and as a prop type throughout the pipeline.
-- **`createSmithers` registration** — All schemas are registered as keys in a single call. Smithers auto-generates SQLite tables, and the returned `outputs` object provides typed references for `<Task output={outputs.xxx}>`.
+- **Dual export** -- each file exports the Zod schema and its inferred `type`, giving runtime validation and compile-time types from one source.
+- **`.describe()` annotations** -- Smithers passes these to the LLM as field-level instructions in the structured output schema.
+- **`.nullable()`** -- ensures optional fields are always present in output JSON (e.g., `dependencies`, `failingSummary`).
+- **`z.enum()`** -- constrains agent output to valid values (severity levels, status codes, quality ratings).
+- **Schema composition** -- `Ticket` defined once, reused in `DiscoverOutput.tickets` and as a prop type throughout the pipeline.
+- **Single registration** -- `createSmithers` auto-generates SQLite tables; `outputs` provides typed references for `<Task output={outputs.xxx}>`.

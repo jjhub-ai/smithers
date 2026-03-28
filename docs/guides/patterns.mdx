@@ -3,11 +3,11 @@ title: Workflow Patterns
 description: Recommended project structure, naming conventions, and organizational patterns for Smithers workflows.
 ---
 
-These patterns are distilled from production Smithers workflows. They are safe defaults for new projects and scale well as workflows grow in complexity.
+A workflow with one task fits in a single file. A workflow with twenty tasks does not. These patterns show you how to organize a Smithers project so it stays readable as it grows.
 
 ## Project Structure
 
-For small workflows (1-5 tasks), a single file is fine. For larger projects, split concerns across files:
+For small workflows (1-5 tasks), a single file is fine:
 
 ```
 my-workflow/
@@ -23,7 +23,7 @@ my-workflow/
     helpers.ts           # Shared utility functions
 ```
 
-For workflows with many tasks (10+), consider splitting tasks into component files:
+When you cross roughly ten tasks, the single `workflow.tsx` file starts to hurt. Split tasks into component files:
 
 ```
 my-workflow/
@@ -48,9 +48,11 @@ my-workflow/
     helpers.ts
 ```
 
+The key insight: `workflow.tsx` should contain only orchestration -- how tasks connect, branch, and loop. The *what* lives in components and prompts. The *shape of data* lives in schemas. The *who does the work* lives in agents.
+
 ### Single-File Pattern
 
-For prototyping or simple workflows, keep everything in one file:
+For prototyping or simple workflows, keep everything in one file. As soon as prompts become non-trivial, move them into `.mdx` files and leave `workflow.tsx` focused on composition.
 
 ```tsx
 // workflow.tsx
@@ -74,16 +76,21 @@ export default smithers((ctx) => (
     <Task id="analyze" output={outputs.analysis} agent={analyst}>
       {`Analyze: ${ctx.input.target}`}
     </Task>
-    <Task id="report" output={outputs.report}>
-      {{ title: "Review Complete", body: ctx.output(outputs.analysis, { nodeId: "analyze" }).summary }}
+    <Task id="report" output={outputs.report} deps={{ analyze: outputs.analysis }}>
+      {(deps) => ({
+        title: "Review Complete",
+        body: deps.analyze.summary,
+      })}
     </Task>
   </Workflow>
 ));
 ```
 
+Sixty lines. Two tasks. You can read the entire workflow without scrolling. That is the point. Start here, and only split when the file forces you to.
+
 ## Schema Organization
 
-Keep all schemas in a centralized `schemas.ts` file. This makes it easy to see the full data model at a glance:
+Keep all schemas in a centralized `schemas.ts` file. When someone new looks at your project, this is the first file they should read -- it is the complete data model at a glance:
 
 ```ts
 // schemas.ts
@@ -119,7 +126,7 @@ export const schemas = {
 };
 ```
 
-Then use it in your workflow:
+Then your workflow file stays clean:
 
 ```tsx
 // workflow.tsx
@@ -129,9 +136,11 @@ import { schemas } from "./schemas";
 const { Workflow, smithers, outputs } = createSmithers(schemas);
 ```
 
+One import, one call, done. All the data-shape decisions live in one place.
+
 ## Task ID Naming Conventions
 
-Task IDs must be unique within a workflow and should be descriptive. Follow these conventions:
+Task IDs must be unique within a workflow and deterministic across renders. If an ID changes between renders, Smithers treats it as a different task -- and that breaks resumability.
 
 **Simple tasks**: use a short, descriptive name.
 
@@ -139,7 +148,7 @@ Task IDs must be unique within a workflow and should be descriptive. Follow thes
 <Task id="analyze" output={outputs.analysis} agent={analyst}>
 ```
 
-**Dynamic tasks** (generated from arrays): use a prefix with a unique identifier.
+**Dynamic tasks** (generated from arrays): use a prefix with a stable identifier.
 
 ```tsx
 {/* assuming outputs from createSmithers */}
@@ -161,7 +170,7 @@ Task IDs must be unique within a workflow and should be descriptive. Follow thes
 </Loop>
 ```
 
-**Naming pattern**: `{entity}:{action}` for dynamic tasks, plain `{action}` for single tasks.
+The naming convention: `{entity}:{action}` for dynamic tasks, plain `{action}` for single tasks.
 
 ```
 analyze              -- single analysis task
@@ -170,9 +179,11 @@ ticket-42:review     -- reviewing ticket 42
 report               -- final report
 ```
 
+Why the colon? It gives you a visual namespace. You can scan a list of node IDs and instantly see which ticket each task belongs to.
+
 ## Agent Configuration
 
-Centralize agent setup in `agents.ts`. This makes it easy to swap between API and CLI agents:
+Centralize agent setup in `agents.ts`. This file answers one question: who does what?
 
 ```ts
 // agents.ts
@@ -200,9 +211,11 @@ export const reviewer = new Agent({
 });
 ```
 
+Three agents, clearly named, with distinct tool sets. The analyst does not get `bash`. The reviewer does not get `edit`. Least privilege, enforced by configuration.
+
 ## MDX Prompt Templates
 
-For complex prompts, use MDX files. This keeps your JSX clean and lets you compose prompts with variables:
+For prompts longer than a couple of lines, use MDX files. This keeps your JSX clean and lets you compose prompts with variables:
 
 ```mdx
 {/* prompts/review.mdx */}
@@ -223,31 +236,6 @@ Return JSON with:
 - suggestions (string[])
 ```
 
-Render MDX to plain text before passing it to a task:
-
-```ts
-// lib/render.ts
-import React from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import type { MDXContent } from "mdx/types";
-
-export function render(Component: MDXContent, props: Record<string, any> = {}): string {
-  const html = renderToStaticMarkup(React.createElement(Component, props));
-  return html
-    .replace(/<\/?(p|div|h[1-6]|li|ul|ol|pre|blockquote|section)[^>]*>/gi, "\n")
-    .replace(/<br\s*\/?>(?!\n)/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#x27;/g, "'")
-    .replace(/&#x2F;/g, "/")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-```
-
 Enable MDX imports in Bun:
 
 ```toml
@@ -263,12 +251,11 @@ import mdx from "@mdx-js/esbuild";
 plugin(mdx() as unknown as BunPlugin);
 ```
 
-Use it in your component:
+Use it directly in your component:
 
 ```tsx
 // components/Review.tsx
 import { Task } from "smithers-orchestrator";
-import { render } from "../lib/render";
 import { reviewer } from "../agents";
 import { outputs } from "../schemas"; // assuming outputs from createSmithers
 import ReviewPrompt from "../prompts/review.mdx";
@@ -280,52 +267,48 @@ export function Review({ ticket, summary, files }: {
 }) {
   return (
     <Task id={`${ticket.title}:review`} output={outputs.review} agent={reviewer}>
-      {render(ReviewPrompt, { ticket, summary, files })}
+      <ReviewPrompt ticket={ticket} summary={summary} files={files} />
     </Task>
   );
 }
 ```
 
+The component file is pure wiring. The prompt file is pure language. Neither contaminates the other.
+
 ## Output Access Patterns
 
-Use `ctx.output()` when you are certain the output exists (the task has completed). Use `ctx.outputMaybe()` for conditional rendering:
+There are two ways to read a previous task's output, and they serve different purposes.
+
+Use `deps` for straightforward task-to-task handoff -- "this task needs that task's result":
 
 ```tsx
 // assuming outputs from createSmithers
-export default smithers((ctx) => {
-  // outputMaybe returns undefined if not yet available -- safe for conditionals
-  const analysis = ctx.outputMaybe(outputs.analysis, { nodeId: "analyze" });
+export default smithers((ctx) => (
+  <Workflow name="example">
+    <Sequence>
+      <Task id="analyze" output={outputs.analysis} agent={analyst}>
+        {`Analyze: ${ctx.input.description}`}
+      </Task>
 
-  return (
-    <Workflow name="example">
-      <Sequence>
-        <Task id="analyze" output={outputs.analysis} agent={analyst}>
-          {`Analyze: ${ctx.input.description}`}
-        </Task>
-
-        {/* Only mounts after analyze completes */}
-        {analysis ? (
-          <Task id="report" output={outputs.report}>
-            {{ summary: analysis.summary, risk: analysis.risk }}
-          </Task>
-        ) : null}
-      </Sequence>
-    </Workflow>
-  );
-});
+      <Task id="report" output={outputs.report} deps={{ analyze: outputs.analysis }}>
+        {(deps) => ({ summary: deps.analyze.summary, risk: deps.analyze.risk })}
+      </Task>
+    </Sequence>
+  </Workflow>
+));
 ```
 
-Use `ctx.output()` (throws on missing) only when you are certain the task has finished -- for example, inside a static task that depends on a completed predecessor:
+Use `ctx.outputMaybe()` when the *orchestration itself* depends on the answer -- "should this task even exist?":
 
 ```tsx
-// Safe because report only mounts after analysis exists
-// assuming outputs from createSmithers
-{analysis ? (
-  <Task id="report" output={outputs.report}>
-    {{ summary: ctx.output(outputs.analysis, { nodeId: "analyze" }).summary }}
-  </Task>
-) : null}
+const analysis = ctx.outputMaybe(outputs.analysis, { nodeId: "analyze" });
+
+return analysis?.risk === "high" ? (
+  <Task id="escalate" output={outputs.escalation}>...</Task>
+) : null;
 ```
+
+The distinction matters. `deps` is about data flow inside a prompt. `ctx.outputMaybe()` is about control flow in your JSX tree.
 
 ## Environment-Based Configuration
 
@@ -342,7 +325,7 @@ const USE_CLI = process.env.USE_CLI_AGENTS === "1";
 CLAUDE_MODEL=claude-sonnet-4-20250514 bun run workflow.tsx
 
 # Production (use a more capable model)
-CLAUDE_MODEL=claude-opus-4-20250514 bun run workflow.tsx
+CLAUDE_MODEL=claude-opus-4-6 bun run workflow.tsx
 ```
 
 ## Next Steps

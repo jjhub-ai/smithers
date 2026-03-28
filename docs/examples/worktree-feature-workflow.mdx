@@ -6,21 +6,19 @@ description: "Example from scripts/worktree-feature/ — A production multi-agen
 # scripts/worktree-feature/ — Full Pipeline
 
 <Note>
-**Ghost doc** — This is a real production workflow found at `scripts/worktree-feature/` in the Smithers repository. It is the most complex Smithers workflow example, orchestrating multiple CLI agents (Claude Code and OpenAI Codex) through a full software development lifecycle.
+**Ghost doc** — Real production workflow at `scripts/worktree-feature/`. The most complex Smithers example: multiple CLI agents (Claude Code, OpenAI Codex) through a full development lifecycle.
 </Note>
 
-## Overview
+## Pipeline
 
-This workflow automates a complete feature implementation pipeline:
+1. **Discover** — Read PRD, break into ordered independent tickets
+2. **Implement** — Write code end-to-end per ticket
+3. **Validate** — Run `bun test`
+4. **Review** — Claude + Codex review in parallel
+5. **ReviewFix** — Address review issues
+6. **Report** — Generate final report
 
-1. **Discover** — An agent reads a PRD and breaks it into ordered, independent tickets
-2. **Implement** — For each ticket, an agent writes code end-to-end
-3. **Validate** — An agent runs `bun test` to verify the implementation
-4. **Review** — Two agents (Claude + Codex) review the code in parallel
-5. **ReviewFix** — An agent addresses review issues
-6. **Report** — An agent generates a final report
-
-Steps 2-5 loop using `<Loop>` until both reviewers approve or max iterations are reached.
+Steps 2--5 loop via `<Loop>` until both reviewers approve or max iterations reached.
 
 ## Schema Setup — smithers.ts
 
@@ -124,7 +122,7 @@ export default smithers((ctx) => {
 });
 ```
 
-## Agent Configuration — agents.ts
+## Agents — agents.ts
 
 ```tsx
 // scripts/worktree-feature/agents.ts
@@ -162,7 +160,7 @@ export const codex = new CodexAgent({
 });
 ```
 
-## The Validation Loop — ValidationLoop.tsx
+## Validation Loop — ValidationLoop.tsx
 
 ```tsx
 // scripts/worktree-feature/components/ValidationLoop.tsx
@@ -275,14 +273,14 @@ bun install
 ./run.sh
 ```
 
-## What This Demonstrates
+## Key Patterns
 
-- **`createSmithers`** — Registers 6 output schemas in one call, generating typed `tables`, `outputs`, and `Task` components.
-- **CLI agent integration** — `ClaudeCodeAgent` and `CodexAgent` run real CLI tools (Claude Code, OpenAI Codex) with full filesystem access.
-- **`<Loop>` review loop** — Iterates implement/validate/review/fix until both reviewers approve or `MAX_REVIEW_ROUNDS` (3) is exhausted.
-- **`<Parallel>` dual review** — Two agents review the same code simultaneously; both must approve.
-- **`ctx.latest(schemaKey, nodeId)`** — Reads the highest-iteration output for a given task. The first argument is the schema key from `createSmithers`, the second is the `Task` id.
-- **MDX prompts** — Each component uses `.mdx` files for prompt templates with JSX interpolation.
-- **`skipIf` pattern** — `TicketPipeline` skips already-completed tickets on resume.
-- **`continueOnFail`** — Reviews continue even if one agent fails, preventing a single failure from blocking the pipeline.
-- **Dynamic ticket mapping** — `unfinishedTickets.map()` dynamically renders one `TicketPipeline` per ticket.
+- **`createSmithers`** registers 6 output schemas; generates typed `tables`, `outputs`, and `Task` components.
+- **`ClaudeCodeAgent` / `CodexAgent`** run real CLI tools with full filesystem access.
+- **`<Loop>`** iterates implement/validate/review/fix until both reviewers approve or `MAX_REVIEW_ROUNDS` exhausted.
+- **`<Parallel>`** runs dual review simultaneously; both must approve.
+- **`ctx.latest(schemaKey, nodeId)`** reads the highest-iteration output for a task.
+- **MDX prompts** -- `.mdx` files serve as prompt templates with JSX interpolation.
+- **`skipIf`** skips already-completed tickets on resume.
+- **`continueOnFail`** prevents a single review failure from blocking the pipeline.
+- **Dynamic ticket mapping** -- `unfinishedTickets.map()` renders one `TicketPipeline` per ticket.

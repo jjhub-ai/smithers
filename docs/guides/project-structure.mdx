@@ -1,11 +1,9 @@
 ---
 title: Production Project Structure
-description: The recommended file structure for production Smithers workflows with MDX prompts, component-per-step, and Zod schemas.
+description: Recommended file structure for production Smithers workflows with MDX prompts, component-per-step, and Zod schemas.
 ---
 
-This guide describes the recommended file structure for production Smithers workflows. It is based on patterns from real workflows managing thousands of agent tasks.
-
-For simple workflows (1-5 tasks), a [single-file pattern](/guides/patterns#single-file-pattern) works fine. For anything larger, use this structure.
+For 1-5 tasks, a [single-file pattern](/guides/patterns#single-file-pattern) suffices. For anything larger:
 
 ## Directory Layout
 
@@ -48,19 +46,19 @@ scripts/my-workflow/
     *.md                 # Domain-specific context docs
 ```
 
-## Why This Structure
+## Rationale
 
-- **MDX prompts** -- Prompt engineering is separate from orchestration logic. You can iterate on prompts without touching code.
-- **Schema files** -- Each step has a `.schema.ts` exporting a Zod schema and TypeScript type. Schemas auto-create SQLite tables and validate agent output.
-- **One component per step** -- Each step (Discover, Implement, Review, etc.) is a React component, making workflows composable and independently testable.
-- **Thin workflow.tsx** -- The root file just composes components. All logic lives in component files.
-- **Shared agents** -- A single `agents.ts` configures all models, making it easy to swap between CLI and API agents.
+| Principle | Effect |
+|---|---|
+| MDX prompts | Prompt engineering separated from orchestration logic |
+| Schema files | Per-step `.schema.ts` with Zod; auto-creates SQLite tables, validates output |
+| One component per step | Composable, independently testable |
+| Thin `workflow.tsx` | Root file only composes components |
+| Shared `agents.ts` | Single place to configure and swap models |
 
 ## Key Files
 
 ### `smithers.ts` -- Schema Registry
-
-All Zod schemas are registered in one place. `createSmithers()` generates typed SQLite tables and returns typed hooks:
 
 ```ts
 import { createSmithers } from "smithers-orchestrator";
@@ -81,13 +79,11 @@ export const { Workflow, Task, useCtx, smithers, tables, outputs } = createSmith
 }, { dbPath: "./my-workflow.db" });
 ```
 
-### `agents.ts` -- Model Configuration
+### `agents.ts`
 
-See [Model Selection](/guides/model-selection) for the full dual-agent setup pattern with CLI and API SDK agents.
+See [Model Selection](/guides/model-selection) for the dual-agent setup pattern.
 
-### `config.ts` -- Shared Constants
-
-Centralize tunable values so they are easy to adjust:
+### `config.ts`
 
 ```ts
 export const MAX_REVIEW_ROUNDS = 3;
@@ -95,9 +91,7 @@ export const IMPLEMENT_TIMEOUT_MS = 45 * 60 * 1000;
 export const REVIEW_TIMEOUT_MS = 15 * 60 * 1000;
 ```
 
-### `preload.ts` + `bunfig.toml` -- MDX Support
-
-Enable `.mdx` imports in Bun:
+### `preload.ts` + `bunfig.toml`
 
 ```ts
 // preload.ts
@@ -110,9 +104,7 @@ mdxPlugin();
 preload = ["./preload.ts"]
 ```
 
-### `workflow.tsx` -- Root Composition
-
-The root file should be thin -- just composing components:
+### `workflow.tsx`
 
 ```tsx
 import { Sequence, Branch } from "smithers-orchestrator";
@@ -139,7 +131,7 @@ export default smithers((ctx) => {
 });
 ```
 
-### `components/index.ts` -- Re-exports
+### `components/index.ts`
 
 ```ts
 export { Discover } from "./Discover";
@@ -153,7 +145,7 @@ export { TicketPipeline } from "./TicketPipeline";
 export type { Ticket } from "./Discover.schema";
 ```
 
-### `run.sh` -- Launch Script
+### `run.sh`
 
 ```bash
 #!/usr/bin/env bash
@@ -168,7 +160,7 @@ export USE_CLI_AGENTS=1
 export SMITHERS_UNSAFE=1
 
 echo "Starting workflow"
-bun smithers run workflow.tsx --input '{}' --root "$ROOT_DIR"
+bunx smithers-orchestrator up workflow.tsx --input '{}' --root "$ROOT_DIR"
 ```
 
 ### `package.json`
@@ -179,7 +171,7 @@ bun smithers run workflow.tsx --input '{}' --root "$ROOT_DIR"
   "type": "module",
   "scripts": {
     "start": "bun run workflow.tsx",
-    "resume": "smithers resume workflow.tsx",
+    "resume": "smithers up workflow.tsx --run-id <run-id> --resume true",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -227,7 +219,7 @@ bun smithers run workflow.tsx --input '{}' --root "$ROOT_DIR"
 
 ## The Component Pattern
 
-Each step follows the same three-file pattern:
+Each step follows a three-file pattern: schema, prompt, component.
 
 ### 1. Schema (`Component.schema.ts`)
 
@@ -267,7 +259,7 @@ ACCEPTANCE CRITERIA:
 {props.schema}
 ```
 
-The `{props.schema}` variable is auto-injected by Smithers with a JSON example generated from the Zod schema.
+`{props.schema}` is auto-injected by Smithers from the Zod schema.
 
 ### 3. Component (`Component.tsx`)
 
@@ -298,7 +290,7 @@ export function Implement({ ticket }: { ticket: Ticket }) {
 
 ## Next Steps
 
-- [MDX Prompts](/guides/mdx-prompts) -- Deep dive on MDX for system prompts and per-step prompts.
+- [MDX Prompts](/guides/mdx-prompts) -- MDX for system prompts and per-step prompts.
 - [Implement-Review Loop](/guides/review-loop) -- The ValidationLoop component pattern.
 - [Dynamic Tickets](/guides/dynamic-tickets) -- Agent-driven ticket discovery.
-- [Patterns](/guides/patterns) -- Naming conventions, output access patterns, and more.
+- [Patterns](/guides/patterns) -- Naming conventions, output access patterns.

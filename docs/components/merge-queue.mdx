@@ -13,14 +13,15 @@ import { MergeQueue } from "smithers";
 
 | Prop | Type | Default | Description |
 | --- | --- | --- | --- |
-| `id` | `string` | auto-generated | Optional stable id for the queue group. |
-| `maxConcurrency` | `number` | `1` | Maximum number of child tasks within the queue that may run simultaneously. |
-| `skipIf` | `boolean` | `false` | Skip the entire queue subtree when true. |
-| `children` | `ReactNode` | — | Child tasks/control-flow nodes. |
+| `id` | `string` | auto-generated | Stable id for the queue group. |
+| `maxConcurrency` | `number` | `1` | Max simultaneous child tasks. |
+| `skipIf` | `boolean` | `false` | Skip the entire subtree. |
+| `children` | `ReactNode` | -- | Child tasks/control-flow nodes. |
 
 ## Examples
 
-### Default single-lane
+### Single-lane (default)
+
 ```tsx
 <MergeQueue>
   <Task id="lint" output={outputs.outputC}>{{ value: 1 }}</Task>
@@ -30,6 +31,7 @@ import { MergeQueue } from "smithers";
 ```
 
 ### Custom concurrency
+
 ```tsx
 <MergeQueue maxConcurrency={2}>
   {items.map((it, i) => (
@@ -39,6 +41,7 @@ import { MergeQueue } from "smithers";
 ```
 
 ### Nesting with Parallel
+
 ```tsx
 <Parallel maxConcurrency={3}>
   <MergeQueue>
@@ -50,16 +53,14 @@ import { MergeQueue } from "smithers";
 </Parallel>
 ```
 
-- The inner `<MergeQueue>` constrains its children to 1-at-a-time.
-- The outer `<Parallel>` may still run other, unrelated siblings (outside the queue) concurrently up to its limit.
+The inner `<MergeQueue>` constrains its children to 1-at-a-time. The outer `<Parallel>` runs unrelated siblings concurrently up to its own limit.
 
-## Rendering
+## Internals
 
-Internally, `<MergeQueue>` renders as a `<smithers:merge-queue>` host element (or `null` when skipped). Each child task inside the queue receives `parallelGroupId` and `parallelMaxConcurrency` in its task descriptor. The engine enforces that no more than `parallelMaxConcurrency` tasks sharing the same `parallelGroupId` run at once.
+Renders as `<smithers:merge-queue>` (or `null` when skipped). Each child task receives `parallelGroupId` and `parallelMaxConcurrency` in its descriptor. The engine enforces the concurrency cap per group.
 
 ## Notes
 
-- Defaults to a single-lane queue (`maxConcurrency = 1`).
-- Designed as a convenient merge-queue primitive for sequentializing task application (e.g., applying patches one-at-a-time).
-- Nesting with `<Parallel>` is supported; the innermost group determines the effective cap for its descendants.
-- Tasks outside the queue are unaffected by the queue’s limit.
+- Defaults to single-lane (`maxConcurrency = 1`).
+- Innermost group determines the effective cap for its descendants.
+- Tasks outside the queue are unaffected by its limit.

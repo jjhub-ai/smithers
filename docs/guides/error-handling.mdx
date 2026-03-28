@@ -3,11 +3,24 @@ title: Error Handling
 description: Retries, timeouts, conditional skipping, and graceful degradation for Smithers workflows.
 ---
 
-Smithers provides several mechanisms for handling errors at the task level. You can retry failed tasks, set timeouts, skip tasks conditionally, allow failures without halting the workflow, and route execution through fallback paths using `<Branch>`.
+Agent tasks fail. Models hallucinate invalid JSON. API calls time out. Rate limits kick in at the worst possible moment. The question is not whether your workflow will encounter errors -- it is whether your workflow will handle them gracefully or fall over.
+
+Smithers gives you six mechanisms. Let's look at each one, starting with the simplest.
+
+## Typed Runtime Errors
+
+Smithers runtime failures use typed `SmithersError` objects. Built-in errors expose:
+
+- `code` -- machine-readable discriminator
+- `summary` -- raw human-readable message
+- `message` -- the summary plus a docs link
+- `docsUrl` -- direct link to the error reference
+
+If you catch runtime failures yourself, prefer switching on `KnownSmithersErrorCode` and keep the full code list synced from [Error Reference](/reference/errors).
 
 ## Retries
 
-Set the `retries` prop to retry a task on failure. The value is the number of additional attempts after the first failure (so `retries={2}` means up to 3 total attempts):
+Set the `retries` prop to retry a task on failure. The value is the number of *additional* attempts after the first failure -- so `retries={2}` means up to 3 total attempts:
 
 ```tsx
 {/* assuming outputs from createSmithers */}
@@ -16,15 +29,17 @@ Set the `retries` prop to retry a task on failure. The value is the number of ad
 </Task>
 ```
 
-Each retry creates a new row in `_smithers_attempts`. Previous attempts are never overwritten. Between the failure and the next attempt, a `NodeRetrying` event is emitted.
+Each retry creates a new row in `_smithers_attempts`. Previous attempts are never overwritten -- you can inspect every failure after the fact. Between the failure and the next attempt, a `NodeRetrying` event is emitted.
 
 The task is marked `failed` only after all retries are exhausted.
 
 ### Schema validation retries
 
-Schema validation failures have their own retry mechanism, separate from the `retries` prop. When the agent returns JSON that does not match the output schema, Smithers sends up to 2 follow-up prompts with the validation errors appended. These schema retries happen within a single attempt -- they do not consume a `retries` count.
+Here is a subtlety that will save you retry budget. When the agent returns JSON that does not match the output schema, Smithers does not immediately burn a `retries` count. Instead, it sends up to 2 follow-up prompts *within the same attempt*, appending the validation errors so the agent can fix its response.
 
-If schema retries also fail, the attempt fails and the `retries` mechanism takes over (if configured).
+Only if those schema retries also fail does the attempt fail -- and then the `retries` mechanism takes over (if configured).
+
+So `retries={2}` with schema validation gives you up to 9 chances to get a valid response: 3 attempts, each with 3 schema tries. That is usually more than enough.
 
 ## Timeouts
 
@@ -37,11 +52,13 @@ Set `timeoutMs` to limit how long a single attempt can take:
 </Task>
 ```
 
-If the task exceeds the timeout, the attempt fails with a timeout error. If `retries` is set, the task will retry. This is useful for guarding against agent calls that hang indefinitely.
+If the task exceeds the timeout, the attempt fails with a timeout error. If `retries` is set, the task retries. This is your guard against agent calls that hang indefinitely -- a rate-limited API that never responds, a model that gets stuck in a reasoning loop, a network partition.
 
 ## continueOnFail
 
-By default, when a task fails (after exhausting all retries), the workflow stops. Set `continueOnFail` to allow subsequent tasks to proceed:
+By default, when a task fails (after exhausting all retries), the workflow stops. Sometimes that is not what you want. Linting is nice to have but should not block the final report. Telemetry should not take down your pipeline.
+
+Set `continueOnFail` to let subsequent tasks proceed:
 
 ```tsx
 {/* assuming outputs from createSmithers */}
@@ -54,13 +71,11 @@ By default, when a task fails (after exhausting all retries), the workflow stops
 </Task>
 ```
 
-With `continueOnFail`, the `report` task will execute even if `optional-lint` fails. The failed task's node state is `failed`, but the workflow continues.
-
-This is useful for non-critical steps like linting, optional analysis passes, or telemetry tasks.
+The `report` task executes even if `optional-lint` fails. The failed task's node state is `failed`, but the workflow continues. Use this for non-critical steps -- linting, optional analysis passes, telemetry.
 
 ## skipIf
 
-Set `skipIf` to conditionally skip a task at render time:
+Sometimes you know at render time that a task should not run. Maybe you are in "quick" mode and do not need a deep analysis. `skipIf` handles this:
 
 ```tsx
 {/* assuming outputs from createSmithers */}
@@ -76,7 +91,7 @@ Set `skipIf` to conditionally skip a task at render time:
 
 When `skipIf` evaluates to `true`, the task is marked `skipped` immediately. It will not run even if the condition changes on a later render cycle.
 
-**Important**: `skipIf` is evaluated during rendering, not during execution. For tasks that should only run after a prerequisite completes, use conditional rendering with `ctx.outputMaybe()` instead:
+**Important**: `skipIf` is evaluated during rendering, not during execution. For tasks that should only run *after* a prerequisite completes, use conditional rendering instead:
 
 ```tsx
 // Preferred: conditional rendering
@@ -90,9 +105,11 @@ const analysis = ctx.outputMaybe(outputs.analysis, { nodeId: "analyze" });
 ) : null}
 ```
 
+The difference: `skipIf` says "this task exists but should not run." Conditional rendering says "this task does not exist yet."
+
 ## Branch for Error Recovery
 
-Use `<Branch>` to route execution based on the outcome of a previous task. This is the primary pattern for fallback paths:
+What if a task might fail, and you want to take a different path depending on the outcome? That is what `<Branch>` is for:
 
 ```tsx
 import { createSmithers, Task, Sequence, Branch } from "smithers-orchestrator";
@@ -145,11 +162,13 @@ export default smithers((ctx) => {
 });
 ```
 
-The `<Branch>` component evaluates its `if` prop at render time. On the first render, `risky` is `undefined` so `ok` is `false` -- but the `risky` task runs first because it appears earlier in the `<Sequence>`. After `risky` completes, the workflow re-renders, `ok` resolves to the actual value, and the appropriate branch is taken.
+Here is what happens step by step. On the first render, `risky` is `undefined` so `ok` is `false` -- but the `risky` task runs first because it appears earlier in the `<Sequence>`. After `risky` completes, the workflow re-renders, `ok` resolves to the actual value, and the appropriate branch is taken.
+
+The `<Branch>` component does not introduce any magic. It is just conditional rendering with a name.
 
 ## Combining Patterns
 
-Here is a workflow that combines multiple error handling patterns:
+Real workflows combine multiple error handling patterns. Here is one that uses all of them:
 
 ```tsx
 // assuming outputs from createSmithers
@@ -198,6 +217,8 @@ Lint results: ${lint?.issues?.join(", ") ?? "lint skipped or failed"}`}
 });
 ```
 
+Read the comments. Each task uses a different error handling strategy based on how critical it is. The analysis step retries aggressively -- it is the foundation. The lint step uses `continueOnFail` -- nice to have, not essential. The report uses `skipIf` -- unnecessary in quick mode. The final summary always runs.
+
 ## Error Handling Summary
 
 | Mechanism | Prop | Effect |
@@ -213,4 +234,5 @@ Lint results: ${lint?.issues?.join(", ") ?? "lint skipped or failed"}`}
 
 - [Resumability](/guides/resumability) -- How failed runs can be resumed after fixing issues.
 - [Debugging](/guides/debugging) -- Inspect failed attempts and error details.
+- [Error Reference](/reference/errors) -- Exhaustive built-in runtime error codes and details.
 - [Execution Model](/concepts/execution-model) -- How retries and node states work internally.

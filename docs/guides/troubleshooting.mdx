@@ -1,36 +1,41 @@
 ---
 title: Troubleshooting
-description: Common setup, runtime, and workflow issues, with the fastest path to diagnose each one.
+description: Common setup, runtime, and workflow issues with diagnosis paths.
 ---
 
-Use this page as the quick index when something in Smithers feels wrong and you do not yet know which subsystem is responsible.
+## By Subsystem
 
-## Start With the Symptom
+| Symptom | Guide |
+|---|---|
+| Workflow state, stuck runs, SQLite inspection | [Debugging](/guides/debugging) |
+| Retries, timeouts, skips, graceful degradation | [Error Handling](/guides/error-handling) |
+| File-watcher and prompt reload behavior | [Hot Reload](/guides/hot-reload) |
+| Event streaming, approvals, server APIs | [Server Integration](/integrations/server) |
+| Workspace snapshots and revert behavior | [VCS Integration](/guides/vcs) |
 
-- Workflow state, stuck runs, and SQLite inspection: [Debugging](/guides/debugging)
-- Retries, timeouts, skips, and graceful degradation: [Error Handling](/guides/error-handling)
-- File-watcher and prompt reload behavior: [Hot Reload](/guides/hot-reload)
-- Event streaming, approvals, and server APIs: [Server Integration](/integrations/server)
-- Workspace snapshots and revert behavior: [VCS Integration](/guides/vcs)
+## Common Failures
 
-## Common Failure Modes
+**A task did not rerun** -- Smithers resumes by `runId`. If a node already completed for the current `runId`, it is skipped. Use a new `runId` for a fresh run, or inspect persisted attempts first.
 
-### A task did not rerun
+**MDX prompt rendered as `[object Object]`** -- The MDX preload was not registered. Confirm `preload.ts` calls `mdxPlugin()` and `bunfig.toml` points at the preload file.
 
-Smithers resumes by `runId`. If a node already completed for the current `runId`, it will be skipped on resume. Use a new `runId` for a fresh run, or inspect the persisted attempts with the CLI before assuming the scheduler is stuck.
+**Workflow code changed but running task did not** -- Hot reload only affects unscheduled work. In-flight tasks continue with the code they started with.
 
-### An MDX prompt rendered as `[object Object]`
+## General Diagnosis
 
-That usually means the MDX preload was not registered. Confirm that your preload script calls `mdxPlugin()` and that `bunfig.toml` points at the preload file.
+```bash
+smithers inspect <runId>
+smithers logs <runId> --tail 20 --follow false
+```
 
-### The workflow code changed but the running task did not
+If the CLI summary is insufficient, query SQLite directly. See [Debugging](/guides/debugging).
 
-Hot reload only affects work that has not been scheduled yet. In-flight tasks continue with the code and prompt they started with.
+## Agent Diagnostics
 
-## When in Doubt
+When a CLI agent fails, Smithers automatically runs diagnostics to check for common issues (binary not installed, API key invalid, rate limit hit). The diagnostic summary is printed to stderr:
 
-1. Check `smithers status` for the current run.
-2. Inspect recent frames with `smithers frames`.
-3. Query the SQLite database if the CLI summary is not enough.
+```
+[diagnostics] claude: api_key_valid=fail: Rate limit detected in error (142ms)
+```
 
-Those steps usually tell you whether the issue is scheduling, agent execution, schema validation, or environment setup.
+The full diagnostic report is also attached to the error's `details.diagnostics` field for programmatic inspection.

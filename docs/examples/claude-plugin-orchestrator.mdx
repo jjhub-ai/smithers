@@ -6,7 +6,7 @@ description: "Example from ~/.claude/plugins/smithers-orchestrator/ — A Claude
 # Claude Code Plugin — Smithers Orchestrator
 
 <Note>
-**Ghost doc** — This is a real Claude Code plugin found at `~/.claude/plugins/smithers-orchestrator/` on the development machine.
+**Ghost doc** — Real Claude Code plugin at `~/.claude/plugins/smithers-orchestrator/`.
 </Note>
 
 ## plugin.json
@@ -24,8 +24,6 @@ description: "Example from ~/.claude/plugins/smithers-orchestrator/ — A Claude
 
 ## Monitor Output Format
 
-The orchestrator includes a monitoring system with structured output:
-
 ```
 [10:30:00] ◆ PHASE: Research      Status: STARTING
 [10:30:01] ● AGENT: Claude        Status: RUNNING
@@ -34,8 +32,6 @@ The orchestrator includes a monitoring system with structured output:
 ```
 
 ## Workflow Template
-
-The skill teaches this template for new orchestrations:
 
 ```tsx
 import { createSmithers, Sequence, Task, Workflow } from "smithers-orchestrator";
@@ -74,14 +70,8 @@ export default smithers((ctx) => (
 
 ## Best Practices
 
-1. **Use `createSmithers`** for schema-driven workflows with auto-persistence
-2. **Use `outputs.xxx`** as the `output` prop on `<Task>` (the Zod schema, not a string key)
-3. **Use `ctx.outputMaybe()`** for cross-task data flow (returns `undefined` if not yet available)
-4. **Set `maxIterations`** on `<Loop>` to prevent infinite loops
-5. **Include `continueOnFail`** on non-critical tasks
-
-## What This Demonstrates
-
-- **Plan-as-code** — The JSX program serves as both the execution plan and the runnable workflow.
-- **Monitoring integration** — Structured output format designed for both human and LLM consumption.
-- **Correct API patterns** — Uses `createSmithers` with Zod schemas, `outputs.xxx` references, and `ctx.outputMaybe()` for cross-task data flow.
+1. Use `createSmithers` for schema-driven workflows with auto-persistence.
+2. Use `outputs.xxx` as the `output` prop on `<Task>` (the Zod schema, not a string key).
+3. Use `ctx.outputMaybe()` for cross-task data flow (returns `undefined` if not yet available).
+4. Set `maxIterations` on `<Loop>` to prevent infinite loops.
+5. Include `continueOnFail` on non-critical tasks.

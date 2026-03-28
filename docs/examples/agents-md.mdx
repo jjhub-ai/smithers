@@ -1,87 +1,54 @@
 ---
 title: "Ghost: AGENTS.md"
-description: "Example from AGENTS.md — Agent instructions file that teaches AI coding agents how to interact with the Smithers IDE, including smithers-ctl commands for file opening, terminal control, diff preview, overlays, and webviews."
+description: "Example from AGENTS.md — Repository instructions for AI coding agents working on the Smithers Bun/TypeScript codebase, its docs, examples, tests, and Burns subproject."
 ---
 
 # AGENTS.md
 
 <Note>
-**Ghost doc** — This is the real `AGENTS.md` file from the Smithers repository root. It provides instructions for AI coding agents running inside the Smithers IDE.
+**Ghost doc** — The real `AGENTS.md` from the Smithers repository root.
 </Note>
 
 ## Source
 
 ```markdown
-# Smithers IDE — Agent Instructions
+# Smithers Repository — Agent Instructions
 
-You are running inside **Smithers**, a native macOS IDE built with SwiftUI.
-You can interact with the IDE using the `smithers-ctl` CLI tool.
+You are working in the Smithers repository, a Bun/TypeScript codebase centered on the `smithers-orchestrator` package.
 
-## Project Overview
+## Repository Overview
 
-- **Desktop app**: `apps/desktop/` — Swift/SwiftUI, macOS 14+
-- **Build**: `zig build dev` (build & launch), `zig build test` (XCUITests)
-- **Editor**: STTextView (TextKit 2) with TreeSitter syntax highlighting
-- **Terminal**: Ghostty integration
-- **VCS**: jj (Jujutsu) — not git
-- **AI backend**: Codex via JSON-RPC over stdio
+- **Core runtime**: `src/` — Smithers workflow engine, JSX components, CLI, integrations, and observability
+- **Docs**: `docs/` — Mintlify source docs
+- **Examples**: `examples/` — runnable TSX workflows
+- **Tests**: `tests/` — Bun tests, Playwright docs checks, runtime regression coverage
+- **Burns**: `burns/` — workspace-first local control plane for Smithers with web, daemon, desktop, and CLI apps
 
-## smithers-ctl Command Reference
+## Common Commands
 
-### Open files
+From the repository root:
+
 ```bash
-smithers-ctl open <path> [--line N] [--column N]
-smithers-ctl open <path> +N        # jump to line N
-smithers-ctl open <path> +N:C      # jump to line N, column C
+bun test
+bun run typecheck
+bun run e2e
+bun run docs
 ```
 
-### Terminal
-```bash
-smithers-ctl terminal                          # open new terminal tab
-smithers-ctl terminal --command "CMD"          # open terminal running CMD
-smithers-ctl terminal --cwd /path              # open terminal in directory
-smithers-ctl terminal run <cmd>                # run command in new terminal
-```
-
-### Diff preview
-```bash
-smithers-ctl diff show --content "<unified diff>" [--title "Title"] [--file path]
-```
-
-### Overlays (notifications / progress)
-```bash
-smithers-ctl overlay --type chat --message "text"
-smithers-ctl overlay --type progress --message "Building..." --percent 50
-smithers-ctl overlay --type panel --message "text" --title "Heading" --position center --duration 5
-smithers-ctl dismiss-overlay [--id ID]
-```
-
-### Webview tabs
-```bash
-smithers-ctl webview open <url> [--title "Title"]   # returns tab ID
-smithers-ctl webview close <tab-id>
-smithers-ctl webview eval <tab-id> --js "document.title"
-smithers-ctl webview url <tab-id>
-```
-
-## Build & Test
+From `burns/`:
 
 ```bash
-zig build dev          # build and launch .app bundle
-zig build test         # run XCUITests
-cd apps/desktop && xcodegen generate   # regenerate Xcode project
+bun run dev:daemon
+bun run dev:web
+bun run desktop:dev
+bun run typecheck
 ```
 
 ## Key Conventions
 
-- Use `jj` for version control, not `git`
-- Dependencies in both `Package.swift` and `project.yml` — keep in sync
-- SmithersShared is NOT a module — don't `import SmithersShared`
+- The published package name is `smithers-orchestrator`, not `smithers`
+- The main public JSX API is `createSmithers(...)`
+- Source docs live under `docs/`; `docs/llms-full.txt` is generated from those pages
+- `examples/` should stay runnable against the current public API
+- The repo may be used from Git or JJ-based workspaces depending on the developer environment; do not assume one workflow unless the local task requires it
 ```
-
-## What This Demonstrates
-
-- **AGENTS.md convention** — A standardized file that AI coding agents read to understand how to interact with the development environment.
-- **IDE control via CLI** — `smithers-ctl` provides a command-line interface for agents to control the IDE: open files at specific lines, manage terminals, show diffs, display overlays, and control webview tabs.
-- **Multi-tool architecture** — The Smithers IDE integrates Zig (build), Swift/SwiftUI (UI), STTextView (editor), Ghostty (terminal), TreeSitter (syntax highlighting), and jj (VCS) into a cohesive system.
-- **Agent-friendly design** — Every IDE capability is exposed as a CLI command that agents can invoke programmatically.

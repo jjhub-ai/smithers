@@ -5,7 +5,7 @@ description: A workflow that analyzes input and branches between a simple or com
 
 # Dynamic Plan
 
-This example shows how to use **Branch** to choose between two execution paths at runtime. An analyzer agent classifies the task complexity, and the workflow routes to either a quick fix or a multi-step plan accordingly.
+`<Branch>` chooses between execution paths at runtime. Here, an analyzer classifies task complexity and routes to either a quick fix or a multi-step plan.
 
 ## Workflow Definition
 
@@ -52,13 +52,11 @@ export default smithers((ctx) => {
   return (
     <Workflow name="dynamic-plan">
       <Sequence>
-        {/* Step 1: Analyze the task */}
         <Task id="analyze" output={outputs.analysis} agent={analyzer}>
           Analyze this task and classify its complexity: "Refactor the authentication
           module to support OAuth2 and SAML providers."
         </Task>
 
-        {/* Step 2: Branch based on complexity */}
         <Branch
           if={isComplex}
           then={
@@ -86,13 +84,13 @@ export default smithers((ctx) => {
 });
 ```
 
-## Running the Workflow
+## Running
 
 ```bash
 smithers run dynamic-plan.tsx --input '{}'
 ```
 
-If the analyzer returns `complexity: "high"`, the workflow takes the planning path:
+High complexity path:
 
 ```
 [dynamic-plan] Starting run def456
@@ -102,7 +100,7 @@ If the analyzer returns `complexity: "high"`, the workflow takes the planning pa
 [dynamic-plan] Completed
 ```
 
-If it returns `complexity: "low"`, the planner is skipped entirely:
+Low complexity path (planner skipped):
 
 ```
 [analyze] Done -> { summary: "Minor auth tweak", complexity: "low" }
@@ -111,7 +109,6 @@ If it returns `complexity: "low"`, the planner is skipped entirely:
 
 ## How Branch Works
 
-- The `if` prop is evaluated each time the workflow re-renders.
-- Only the matching branch (`then` or `else`) is mounted and executed.
-- Since `analysis` is `undefined` before the `analyze` task completes, the Branch is not reached until the Sequence reaches it, which only happens after `analyze` finishes.
-- The workflow is fully resumable: if it crashes during the `implement` task, re-running picks up from where it left off because `analyze` and `plan` outputs are already persisted.
+- `if` is evaluated each time the workflow re-renders. Only the matching branch (`then` or `else`) is mounted.
+- The Branch is inside a `Sequence`, so it is not reached until `analyze` finishes and `analysis` is populated.
+- Resumable: completed task outputs are persisted, so re-running picks up where it left off.

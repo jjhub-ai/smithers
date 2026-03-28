@@ -3,15 +3,15 @@ title: Best Practices
 description: Guidelines for designing effective Smithers workflows that produce reliable, high-quality results.
 ---
 
-These guidelines help you get the most out of Smithers. They focus on how to structure agent tasks, write effective prompts, and design workflows that produce consistent results.
+Here is the uncomfortable truth about agent workflows: the orchestration code is easy. Getting agents to do what you actually want -- consistently, correctly, every time -- is the hard part.
+
+These practices address that hard part.
 
 ## Give Agents Big, Coherent Tasks
 
-Agents perform better with a single, well-scoped task than with many micro-steps. Every task boundary is a context boundary -- the agent loses conversational state between tasks. Only split into multiple tasks when:
+Every task boundary is a context boundary. When one task ends and another begins, the agent forgets everything from the previous task. It starts fresh with only the prompt you give it and the structured output you pass in.
 
-- The context changes significantly (different codebase area, different concern).
-- You need an explicit checkpoint or approval gate.
-- A later task depends on the structured output of an earlier one.
+So do not split one logical operation into four tiny tasks. You are not decomposing work -- you are destroying context.
 
 ```tsx
 // assuming outputs from createSmithers
@@ -31,11 +31,13 @@ fix them, and write the corrected files. Return a summary of changes.`}
 </Task>
 ```
 
-The second approach gives the agent full context and lets it use tools (`read`, `edit`, `bash`) to accomplish everything in one pass.
+The second version gives the agent the full picture and lets it use tools (`read`, `edit`, `bash`) to accomplish everything in one pass. Only split into multiple tasks when the context genuinely changes, you need an explicit checkpoint, or a later task depends on the structured output of an earlier one.
 
 ## Use Measurable Stop Conditions for Loops
 
-`<Loop>` should stop based on a concrete, measurable signal -- not a subjective judgment. Good stop conditions:
+A `<Loop>` should stop based on a concrete, measurable signal -- not a subjective judgment. Ask yourself: can a machine evaluate this condition without interpretation?
+
+Good stop conditions:
 
 - Tests passing (boolean)
 - Approval flag from a reviewer (boolean)
@@ -64,11 +66,11 @@ Return JSON with approved (boolean) and feedback (string).`}
 </Loop>
 ```
 
-Always set `maxIterations` to prevent infinite loops. Use `onMaxReached: "return-last"` to gracefully accept the last result if the loop does not converge.
+Always set `maxIterations`. A loop without a cap is a bug waiting to burn your API budget at 3 AM.
 
 ## Ask for Validation in Prompts
 
-Do not assume the agent will run checks without being asked. If you need tests, linting, or verification, put it explicitly in the prompt:
+Do not assume the agent will run checks without being told. If you need tests, linting, or verification, say so explicitly in the prompt. Agents are literal-minded collaborators -- they do what you ask, not what you hope.
 
 ```tsx
 // assuming outputs from createSmithers
@@ -95,9 +97,11 @@ Return JSON with:
 </Task>
 ```
 
+The second prompt leaves nothing to chance. The agent knows *what* to verify, *how* to verify it, and *what to report back*.
+
 ## Request Structured Reports
 
-Design your output schemas to capture the data you need for downstream tasks and human inspection. The agent should return fields you can act on programmatically:
+Design your output schemas to capture the data you need for downstream tasks and human inspection. Every field should be something you can act on programmatically:
 
 ```tsx
 const { Workflow, smithers, outputs } = createSmithers({
@@ -117,18 +121,13 @@ const { Workflow, smithers, outputs } = createSmithers({
 });
 ```
 
-This lets you:
-
-- Conditionally branch based on `criticalIssues > 0`.
-- Generate summary reports from structured data.
-- Track metrics across runs.
-- Feed specific recommendations into a fix task.
+With this schema you can conditionally branch based on `criticalIssues > 0`, generate summary reports from structured data, track metrics across runs, and feed specific recommendations into a fix task. Free-text summaries give you none of that.
 
 ## Use outputSchema for Type Safety
 
-The `outputSchema` prop ensures the agent's response matches your expected structure. It provides three benefits:
+The `outputSchema` prop validates the agent's response against your Zod schema. It does three things:
 
-1. **Validation** -- Responses are validated against the Zod schema, with auto-retry on failure.
+1. **Validation** -- Responses are validated against the schema, with auto-retry on failure.
 2. **Auto-injection** -- When children are JSX/MDX elements, `props.schema` is auto-injected with a JSON example.
 3. **Cache key** -- The schema shape is part of the cache key, so schema changes invalidate stale caches.
 
@@ -145,11 +144,15 @@ const reviewSchema = z.object({
 </Task>
 ```
 
+If the agent returns `{ approved: "yes" }` instead of `{ approved: true }`, schema validation catches it and retries -- without burning a full task retry.
+
 ## Design for Resumability
 
-Structure your workflow so that resuming after a crash produces correct results:
+Every long-running workflow will eventually crash. A network blip, a rate limit, a deploy that kills the process. If your workflow cannot resume from where it stopped, you are starting over from scratch every time.
 
-- **Use deterministic task IDs.** Do not use timestamps, random strings, or array indices.
+Three rules:
+
+- **Use deterministic task IDs.** No timestamps, no random strings, no array indices. If the ID changes between renders, Smithers treats it as a different task.
 - **Make tasks idempotent where possible.** If a task writes files, design it so re-running produces the same result.
 - **Use `ctx.outputMaybe()` for conditional rendering.** This ensures tasks only mount when their dependencies are satisfied.
 
@@ -184,18 +187,18 @@ export default smithers((ctx) => {
 
 ## Keep Prompts and Schemas Separate from Logic
 
-For maintainability, separate your workflow's concerns:
+As your workflow grows, you will want to iterate on prompts without touching orchestration logic, and swap agents without changing schemas. Separate your concerns:
 
 - **`schemas.ts`** -- All Zod schemas in one file.
 - **`agents.ts`** -- Agent configuration (model, system prompt, tools).
 - **`prompts/`** -- MDX prompt templates.
 - **`workflow.tsx`** -- Composition only (how tasks connect).
 
-This makes it easy to iterate on prompts without touching workflow logic, and to swap agents or models without changing schemas.
+When a prompt change requires editing `workflow.tsx`, something is wrong with your factoring.
 
 ## Set Reasonable Timeouts and Retry Limits
 
-Every agent task should have a timeout. Agent calls can hang due to rate limits, network issues, or unexpectedly long generation times:
+Every agent task should have a timeout. Agent calls can hang due to rate limits, network issues, or unexpectedly long generation. A task without a timeout is a task that might run forever.
 
 ```tsx
 {/* assuming outputs from createSmithers */}
@@ -210,7 +213,7 @@ Every agent task should have a timeout. Agent calls can hang due to rate limits,
 </Task>
 ```
 
-Guidelines:
+Rules of thumb:
 
 - **Simple analysis tasks**: 30-60 seconds timeout, 1-2 retries.
 - **Tool-using tasks** (read, edit, bash): 2-5 minutes timeout, 1-2 retries.
@@ -219,13 +222,13 @@ Guidelines:
 
 ## Use Caching for Iterative Development
 
-Enable caching during development to avoid re-running expensive agent calls while iterating on downstream tasks:
+You are going to iterate on prompts. A lot. Each iteration should not re-run every upstream task that already succeeded.
 
 ```tsx
 <Workflow name="my-workflow" cache>
 ```
 
-The cache key includes the prompt, model, tools, schema, and JJ pointer. Changing any of these invalidates the cache for that task. This means you can safely iterate on a downstream task's prompt without re-running upstream tasks.
+The cache key includes the prompt, model, tools, schema, and JJ pointer. Changing any of these invalidates the cache for that specific task. This means you can safely tweak a downstream prompt without re-running the expensive analysis step that feeds it.
 
 Disable caching in production if you need fresh results on every run.
 

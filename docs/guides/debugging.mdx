@@ -3,262 +3,171 @@ title: Debugging
 description: Inspect runs, diagnose failures, and query internal state using the CLI, logs, and SQLite.
 ---
 
-When a Smithers workflow does not behave as expected, you have three levels of inspection: the CLI commands, NDJSON log files, and direct SQLite queries against the internal tables.
+Three levels of inspection: CLI commands, NDJSON log files, and direct SQLite queries.
 
 ## CLI Inspection
 
-The Smithers CLI provides four inspection commands:
-
-### status
-
-View the current state of a run, including all node statuses:
+### inspect
 
 ```bash
-bunx smithers status workflow.tsx --run-id <id>
+bunx smithers inspect <id>
 ```
 
-Output shows the run status and each node's current state (pending, in-progress, finished, failed, skipped, waiting-approval, cancelled).
+Shows run metadata, node statuses, approvals, and loop state.
 
-### frames
-
-View the render frames for a run. Each frame is a snapshot of the JSX tree at a point in time, showing which tasks were mounted and their states:
+### logs
 
 ```bash
-bunx smithers frames workflow.tsx --run-id <id> --tail 10
+bunx smithers logs <id> --tail 10 --follow false
 ```
 
-Use `--tail N` to limit output to the most recent N frames. Frames are useful for understanding the re-render cycle -- you can see when tasks mount, when outputs become available, and how the tree evolves.
+Shows persisted lifecycle events. For raw render frames, query `_smithers_frames` or use [renderFrame](/runtime/render-frame).
 
-### list
-
-List all runs, optionally filtered by status:
+### ps
 
 ```bash
-# List recent runs
-bunx smithers list workflow.tsx --limit 20
-
-# List only running or failed runs
-bunx smithers list workflow.tsx --status running
-bunx smithers list workflow.tsx --status failed
+bunx smithers ps --limit 20
+bunx smithers ps --status running
+bunx smithers ps --status failed
 ```
 
 ### graph
 
-View the execution graph for a run. This shows the task dependency structure:
-
 ```bash
 bunx smithers graph workflow.tsx --run-id <id>
-```
-
-You can also preview the graph for a new input without running the workflow:
-
-```bash
 bunx smithers graph workflow.tsx --input '{"description": "Fix bugs"}'
 ```
 
-## NDJSON Log Inspection
+Shows task dependency structure. The second form previews the graph without running.
 
-Smithers writes every event to an NDJSON log file at:
+## NDJSON Logs
 
 ```
 .smithers/executions/<runId>/logs/stream.ndjson
 ```
 
-Each line is a JSON-encoded `SmithersEvent`. You can tail the log in real time during execution:
+Each line is a JSON-encoded `SmithersEvent`.
 
 ```bash
 tail -f .smithers/executions/<runId>/logs/stream.ndjson
 ```
 
-Filter for specific event types:
+Filter by event type:
 
 ```bash
-# See only node lifecycle events
 grep '"type":"Node' .smithers/executions/<runId>/logs/stream.ndjson
-
-# See failures only
 grep '"type":"NodeFailed"' .smithers/executions/<runId>/logs/stream.ndjson
-
-# See tool calls
 grep '"type":"ToolCall' .smithers/executions/<runId>/logs/stream.ndjson
 ```
 
-Parse events with `jq` for structured inspection:
+Parse with `jq`:
 
 ```bash
-# Pretty-print the last 5 events
 tail -5 .smithers/executions/<runId>/logs/stream.ndjson | jq .
-
-# Extract node IDs and their final statuses
 cat .smithers/executions/<runId>/logs/stream.ndjson | jq 'select(.type == "NodeFinished" or .type == "NodeFailed") | {nodeId, type}'
 ```
 
-You can customize or disable the log location:
+Custom log location or disable:
 
 ```bash
-# Custom log directory
-bunx smithers run workflow.tsx --log-dir ./my-logs
-
-# Disable log output entirely
-bunx smithers run workflow.tsx --no-log
+bunx smithers up workflow.tsx --log-dir ./my-logs
+bunx smithers up workflow.tsx --log false
 ```
 
 ## SQLite Inspection
-
-Smithers stores all internal state in tables prefixed with `_smithers_`. You can query them directly for deep debugging.
 
 ### Internal Tables
 
 | Table | Purpose |
 |---|---|
-| `_smithers_runs` | Run metadata: status, created/updated timestamps |
+| `_smithers_runs` | Run metadata: status, timestamps |
 | `_smithers_nodes` | Per-node state: status, iteration, attempt count |
-| `_smithers_attempts` | Per-attempt details: status, started/finished times, error messages, JJ pointer |
-| `_smithers_frames` | Render frame snapshots (XML representation of the JSX tree) |
-| `_smithers_approvals` | Approval decisions: approved/denied, decided_by, note |
-| `_smithers_cache` | Cached task results (when caching is enabled) |
-| `_smithers_tool_calls` | Tool invocations: tool name, arguments, result, duration |
+| `_smithers_attempts` | Per-attempt: status, times, errors, JJ pointer |
+| `_smithers_frames` | Render frame snapshots (XML of JSX tree) |
+| `_smithers_approvals` | Approval decisions |
+| `_smithers_cache` | Cached task results |
+| `_smithers_tool_calls` | Tool invocations: name, args, result, duration |
 | `_smithers_events` | All events with sequence numbers and JSON payloads |
-| `_smithers_ralph` | Loop iteration state: iteration counts, termination reasons |
+| `_smithers_ralph` | Loop iteration state |
 
-### Useful Queries
-
-**View run status:**
+### Queries
 
 ```bash
+# Run status
 sqlite3 smithers.db "SELECT run_id, status, created_at_ms, updated_at_ms FROM _smithers_runs ORDER BY created_at_ms DESC LIMIT 5;"
-```
 
-**View node states for a run:**
-
-```bash
+# Node states
 sqlite3 smithers.db "SELECT node_id, status, iteration FROM _smithers_nodes WHERE run_id = '<id>' ORDER BY updated_at_ms;"
-```
 
-**View failed attempts with error details:**
-
-```bash
+# Failed attempts
 sqlite3 smithers.db "SELECT node_id, attempt, status, error_message FROM _smithers_attempts WHERE run_id = '<id>' AND status = 'failed';"
-```
 
-**View tool calls for a specific task:**
-
-```bash
+# Tool calls
 sqlite3 smithers.db "SELECT tool_name, arguments, duration_ms FROM _smithers_tool_calls WHERE run_id = '<id>' AND node_id = '<node-id>';"
-```
 
-**View events in order:**
-
-```bash
+# Events
 sqlite3 smithers.db "SELECT seq, type, payload_json FROM _smithers_events WHERE run_id = '<id>' ORDER BY seq LIMIT 50;"
-```
 
-**Check approval status:**
-
-```bash
+# Approvals
 sqlite3 smithers.db "SELECT node_id, approved, decided_by, note FROM _smithers_approvals WHERE run_id = '<id>';"
-```
 
-**View loop iteration state:**
-
-```bash
+# Loop state
 sqlite3 smithers.db "SELECT * FROM _smithers_ralph WHERE run_id = '<id>';"
-```
 
-**Check output tables:**
-
-Your task outputs are stored in the tables you defined in your schemas. Query them directly:
-
-```bash
+# Output tables
 sqlite3 smithers.db "SELECT * FROM analysis WHERE run_id = '<id>';"
 sqlite3 smithers.db "SELECT * FROM report WHERE run_id = '<id>';"
 ```
 
 ## Common Issues
 
-### Run stuck at "waiting-approval"
-
-A task with `needsApproval` is blocking the workflow. Check which node is waiting:
+### Stuck at "waiting-approval"
 
 ```bash
-bunx smithers status workflow.tsx --run-id <id>
-```
-
-Then approve or deny it:
-
-```bash
-bunx smithers approve workflow.tsx --run-id <id> --node-id <node-id>
-bunx smithers deny workflow.tsx --run-id <id> --node-id <node-id>
-```
-
-After the decision, resume the run:
-
-```bash
-bunx smithers resume workflow.tsx --run-id <id>
+bunx smithers inspect <id>
+bunx smithers approve <id> --node <node-id>
+# or: bunx smithers deny <id> --node <node-id>
+bunx smithers up workflow.tsx --run-id <id> --resume true
 ```
 
 ### Duplicate task IDs
-
-Task IDs must be unique within a workflow. Duplicate IDs cause an error at render time:
 
 ```
 Error: Duplicate Task id detected: "analyze"
 ```
 
-Common causes:
-
-- Two `<Task>` elements with the same `id` prop.
-- Dynamic tasks generated from an array where the IDs collide (e.g., using array indices).
-- A task inside a `<Loop>` that should be outside (or vice versa).
-
-Fix: ensure every `<Task>` has a globally unique `id` within the workflow. For dynamic tasks, derive IDs from unique identifiers: `id={`${item.id}:process`}`.
+Every `<Task>` needs a globally unique `id`. For dynamic tasks, derive IDs from unique identifiers: `id={`${item.id}:process`}`.
 
 ### Missing output rows
 
-If `ctx.output()` throws "No output found for nodeId", the task has not completed yet. Common causes:
-
-- The task is still pending or in-progress.
-- The task failed (check `_smithers_nodes` for its status).
-- The task's `id` prop changed between renders.
-- The output table is missing the required `runId` or `nodeId` column (when using the manual Drizzle API).
-
-Use `ctx.outputMaybe()` for safe conditional access:
+`ctx.output()` throws "No output found" when the task has not completed, failed, or its `id` changed between renders. Use `ctx.outputMaybe()` for conditional access:
 
 ```tsx
 const result = ctx.outputMaybe("analysis", { nodeId: "analyze" });
 if (result) {
-  // safe to use result
+  // safe to use
 }
 ```
 
 ### Task keeps retrying
 
-If a task retries indefinitely (up to its retry limit), check:
-
-1. **Schema validation errors** -- The agent may be returning invalid JSON. Check the NDJSON logs for `NodeRetrying` events.
-2. **Timeout** -- The agent call may be timing out. Check `timeoutMs` settings.
-3. **Tool errors** -- A tool used by the agent may be failing. Check `_smithers_tool_calls` for errors.
+Check for schema validation errors, timeouts, or tool failures:
 
 ```bash
-# Check retry events
 grep "NodeRetrying" .smithers/executions/<runId>/logs/stream.ndjson | jq .
-
-# Check failed attempts
 sqlite3 smithers.db "SELECT node_id, attempt, error_message FROM _smithers_attempts WHERE run_id = '<id>' AND status = 'failed';"
 ```
 
 ### Stale in-progress tasks
 
-If a run was interrupted and tasks are stuck in `in-progress`, resume the run. Tasks in-progress for longer than 15 minutes are automatically cancelled and retried:
+Tasks in-progress for over 15 minutes are auto-cancelled and retried on resume:
 
 ```bash
-bunx smithers resume workflow.tsx --run-id <id>
+bunx smithers up workflow.tsx --run-id <id> --resume true
 ```
-
-If the task is recent (less than 15 minutes old), you may need to wait for the timeout or start a fresh run.
 
 ## Next Steps
 
-- [Monitoring & Logs](/guides/monitoring-logs) -- Set up live monitoring with events and SSE.
+- [Monitoring & Logs](/guides/monitoring-logs) -- Live monitoring with events and SSE.
 - [Resumability](/guides/resumability) -- How resume handles stale tasks.
 - [CLI Reference](/cli/overview) -- All CLI commands and options.

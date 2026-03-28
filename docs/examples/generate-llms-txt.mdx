@@ -6,7 +6,7 @@ description: "Example from scripts/generate-llms-txt.ts — A utility script tha
 # scripts/generate-llms-txt.ts
 
 <Note>
-**Ghost doc** — This is a real utility script found at `scripts/generate-llms-txt.ts` in the Smithers repository. It generates the `llms-full.txt` file used to give LLMs full documentation context.
+**Ghost doc** — Real utility script at `scripts/generate-llms-txt.ts`.
 </Note>
 
 ## Source
@@ -31,15 +31,15 @@ console.log(
 bun scripts/generate-llms-txt.ts
 ```
 
-## What This Demonstrates
+## Key Details
 
-- **llms.txt convention** — Generates a single text file containing all documentation, following the `llms.txt` standard for giving AI models project context.
-- **Shared docs manifest** — The generator, route preview server, and browser smoke tests all read the same manifest helper, so route changes do not drift across tooling.
-- **MDX to Markdown conversion** — Strips YAML frontmatter and converts MDX components (`<Warning>`, `<Tip>`, `<Note>`) to markdown blockquotes.
-- **Navigation-driven sync** — Reads `docs/docs.json` so the exported context tracks the current API tabs and shared sections.
-- **Source URL attribution** — Each section includes a source URL back to the live docs page.
+- Follows the `llms.txt` convention: one text file containing all documentation for AI model context.
+- Reads `docs/docs.json` so output tracks the current navigation and API tabs.
+- Strips YAML frontmatter; converts MDX components (`<Warning>`, `<Tip>`, `<Note>`) to blockquotes.
+- Each section includes a source URL back to the live docs page.
+- The generator, route preview server, and browser smoke tests share the same manifest helper, so route changes cannot drift.
 
 ## Related Validation
 
-- `tests/docs-artifacts.test.ts` keeps the committed `docs/llms-full.txt` output in sync with the current docs manifest.
-- `tests/docs-e2e.playwright.ts` exercises docs routes and legacy redirects against a local preview server built from the same source data.
+- `tests/docs-artifacts.test.ts` keeps the committed `docs/llms-full.txt` in sync with the current docs manifest.
+- `tests/docs-e2e.playwright.ts` exercises docs routes and legacy redirects against a local preview server.

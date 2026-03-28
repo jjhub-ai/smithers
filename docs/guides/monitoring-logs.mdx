@@ -1,20 +1,18 @@
 ---
 title: Observability
-description: Export Smithers spans and metrics over OTLP, inspect persisted events, and add your own observability dependencies with Effect.
+description: Export Smithers spans and metrics over OTLP, inspect persisted events, and add observability with Effect.
 ---
 
-Smithers exposes four observability surfaces:
+Four observability surfaces:
 
-- persisted lifecycle events
-- structured logs
+- Persisted lifecycle events
+- Structured logs
 - OpenTelemetry spans
 - Effect metrics exported over OTLP
 
-The runtime already instruments workflow runs, nodes, tools, cache behavior, approvals, database access, hot reloads, HTTP requests, and Jujutsu commands. You can send those signals to any OTLP-compatible backend and you can consume the same observability context inside your own Effect services.
+The runtime instruments workflow runs, nodes, tools, cache, approvals, database access, hot reloads, HTTP requests, and JJ commands automatically.
 
 ## Enable OpenTelemetry Export
-
-Smithers ships a public observability layer:
 
 ```ts
 import { Context, Effect, Layer, Schema } from "effect";
@@ -34,7 +32,7 @@ const AppLive = Layer.mergeAll(
 );
 ```
 
-If you prefer environment-based configuration, the runtime also reads:
+Environment-based configuration:
 
 ```bash
 export SMITHERS_OTEL_ENABLED=1
@@ -44,36 +42,30 @@ export SMITHERS_LOG_FORMAT=json
 export SMITHERS_LOG_LEVEL=info
 ```
 
-Those variables are respected by the built-in runtime used by Smithers execution and the HTTP server.
-
 ## Local Prometheus + Grafana Stack
-
-The repo ships a ready-made local stack under `observability/`:
 
 ```bash
 docker compose -f observability/docker-compose.otel.yml up
 ```
 
-That starts:
+| Service | Endpoint |
+|---|---|
+| OTLP collector | `http://localhost:4318` |
+| Prometheus | `http://localhost:9090` |
+| Grafana | `http://localhost:3000` |
+| Tempo | `http://localhost:3200` |
 
-- OTLP collector on `http://localhost:4318`
-- Prometheus on `http://localhost:9090`
-- Grafana on `http://localhost:3000`
-- Tempo on `http://localhost:3200`
+The collector exports metrics on `:8889`; Prometheus scrapes it; Grafana ships with a pre-provisioned Smithers dashboard.
 
-The collector exports metrics on `:8889`, Prometheus scrapes that endpoint, and Grafana comes pre-provisioned with a Smithers dashboard.
-
-If you use the built-in Smithers HTTP server, it also exposes a direct Prometheus endpoint at `GET /metrics`.
+The built-in HTTP server also exposes `GET /metrics` in Prometheus text exposition format.
 
 ## Direct Prometheus Endpoint
-
-The built-in server returns Prometheus text exposition on `/metrics`:
 
 ```bash
 curl http://localhost:7331/metrics
 ```
 
-If you want to expose the same metrics from a custom server, Smithers also exports a renderer:
+For custom servers:
 
 ```ts
 import {
@@ -85,37 +77,32 @@ const body = renderPrometheusMetrics();
 // return body with Content-Type: prometheusContentType
 ```
 
-## Built-in Smithers Metrics
-
-Import the predeclared metrics from `smithers-orchestrator/observability`:
+## Built-in Metrics
 
 ```ts
 import { smithersMetrics } from "smithers-orchestrator/observability";
-
-smithersMetrics.runsTotal;
-smithersMetrics.nodeDuration;
-smithersMetrics.httpRequestDuration;
 ```
 
-The exported registry currently includes:
+| Category | Metrics |
+|---|---|
+| Runs | `runsTotal`, `activeRuns`, `runsResumedTotal`, `runsFinishedTotal`, `runsFailedTotal`, `runsCancelledTotal` |
+| Nodes | `nodesStarted`, `nodesFinished`, `nodesFailed`, `activeNodes`, `nodeRetriesTotal` |
+| Duration | `nodeDuration`, `attemptDuration`, `runDuration` |
+| Tools | `toolCallsTotal`, `toolDuration`, `toolCallErrorsTotal`, `toolOutputTruncatedTotal` |
+| Cache | `cacheHits`, `cacheMisses` |
+| Database | `dbQueryDuration`, `dbRetries` |
+| Scheduler | `schedulerQueueDepth`, `schedulerConcurrencyUtilization`, `schedulerWaitDuration` |
+| Approvals | `approvalsRequested`, `approvalsGranted`, `approvalsDenied`, `approvalPending`, `approvalWaitDuration` |
+| Tokens | `tokensInputTotal`, `tokensOutputTotal`, `tokensCacheReadTotal`, `tokensCacheWriteTotal`, `tokensReasoningTotal` |
+| HTTP | `httpRequests`, `httpRequestDuration` |
+| Hot reload | `hotReloads`, `hotReloadFailures`, `hotReloadDuration` |
+| VCS | `vcsDuration` |
+| Process | `processUptimeSeconds`, `processMemoryRssBytes`, `processHeapUsedBytes` |
+| Errors | `errorsTotal`, `eventsEmittedTotal` |
 
-- `runsTotal`, `activeRuns`
-- `nodesStarted`, `nodesFinished`, `nodesFailed`, `activeNodes`
-- `nodeDuration`, `attemptDuration`
-- `toolCallsTotal`, `toolDuration`
-- `cacheHits`, `cacheMisses`
-- `dbQueryDuration`, `dbRetries`
-- `schedulerQueueDepth`
-- `approvalsRequested`, `approvalsGranted`, `approvalsDenied`
-- `httpRequests`, `httpRequestDuration`
-- `hotReloads`, `hotReloadFailures`, `hotReloadDuration`
-- `vcsDuration`
+Emitted by the engine automatically.
 
-These metrics are emitted by the engine and runtime itself. You do not need to wire them by hand.
-
-## Use Observability as a Dependency
-
-The observability layer also provides a service tag you can depend on in your own Effect services:
+## Observability as a Dependency
 
 ```ts
 import { Context, Effect, Layer, Metric } from "effect";
@@ -154,59 +141,37 @@ const NotificationsLive = Layer.effect(
 );
 ```
 
-This is the intended composition model:
+Composition model:
 
-- use `createSmithersObservabilityLayer(...)` once in your app layer
-- depend on `SmithersObservability` in your own services when you want Smithers-scoped spans or shared annotations
-- use normal Effect `Metric` primitives for custom application metrics
+- Call `createSmithersObservabilityLayer(...)` once in the app layer
+- Depend on `SmithersObservability` in services that need Smithers-scoped spans
+- Use standard Effect `Metric` primitives for custom application metrics
 
-## Events and Logs Still Matter
+## Events and Logs
 
-OpenTelemetry does not replace Smithers' durable event log. Every run still persists typed events and, when enabled, writes the NDJSON stream to:
+OTLP does not replace the durable event log. Every run still persists events to:
 
 ```txt
 .smithers/executions/<runId>/logs/stream.ndjson
 ```
 
-That gives you two complementary views:
-
-- OTLP spans and metrics for dashboards and tracing
-- durable event history for replay, approvals, debugging, and auditability
-
-You can still tail the event log directly:
-
 ```bash
 tail -f .smithers/executions/<runId>/logs/stream.ndjson
-```
-
-And you can still inspect the SQLite event table:
-
-```bash
 sqlite3 smithers.db "SELECT seq, type, payload_json FROM _smithers_events WHERE run_id = '<id>' ORDER BY seq DESC LIMIT 20;"
 ```
 
-For the event model itself, see [Events](/runtime/events).
+See [Events](/runtime/events) for the event model.
 
 ## Server Instrumentation
 
-If you expose workflows through the Smithers HTTP server, request handling is instrumented as well:
+HTTP server requests are instrumented:
 
-- every request increments `smithers.http.requests`
-- request latency records into `smithers.http.request_duration_ms`
-- request, workflow-load, and body-read spans flow through the same OTLP layer
-
-That means the same local collector stack works for both embedded workflow execution and the hosted server process.
-
-## What This Buys You
-
-With OTLP enabled, existing Smithers spans become real traces and existing metric updates become dashboardable time series without changing workflow logic. The only code you usually add is:
-
-- one app-level observability layer
-- optional custom metrics for your own domain
-- optional `SmithersObservability` usage inside services that need extra span structure
+- `smithers.http.requests` counter
+- `smithers.http.request_duration_ms` histogram
+- Request, workflow-load, and body-read spans flow through the OTLP layer
 
 ## Next Steps
 
-- [Debugging](/guides/debugging) -- Dig deeper into failures using CLI and SQLite queries.
+- [Debugging](/guides/debugging) -- CLI and SQLite failure diagnosis.
 - [Events Reference](/runtime/events) -- Full event type definitions.
-- [Server Integration](/integrations/server) -- Set up the HTTP server and SSE endpoint.
+- [Server Integration](/integrations/server) -- HTTP server and SSE endpoint.

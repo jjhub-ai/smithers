@@ -3,10 +3,6 @@ title: <Branch>
 description: Conditional branching that executes one of two paths based on a boolean condition.
 ---
 
-`<Branch>` evaluates a boolean condition and executes exactly one of two branches: the `then` element when the condition is `true`, or the optional `else` element when the condition is `false`.
-
-## Import
-
 ```tsx
 import { Branch } from "smithers-orchestrator";
 ```
@@ -15,10 +11,10 @@ import { Branch } from "smithers-orchestrator";
 
 | Prop | Type | Default | Description |
 | --- | --- | --- | --- |
-| `if` | `boolean` | **(required)** | The condition to evaluate. When `true`, the `then` branch executes. When `false`, the `else` branch executes (if provided). |
-| `then` | `ReactElement` | **(required)** | The element to render and execute when the condition is `true`. |
-| `else` | `ReactElement` | `undefined` | The element to render and execute when the condition is `false`. If omitted and the condition is `false`, nothing executes. |
-| `skipIf` | `boolean` | `false` | When `true`, the entire branch is skipped regardless of the condition. The component returns `null`. |
+| `if` | `boolean` | **(required)** | Condition. `true` executes `then`; `false` executes `else`. |
+| `then` | `ReactElement` | **(required)** | Element to render when `true`. |
+| `else` | `ReactElement` | `undefined` | Element to render when `false`. If omitted, nothing executes. |
+| `skipIf` | `boolean` | `false` | Skip the entire branch regardless of condition. Returns `null`. |
 
 ## Basic usage
 
@@ -44,11 +40,7 @@ import { Branch } from "smithers-orchestrator";
 </Workflow>
 ```
 
-If the `test` task's output has `passed: true`, the `deploy` task runs. Otherwise, `notify-failure` runs.
-
 ## Without an else branch
-
-The `else` prop is optional. When omitted and the condition is `false`, nothing executes for that branch.
 
 ```tsx
 <Branch
@@ -61,9 +53,9 @@ The `else` prop is optional. When omitted and the condition is `false`, nothing 
 />
 ```
 
-## Branching into complex sub-graphs
+## Complex sub-graphs
 
-Each branch can contain any workflow element, not just a single `<Task>`. Use `<Sequence>`, `<Parallel>`, or other components to build complex sub-graphs:
+Each branch accepts any workflow element. Wrap multiple elements in `<Sequence>` or `<Parallel>`:
 
 ```tsx
 <Branch
@@ -88,8 +80,6 @@ Each branch can contain any workflow element, not just a single `<Task>`. Use `<
 
 ## Conditional skipping
 
-Use `skipIf` to bypass the entire branch, regardless of the `if` condition:
-
 ```tsx
 <Branch
   skipIf={ctx.input.dryRun}
@@ -98,13 +88,9 @@ Use `skipIf` to bypass the entire branch, regardless of the `if` condition:
 />
 ```
 
-When `skipIf` is `true`, the component returns `null` and neither the `then` nor `else` branch is mounted.
+## Condition evaluation
 
-## How conditions are evaluated
-
-The `if` prop is evaluated at **render time**, when the JSX tree is constructed. This means the condition is based on data available in the context (`ctx`) at the point the workflow tree is built for that frame.
-
-Because Smithers re-renders the workflow tree each frame, branch conditions can depend on the outputs of previously completed tasks:
+The `if` prop is evaluated at render time. Smithers re-renders the tree each frame, so conditions can depend on outputs of completed tasks:
 
 ```tsx
 export default smithers(db, (ctx) => (
@@ -121,14 +107,14 @@ export default smithers(db, (ctx) => (
 ));
 ```
 
-Use `ctx.outputMaybe()` instead of `ctx.output()` when the upstream task may not have completed yet (e.g., on the first render frame before the task runs).
+Use `ctx.outputMaybe()` when the upstream task may not have completed yet.
 
 ## Rendering
 
-Internally, `<Branch>` renders the chosen child (`then` or `else`) wrapped in a `<smithers:branch>` host element. Only the selected branch's tasks are mounted into the execution plan. The non-selected branch's tasks are not present in the task graph.
+`<Branch>` renders the selected child wrapped in a `<smithers:branch>` host element. Only the selected branch's tasks are mounted. The other branch is absent from the task graph.
 
 ## Notes
 
-- Only one branch executes per render frame. The non-selected branch is not mounted.
-- `then` and `else` accept a single `ReactElement` each. Wrap multiple elements in `<Sequence>` or `<Parallel>` if you need more than one child per branch.
-- Branch conditions are re-evaluated on each render frame, which is how Smithers supports data-dependent control flow.
+- Only one branch executes per render frame.
+- `then` and `else` each accept a single `ReactElement`. Wrap multiple elements in `<Sequence>` or `<Parallel>`.
+- Conditions are re-evaluated each render frame, enabling data-dependent control flow.

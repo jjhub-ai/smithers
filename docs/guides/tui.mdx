@@ -1,0 +1,188 @@
+---
+title: Terminal Dashboard (TUI)
+description: Interactive terminal UI for monitoring runs, inspecting tasks, querying data, and managing workflows.
+---
+
+```bash
+smithers tui
+```
+
+Connects to the nearest `smithers.db` and provides live views of runs, tasks, telemetry, and data.
+
+## Navigation
+
+| Key | Tab | Purpose |
+| --- | --- | --- |
+| `R` | Runs | Browse and inspect workflow runs |
+| `A` | Agent Console | Ask questions about the Smithers orchestrator |
+| `T` | Triggers | View and manage scheduled cron triggers |
+| `M` | Telemetry | Global metrics and token usage |
+| `S` | Data Grid | SQL query browser for the Smithers database |
+
+`Esc` returns from any detail view.
+
+## Runs
+
+<Frame>
+  <img src="/images/tui/runs-view.jpg" alt="Runs view showing a list of workflow runs with status and details" />
+</Frame>
+
+Left pane: run list. Right pane: selected run details (state, duration, task count, token stats, error summary).
+
+| Key | Action |
+| --- | --- |
+| `Enter` | View task details |
+| `N` | Launch a new run |
+| `P` | Filter pending approvals |
+| `Up/Down` | Navigate |
+| `Esc` | Exit TUI |
+
+## Task List
+
+<Frame>
+  <img src="/images/tui/task-list.jpg" alt="Task list showing individual tasks within a run with output preview" />
+</Frame>
+
+Shows task node IDs, status, terminal output preview, structured JSON output, and an `[ Entire Run ]` summary option. Press `Enter` for the Task Inspector.
+
+## Task Inspector
+
+Five sub-views, accessible via number keys:
+
+### (1) Input
+
+Task configuration: agent ID, model, prompt, output table, retry settings, timeout, approval requirements.
+
+<Frame>
+  <img src="/images/tui/inspector-input.jpg" alt="Task Inspector showing input configuration" />
+</Frame>
+
+### (2) Output
+
+Persisted output row: run ID, node ID, iteration, output table, response text, status, metrics.
+
+<Frame>
+  <img src="/images/tui/inspector-output.jpg" alt="Task Inspector showing structured output data" />
+</Frame>
+
+### (3) Frames
+
+JSX tree evolution across render frames. Shows when a task first appeared and how the tree changed as outputs became available. See [reactivity](/concepts/reactivity).
+
+<Frame>
+  <img src="/images/tui/inspector-frames.jpg" alt="Task Inspector showing render frame timeline" />
+</Frame>
+
+### (4) Chat
+
+Full agent conversation: `[USER]` prompt and `[ASSISTANT]` response with reasoning, tool calls, and structured output.
+
+<Frame>
+  <img src="/images/tui/inspector-chat.jpg" alt="Task Inspector showing USER/ASSISTANT conversation" />
+</Frame>
+
+### (5) Logs
+
+Timestamped lifecycle events scoped to the selected task.
+
+<Frame>
+  <img src="/images/tui/inspector-logs.jpg" alt="Task Inspector showing timestamped event log" />
+</Frame>
+
+### Inspector actions
+
+| Key | Action |
+| --- | --- |
+| `1`-`5` | Switch sub-view |
+| `R` | Revert workspace to this task's snapshot |
+| `Esc` | Back to task list |
+
+## Agent Console
+
+<Frame>
+  <img src="/images/tui/agent-console.jpg" alt="Agent Console" />
+</Frame>
+
+Ask questions about the Smithers orchestrator. Type and press `Enter`.
+
+## Triggers
+
+<Frame>
+  <img src="/images/tui/triggers-view.jpg" alt="Triggers view showing active cron triggers" />
+</Frame>
+
+Active cron triggers. Manage with `smithers cron` CLI commands.
+
+| Key | Action |
+| --- | --- |
+| `Up/Down` | Navigate |
+| `Del` | Remove trigger |
+| `Esc` | Return to Runs |
+
+## Telemetry
+
+<Frame>
+  <img src="/images/tui/telemetry-view.jpg" alt="Telemetry view showing global metrics and token usage" />
+</Frame>
+
+Global metrics from Prometheus: lifetime runs, total nodes, LLM token throughput, 24-hour token usage chart.
+
+## Data Grid
+
+<Frame>
+  <img src="/images/tui/data-grid.jpg" alt="Data Grid with SQL query interface" />
+</Frame>
+
+SQL query browser. Left pane lists all tables (`_smithers_*` and user-defined). Select a table to auto-generate `SELECT * FROM ... LIMIT 50`, or write custom SQL.
+
+| Key | Action |
+| --- | --- |
+| `Tab` | Switch between table list and query editor |
+| `Up/Down` | Navigate tables or scroll results |
+| `Esc` | Return to Runs |
+
+## Launching Workflows
+
+<Frame>
+  <img src="/images/tui/launch-workflow.jpg" alt="Launch Workflow dialog" />
+</Frame>
+
+Press `N` from Runs to list available `.tsx` workflow files and start a new run.
+
+## Monitoring with Claude Code
+
+Smithers persists all state to SQLite and exposes it through the CLI, so Claude Code can query status and report progress without interrupting execution.
+
+Set up a recurring health check with `/cron`:
+
+```
+/cron 10m Check the smithers workflow running in this directory.
+Run `smithers ps` to see active runs, then `smithers inspect <run-id>`
+for the latest run. Summarize what tasks have completed, what's currently
+running, any failures, and overall progress. Keep it brief.
+```
+
+With `--hot`, Smithers watches for file changes and hot-reloads the workflow definition. Claude Code can edit prompts, swap agents, or restructure the JSX tree mid-run. In-flight tasks keep their original code; new tasks use the updated definition.
+
+Other patterns:
+
+- **Ad hoc inspection** -- Read the Smithers database and explain a failed run
+- **Approval handling** -- Run `smithers approve` or `smithers deny` based on criteria
+- **Live tuning** -- With `--hot`, tweak prompts or switch models mid-run
+- **Post-run analysis** -- Summarize outputs and suggest next steps
+
+## Beyond the Terminal
+
+### Burns
+
+[Burns](https://github.com/l3wi/burns) is a workspace-first local control plane for Smithers. React web app, ElectroBun desktop shell, and headless CLI for authoring, running, and supervising workflows. See [Ecosystem](/integrations/ecosystem).
+
+### JJHub Cloud
+
+[jjhub.tech](https://jjhub.tech) will have first-class Smithers support for hosted workflows with scheduling, observability, and team collaboration.
+
+## Next Steps
+
+- [CLI Reference](/cli/overview) -- All CLI commands.
+- [Monitoring & Logs](/guides/monitoring-logs) -- Observability with Grafana and Prometheus.
+- [Debugging](/guides/debugging) -- Diagnosing workflow issues.

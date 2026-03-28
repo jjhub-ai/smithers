@@ -6,7 +6,7 @@ description: "Example from scripts/worktree-feature/run.sh — Shell script laun
 # scripts/worktree-feature/run.sh
 
 <Note>
-**Ghost doc** — This is the real launcher script found at `scripts/worktree-feature/run.sh` in the Smithers repository.
+**Ghost doc** — Real launcher script at `scripts/worktree-feature/run.sh`.
 </Note>
 
 ## Source
@@ -46,7 +46,7 @@ bun "$SMITHERS_CLI" run workflow.tsx --input '{}' --root "$ROOT_DIR"
   "type": "module",
   "scripts": {
     "start": "bun run workflow.tsx",
-    "resume": "smithers resume workflow.tsx",
+    "resume": "smithers up workflow.tsx --run-id <run-id> --resume true",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -80,10 +80,10 @@ import { mdxPlugin } from "smithers-orchestrator/mdx-plugin";
 mdxPlugin();
 ```
 
-## What This Demonstrates
+## Key Details
 
-- **Environment-driven agent selection** — `USE_CLI_AGENTS=1` selects CLI agents (Claude Code / Codex CLI) over API agents. `SMITHERS_UNSAFE=1` enables `dangerouslySkipPermissions` for unattended execution.
-- **Local dependency** — `"smithers-orchestrator": "file:../../"` links to the local package, useful for developing workflows alongside the framework.
-- **MDX plugin preload** — `preload.ts` registers the MDX plugin, enabling `.mdx` imports as JSX components.
-- **`--root` flag** — Passes the repository root to the Smithers CLI so agents can access the full codebase, not just the workflow directory.
-- **Resume support** — `smithers resume workflow.tsx` resumes a previously interrupted workflow from its last checkpoint.
+- `USE_CLI_AGENTS=1` selects CLI agents (Claude Code / Codex CLI) over API agents. `SMITHERS_UNSAFE=1` enables `dangerouslySkipPermissions` for unattended execution.
+- `"smithers-orchestrator": "file:../../"` links to the local package for co-development.
+- `preload.ts` registers the MDX plugin, enabling `.mdx` imports as JSX components.
+- `--root` passes the repository root so agents access the full codebase, not just the workflow directory.
+- `smithers up workflow.tsx --run-id <run-id> --resume true` resumes from the last checkpoint.

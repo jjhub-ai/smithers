@@ -6,7 +6,7 @@ description: "Example from workflows/quickstart.tsx — A two-agent sequential w
 # workflows/quickstart.tsx
 
 <Note>
-**Ghost doc** — This is a real script found at `workflows/quickstart.tsx` in the Smithers repository. It demonstrates a multi-agent sequential workflow with structured output and cross-task data flow.
+**Ghost doc** -- Real script from `workflows/quickstart.tsx`. Two-agent sequential pipeline with cross-task data flow.
 </Note>
 
 ## Source
@@ -81,8 +81,6 @@ Write a brief based on the plan. The "stepCount" must equal the number of steps.
 smithers run workflows/quickstart.tsx --input '{"goal": "Build a CLI tool for managing dotfiles"}'
 ```
 
-Output:
-
 ```
 [quickstart] Starting run def456
 [plan] Done -> { summary: "Build a dotfile manager CLI", steps: ["Parse config", "Symlink files", "Add backup"] }
@@ -90,10 +88,8 @@ Output:
 [quickstart] Completed
 ```
 
-## What This Demonstrates
+## Notes
 
-- **Multi-agent pipeline** — Two agents (planner and briefer) execute sequentially, with the second consuming the first's output.
-- **`ctx.outputMaybe()` cross-task data flow** — The `brief` task reads the `plan` task's persisted output via `ctx.outputMaybe("plan", { nodeId: "plan" })`. The first argument is the **schema key** (from `createSmithers`), not a table name.
-- **Zod schemas** — Both agents use `Output.object({ schema })` for type-safe structured output with validation constraints (`min(3).max(8)`).
-- **Vercel AI SDK agents** — Uses `ToolLoopAgent` from the `ai` package with Anthropic provider.
-- **`outputs.plan` / `outputs.brief`** — The Zod schemas returned by `createSmithers`, passed to `Task` via the `output` prop to tell Smithers where to persist results.
+- **Cross-task data flow** -- `ctx.outputMaybe("plan", { nodeId: "plan" })` reads the planner's persisted output. First argument is the schema key from `createSmithers`, not a table name.
+- **Zod structured output** -- Both agents use `Output.object({ schema })` with validation constraints.
+- **Vercel AI SDK** -- Uses `ToolLoopAgent` with Anthropic provider.

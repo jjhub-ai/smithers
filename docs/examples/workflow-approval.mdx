@@ -6,7 +6,7 @@ description: "Example from workflows/approval.tsx — A two-step sequential work
 # workflows/approval.tsx
 
 <Note>
-**Ghost doc** — This is a real script found at `workflows/approval.tsx` in the Smithers repository. It demonstrates the `needsApproval` prop for human-in-the-loop workflows.
+**Ghost doc** -- Real script from `workflows/approval.tsx`. Demonstrates `needsApproval` for human-in-the-loop workflows.
 </Note>
 
 ## Source
@@ -46,7 +46,7 @@ export default smithers((ctx) => (
 ## Running
 
 ```bash
-smithers run workflows/approval.tsx --input '{"name": "Deploy v2"}'
+smithers up workflows/approval.tsx --input '{"name": "Deploy v2"}'
 ```
 
 The workflow pauses at the approval gate:
@@ -57,10 +57,11 @@ The workflow pauses at the approval gate:
 [approval] Paused — run `smithers approve` or `smithers deny` to continue.
 ```
 
-After approving:
+Approve and resume:
 
 ```bash
-smithers approve workflows/approval.tsx --run-id mno345 --node-id approve
+smithers approve mno345 --node approve
+smithers up workflows/approval.tsx --run-id mno345 --resume true
 ```
 
 ```
@@ -70,8 +71,7 @@ smithers approve workflows/approval.tsx --run-id mno345 --node-id approve
 [approval] Completed
 ```
 
-## What This Demonstrates
+## Notes
 
-- **`needsApproval`** — The first task pauses execution and waits for human approval before the workflow continues. This is the core human-in-the-loop primitive.
-- **`Sequence`** — Ensures the `final` task only runs after `approve` completes (and is approved).
-- **Resumable approval** — The workflow state is persisted to SQLite. After approval, `smithers approve` resumes from exactly where it left off.
+- **`needsApproval`** -- Pauses execution until a human approves. Core human-in-the-loop primitive.
+- **Resumable** -- Workflow state is persisted to SQLite. Approval is recorded durably; `--resume true` continues from the gate.

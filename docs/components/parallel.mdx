@@ -3,10 +3,6 @@ title: <Parallel>
 description: Execute child tasks concurrently with optional concurrency limits.
 ---
 
-`<Parallel>` groups its children and executes them **concurrently**. All children start at the same time (subject to the concurrency limit) rather than waiting for the previous child to complete.
-
-## Import
-
 ```tsx
 import { Parallel } from "smithers-orchestrator";
 ```
@@ -15,10 +11,10 @@ import { Parallel } from "smithers-orchestrator";
 
 | Prop | Type | Default | Description |
 | --- | --- | --- | --- |
-| `id` | `string` | `undefined` | Optional stable id for tracking and deduping the parallel group. |
-| `maxConcurrency` | `number` | `Infinity` | Maximum number of child tasks that can run simultaneously. When the limit is reached, remaining tasks wait until a running task completes before starting. |
-| `skipIf` | `boolean` | `false` | When `true`, the entire parallel group and all its children are skipped. The component returns `null` and no child tasks are mounted. |
-| `children` | `ReactNode` | `undefined` | The tasks and control-flow components to execute concurrently. |
+| `id` | `string` | `undefined` | Optional stable id for tracking and deduping. |
+| `maxConcurrency` | `number` | `Infinity` | Max simultaneous children. Remaining tasks queue until a slot opens. |
+| `skipIf` | `boolean` | `false` | Skip the entire group. Returns `null`; no children are mounted. |
+| `children` | `ReactNode` | `undefined` | Tasks and control-flow components to execute concurrently. |
 
 ## Basic usage
 
@@ -38,11 +34,7 @@ import { Parallel } from "smithers-orchestrator";
 </Workflow>
 ```
 
-All three tasks -- `lint`, `typecheck`, and `test` -- start at the same time and run concurrently.
-
 ## Limiting concurrency
-
-Use `maxConcurrency` to control how many tasks run simultaneously. This is useful when tasks consume shared resources (API rate limits, database connections, CPU) and you want to avoid overloading them.
 
 ```tsx
 <Parallel maxConcurrency={2}>
@@ -61,11 +53,9 @@ Use `maxConcurrency` to control how many tasks run simultaneously. This is usefu
 </Parallel>
 ```
 
-With `maxConcurrency={2}`, at most two agent calls run at the same time. As each completes, the next queued task starts.
+At most two agent calls run simultaneously. As each completes, the next queued task starts.
 
 ## Combining with Sequence
-
-`<Parallel>` and `<Sequence>` compose naturally. You can nest sequential chains inside a parallel group:
 
 ```tsx
 <Workflow name="ci">
@@ -82,7 +72,7 @@ With `maxConcurrency={2}`, at most two agent calls run at the same time. As each
 </Workflow>
 ```
 
-The two `<Sequence>` groups run in parallel. Within each group, tasks run sequentially. `deploy-web` waits for `build-web`, but `build-api` does not wait for `build-web`.
+The two `<Sequence>` groups run in parallel. Within each, tasks run sequentially.
 
 ## Conditional skipping
 
@@ -93,15 +83,13 @@ The two `<Sequence>` groups run in parallel. Within each group, tasks run sequen
 </Parallel>
 ```
 
-When `skipIf` is `true`, the component returns `null` and none of the child tasks are included in the execution plan.
-
 ## Rendering
 
-Internally, `<Parallel>` renders as a `<smithers:parallel>` host element (or `null` when skipped). Each child task within the group receives a `parallelGroupId` and `parallelMaxConcurrency` in its task descriptor, which the scheduler uses to manage concurrent execution.
+`<Parallel>` renders as a `<smithers:parallel>` host element (or `null` when skipped). Each child receives `parallelGroupId` and `parallelMaxConcurrency` in its task descriptor.
 
 ## Notes
 
-- When `maxConcurrency` is omitted or set to `Infinity`, all children start at the same time with no limit.
-- The parallel group completes when **all** children have finished (or failed, if `continueOnFail` is set on individual tasks).
-- `<Parallel>` can be nested inside `<Sequence>`, `<Branch>`, `<Loop>`, or another `<Parallel>`.
-- An empty `<Parallel>` (no children) is valid and completes immediately.
+- Omitting `maxConcurrency` (or setting `Infinity`) starts all children simultaneously.
+- The group completes when all children finish (or fail, if `continueOnFail` is set on individual tasks).
+- Nestable inside `<Sequence>`, `<Branch>`, `<Loop>`, or another `<Parallel>`.
+- An empty `<Parallel>` is valid and completes immediately.

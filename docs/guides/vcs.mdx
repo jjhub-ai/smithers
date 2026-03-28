@@ -3,36 +3,28 @@ title: VCS Integration
 description: How Smithers integrates with JJ (Jujutsu) for filesystem snapshots and revert support.
 ---
 
-Smithers integrates with [JJ (Jujutsu)](https://github.com/martinvonz/jj), a Git-compatible version control system, to record filesystem snapshots at each task completion. This enables reverting the workspace to the exact state it was in after any specific attempt.
+Smithers integrates with [JJ (Jujutsu)](https://github.com/martinvonz/jj) to record filesystem snapshots at each task completion. This enables reverting to the exact workspace state after any attempt.
 
-## How JJ Pointers Work
+## JJ Pointer Flow
 
-When JJ is installed and the workspace is a JJ repository, Smithers captures a JJ pointer (the current change ID or operation ID) at the end of each task attempt. This pointer is stored in the `_smithers_attempts` table alongside the attempt's other metadata.
+When JJ is installed and the workspace is a JJ repository:
 
-The flow:
+1. A task executes, making filesystem changes via agent tools.
+2. The task completes (success or failure).
+3. Smithers captures the JJ change/operation ID into `_smithers_attempts.jj_pointer`.
+4. The next task continues from this point.
 
-1. A task executes and makes filesystem changes (via agent tools like `edit`, `write`, `bash`).
-2. The task completes (successfully or with failure).
-3. Smithers captures the current JJ state and stores it in `_smithers_attempts.jj_pointer`.
-4. On the next attempt or task, JJ continues tracking changes from this point.
+Each attempt gets its own pointer.
 
-Each attempt gets its own pointer, so you can revert to any point in the workflow's execution history.
-
-## What Gets Recorded
-
-Each row in `_smithers_attempts` includes a `jj_pointer` column:
+## Recorded Data
 
 | Column | Type | Description |
 |---|---|---|
-| `jj_pointer` | text (nullable) | The JJ change/operation ID captured after this attempt completed. `null` if JJ is not installed or the workspace is not a JJ repository. |
-
-You can inspect the recorded pointers directly:
+| `jj_pointer` | text (nullable) | JJ change/operation ID after attempt completion. `null` if JJ unavailable. |
 
 ```bash
 sqlite3 smithers.db "SELECT run_id, node_id, iteration, attempt, jj_pointer FROM _smithers_attempts WHERE run_id = '<id>';"
 ```
-
-Example output:
 
 ```
 smth_a1b2|analyze|0|1|zqkopwvn
@@ -41,11 +33,7 @@ smth_a1b2|fix|0|2|ynpwzrmv
 smth_a1b2|report|0|1|kutswxqp
 ```
 
-Here, the `fix` task had two attempts (perhaps the first failed and was retried). Each attempt has a distinct JJ pointer.
-
-## Revert CLI Command
-
-Use the `revert` command to restore the workspace to the state captured at a specific attempt:
+## Revert
 
 ```bash
 smithers revert workflow.tsx \
@@ -55,69 +43,58 @@ smithers revert workflow.tsx \
   --iteration <iteration-number>
 ```
 
-For example, to revert to the state after the first attempt of the `fix` task:
-
 ```bash
 smithers revert workflow.tsx --run-id smth_a1b2 --node-id fix --attempt 1 --iteration 0
 ```
 
-This restores the filesystem to the exact state it was in after that attempt completed. Smithers emits `RevertStarted` and `RevertFinished` events during the operation.
+Restores the filesystem to the exact post-attempt state. Emits `RevertStarted` and `RevertFinished` events.
 
-### Revert use cases
+## Without JJ
 
-- **Undo a bad fix**: The agent made changes that broke something. Revert to before the fix and try a different approach.
-- **Compare attempts**: Revert to attempt 1, inspect the state, then revert to attempt 2 to compare.
-- **Debug failures**: Revert to the state just before a failure to inspect the workspace.
+- `jj_pointer` is `null` for all attempts.
+- `revert` fails with an error.
+- All other Smithers functionality is unaffected.
 
-## When JJ Is Not Installed
+JJ is optional. Install only if revert support is needed.
 
-If JJ is not installed or the workspace is not a JJ repository:
-
-- `jj_pointer` is recorded as `null` for all attempts.
-- The `revert` command fails with an error explaining that no JJ pointer was found.
-- All other Smithers functionality works normally. Execution, persistence, resume, and caching are unaffected.
-
-JJ is entirely optional. You only need it if you want revert support.
-
-## Setting Up JJ
-
-Install JJ:
+## Setup
 
 ```bash
 brew install jj
 ```
 
-Initialize a JJ repository in your workspace (or use an existing one):
-
 ```bash
+# New JJ repo
 cd /path/to/my-project
 jj git init
-```
 
-If your project already uses Git, JJ can colocate with your Git repository:
-
-```bash
-cd /path/to/my-project
+# Colocate with existing Git repo
 jj git init --colocate
 ```
 
-Once JJ is initialized, Smithers will automatically detect it and start recording pointers.
+Smithers auto-detects JJ and starts recording pointers.
+
+## Programmatic Helpers
+
+Smithers exports helpers for running raw `jj` commands, checking repo status, reading/restoring pointers, and managing JJ workspaces. See [VCS Helper Reference](/reference/vcs-helpers).
 
 ## Cache Key Integration
 
-JJ pointers are also used as part of the cache key when caching is enabled (`<Workflow cache>` or `{ cache: true }`). The cache key includes:
+JJ pointers are included in the cache key when caching is enabled (`<Workflow cache>` or `{ cache: true }`):
 
-- Workflow name + nodeId
-- Prompt text or static payload
-- Model ID and parameters
-- Tool allowlist and versions
-- Output schema signature
-- **JJ pointer (change or operation ID)**
+| Component |
+|---|
+| Workflow name + nodeId |
+| Prompt text or static payload |
+| Model ID and parameters |
+| Tool allowlist and versions |
+| Output schema signature |
+| **JJ pointer** |
 
-This means that if the workspace changes (tracked by JJ), cached results for affected tasks are automatically invalidated. If the workspace returns to a previous state (same JJ pointer), the cached result is reused.
+Workspace changes invalidate cached results. Returning to a previous state (same JJ pointer) reuses the cached result.
 
 ## Next Steps
 
-- [Resumability](/guides/resumability) -- How Smithers persists state for crash recovery.
-- [Caching](/concepts/caching) -- How cache keys work and when to enable caching.
+- [Resumability](/guides/resumability) -- Crash recovery and state persistence.
+- [Caching](/concepts/caching) -- Cache key mechanics.
 - [CLI Reference](/cli/overview) -- All CLI commands including `revert`.

@@ -6,7 +6,7 @@ description: "Example from .github/workflows/ci.yml — GitHub Actions CI workfl
 # .github/workflows/ci.yml
 
 <Note>
-**Ghost doc** — This is the real CI configuration found at `.github/workflows/ci.yml` in the Smithers repository.
+**Ghost doc** -- Real CI configuration from `.github/workflows/ci.yml`.
 </Note>
 
 ## Source
@@ -35,9 +35,9 @@ jobs:
         run: bun test
 ```
 
-## What This Demonstrates
+## Notes
 
-- **Bun-based CI** — Uses `oven-sh/setup-bun` for fast install and test execution.
-- **Frozen lockfile** — `--frozen-lockfile` ensures CI uses the exact dependency versions committed to the repo.
-- **Two-step validation** — Runs TypeScript type checking (`bun run typecheck`) separately from tests (`bun test`), catching type errors even if tests pass.
-- **Minimal configuration** — Triggers on all pushes and pull requests with no branch filtering, keeping the CI config simple.
+- Uses `oven-sh/setup-bun` for fast Bun-based CI.
+- `--frozen-lockfile` pins exact dependency versions.
+- Typecheck and tests run as separate steps -- type errors surface even if tests pass.
+- Triggers on all pushes and pull requests with no branch filtering.
