@@ -3,6 +3,7 @@ import {
   BaseCliAgent,
   buildGenerateResult,
   combineNonEmpty,
+  createAgentStdoutTextEmitter,
   extractPrompt,
   extractTextFromPiNdjson,
   resolveTimeouts,
@@ -170,6 +171,11 @@ export class PiAgent extends BaseCliAgent {
         // Prompt as last positional arg
         if (prompt) args.push(prompt);
 
+        const stdoutEmitter = createAgentStdoutTextEmitter({
+          outputFormat: mode,
+          onText: options?.onStdout,
+        });
+
         const result = await runCommand("pi", args, {
           cwd,
           env,
@@ -177,7 +183,7 @@ export class PiAgent extends BaseCliAgent {
           idleTimeoutMs: callTimeouts.idleMs,
           signal: options?.abortSignal,
           maxOutputBytes: this.maxOutputBytes ?? getToolContext()?.maxOutputBytes,
-          onStdout: options?.onStdout,
+          onStdout: stdoutEmitter.push,
           onStderr: options?.onStderr,
         });
 
@@ -191,6 +197,7 @@ export class PiAgent extends BaseCliAgent {
         const extractedText = mode === "json"
           ? (extractTextFromPiNdjson(rawText) ?? rawText)
           : rawText;
+        stdoutEmitter.flush(extractedText);
         const output = tryParseJson(extractedText);
         return buildGenerateResult(extractedText, output, this.opts.model ?? "pi");
       }
