@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
-import { resolve, dirname, extname } from "node:path";
+import { resolve, dirname, basename } from "node:path";
 import { pathToFileURL } from "node:url";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, openSync } from "node:fs";
 import { Effect } from "effect";
 import { Cli, z } from "incur";
 import { runWorkflow, renderFrame, resolveSchema } from "../engine";
+import { mdxPlugin } from "../mdx-plugin";
 import { approveNode, denyNode } from "../engine/approvals";
 import { loadInput, loadOutputs } from "../db/snapshot";
 import { ensureSmithersTables } from "../db/ensure";
@@ -13,15 +14,48 @@ import { buildContext } from "../context";
 import { fromPromise } from "../effect/interop";
 import { runPromise } from "../effect/runtime";
 import type { SmithersWorkflow } from "../SmithersWorkflow";
-import { Smithers } from "../effect/builder";
-import { revertToAttempt } from "../revert";
 import { trackEvent } from "../effect/metrics";
+
+import { revertToAttempt } from "../revert";
 import { runSync } from "../effect/runtime";
 import { spawn } from "node:child_process";
 import { SmithersError } from "../utils/errors";
+import { findAndOpenDb } from "./find-db";
+import {
+  chatAttemptKey,
+  formatChatAttemptHeader,
+  formatChatBlock,
+  parseChatAttemptMeta,
+  parseNodeOutputEvent,
+  selectChatAttempts,
+} from "./chat";
+import {
+  buildHijackLaunchSpec,
+  isNativeHijackCandidate,
+  launchHijackSession,
+  resolveHijackCandidate,
+  waitForHijackCandidate,
+} from "./hijack";
+import {
+  launchConversationHijackSession,
+  persistConversationHijackHandoff,
+} from "./hijack-session";
+import { formatAge, formatElapsedCompact, formatEventLine } from "./format";
+import { detectAvailableAgents } from "./agent-detection";
+import { initWorkflowPack } from "./workflow-pack";
+import { discoverWorkflows, resolveWorkflow, createWorkflowFile } from "./workflows";
+import { ask } from "./ask";
+import { runScheduler } from "./scheduler";
+import pc from "picocolors";
+import crypto from "node:crypto";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 async function loadWorkflowAsync(path: string): Promise<SmithersWorkflow<any>> {
   const abs = resolve(process.cwd(), path);
+  mdxPlugin();
   const mod = await import(pathToFileURL(abs).href);
   if (!mod.default) throw new SmithersError("WORKFLOW_MISSING_DEFAULT", "Workflow must export default");
   return mod.default as SmithersWorkflow<any>;
@@ -38,26 +72,9 @@ async function loadWorkflow(path: string): Promise<SmithersWorkflow<any>> {
   return runPromise(loadWorkflowEffect(path));
 }
 
-/**
- * Load a workflow and return a SmithersDb adapter.
- * Handles both .tsx (dynamic import) and .toon (SQLite DB next to the file) workflows.
- */
 async function loadWorkflowDb(
   workflowPath: string,
 ): Promise<{ adapter: SmithersDb; cleanup?: () => void }> {
-  const resolvedPath = resolve(process.cwd(), workflowPath);
-  if (extname(resolvedPath) === ".toon") {
-    const { Database } = await import("bun:sqlite");
-    const { drizzle } = await import("drizzle-orm/bun-sqlite");
-    const dbPath = resolve(dirname(resolvedPath), "smithers.db");
-    const sqlite = new Database(dbPath);
-    const db = drizzle(sqlite);
-    ensureSmithersTables(db as any);
-    return {
-      adapter: new SmithersDb(db as any),
-      cleanup: () => { try { sqlite.close(); } catch {} },
-    };
-  }
   const workflow = await loadWorkflow(workflowPath);
   ensureSmithersTables(workflow.db as any);
   setupSqliteCleanup(workflow);
@@ -104,19 +121,11 @@ function setupSqliteCleanup(workflow: SmithersWorkflow<any>) {
       if (client && typeof client.close === "function") {
         client.close();
       }
-    } catch {
-      // Best-effort — ignore errors during cleanup
-    }
+    } catch {}
   };
   process.on("exit", closeSqlite);
-  process.on("SIGINT", () => {
-    closeSqlite();
-    process.exit(130);
-  });
-  process.on("SIGTERM", () => {
-    closeSqlite();
-    process.exit(143);
-  });
+  process.on("SIGINT", () => { closeSqlite(); process.exit(130); });
+  process.on("SIGTERM", () => { closeSqlite(); process.exit(143); });
 }
 
 function buildProgressReporter() {
@@ -131,9 +140,6 @@ function buildProgressReporter() {
   };
 
   return (event: any) => {
-    // Push smithers metrics through the Effect OTel pipeline
-    try { runSync(trackEvent(event)); } catch {}
-
     const ts = formatElapsed();
     switch (event.type) {
       case "NodeStarted":
@@ -142,9 +148,7 @@ function buildProgressReporter() {
         );
         break;
       case "NodeFinished":
-        process.stderr.write(
-          `[${ts}] ✓ ${event.nodeId} (attempt ${event.attempt ?? 1})\n`,
-        );
+        process.stderr.write(`[${ts}] ✓ ${event.nodeId} (attempt ${event.attempt ?? 1})\n`);
         break;
       case "NodeFailed":
         process.stderr.write(
@@ -152,9 +156,7 @@ function buildProgressReporter() {
         );
         break;
       case "NodeRetrying":
-        process.stderr.write(
-          `[${ts}] ↻ ${event.nodeId} retrying (attempt ${event.attempt ?? 1})\n`,
-        );
+        process.stderr.write(`[${ts}] ↻ ${event.nodeId} retrying (attempt ${event.attempt ?? 1})\n`);
         break;
       case "RunFinished":
         process.stderr.write(`[${ts}] ✓ Run finished\n`);
@@ -165,27 +167,18 @@ function buildProgressReporter() {
         );
         break;
       case "FrameCommitted":
-        // Don't print frame commits - too noisy
         break;
       case "WorkflowReloadDetected":
-        process.stderr.write(
-          `[${ts}] ⟳ File change detected: ${(event as any).changedFiles?.length ?? 0} file(s)\n`,
-        );
+        process.stderr.write(`[${ts}] ⟳ File change detected: ${(event as any).changedFiles?.length ?? 0} file(s)\n`);
         break;
       case "WorkflowReloaded":
-        process.stderr.write(
-          `[${ts}] ⟳ Workflow reloaded (generation ${(event as any).generation})\n`,
-        );
+        process.stderr.write(`[${ts}] ⟳ Workflow reloaded (generation ${(event as any).generation})\n`);
         break;
       case "WorkflowReloadFailed":
-        process.stderr.write(
-          `[${ts}] ⚠ Workflow reload failed: ${typeof (event as any).error === "string" ? (event as any).error : ((event as any).error?.message ?? "unknown")}\n`,
-        );
+        process.stderr.write(`[${ts}] ⚠ Workflow reload failed: ${typeof (event as any).error === "string" ? (event as any).error : ((event as any).error?.message ?? "unknown")}\n`);
         break;
       case "WorkflowReloadUnsafe":
-        process.stderr.write(
-          `[${ts}] ⚠ Workflow reload blocked: ${(event as any).reason}\n`,
-        );
+        process.stderr.write(`[${ts}] ⚠ Workflow reload blocked: ${(event as any).reason}\n`);
         break;
     }
   };
@@ -205,483 +198,406 @@ function setupAbortSignal() {
   return abort;
 }
 
+function resumeRunDetached(workflowPath: string, runId: string) {
+  const cliPath = new URL(import.meta.url).pathname;
+  const child = spawn(
+    "bun",
+    [cliPath, "up", workflowPath, "--resume", "--run-id", runId, "-d", "--force"],
+    {
+      cwd: dirname(resolve(workflowPath)),
+      stdio: "ignore",
+      env: process.env,
+      detached: true,
+    },
+  );
+  child.unref();
+  return child.pid ?? null;
+}
+
+async function listAllEvents(adapter: SmithersDb, runId: string) {
+  const events: any[] = [];
+  let lastSeq = -1;
+  while (true) {
+    const batch = await adapter.listEvents(runId, lastSeq, 1000);
+    if ((batch as any[]).length === 0) break;
+    events.push(...(batch as any[]));
+    lastSeq = (batch as any[])[(batch as any[]).length - 1]!.seq;
+    if ((batch as any[]).length < 1000) break;
+  }
+  return events;
+}
+
+// ---------------------------------------------------------------------------
+// Schemas
+// ---------------------------------------------------------------------------
+
 const workflowArgs = z.object({
-  workflow: z.string().describe("Path to a .tsx or .toon workflow file"),
+  workflow: z.string().describe("Path to a .tsx workflow file"),
 });
 
-const commonRunOptions = z.object({
-  runId: z.string().optional().describe("Explicit run ID (must not already exist)"),
+const upOptions = z.object({
+  detach: z.boolean().default(false).describe("Run in background, print run ID, exit"),
+  runId: z.string().optional().describe("Explicit run ID"),
   maxConcurrency: z.number().int().min(1).optional().describe("Maximum parallel tasks (default: 4)"),
-  root: z.string().optional().describe("Tool sandbox root directory (default: workflow's directory)"),
+  root: z.string().optional().describe("Tool sandbox root directory"),
   log: z.boolean().default(true).describe("Enable NDJSON event log file output"),
   logDir: z.string().optional().describe("NDJSON event logs directory"),
   allowNetwork: z.boolean().default(false).describe("Allow bash tool network requests"),
-  maxOutputBytes: z.number().int().min(1).optional().describe("Max bytes a single tool call can return (default: 200000)"),
-  toolTimeoutMs: z.number().int().min(1).optional().describe("Max wall-clock time per tool call in ms (default: 60000)"),
+  maxOutputBytes: z.number().int().min(1).optional().describe("Max bytes a single tool call can return"),
+  toolTimeoutMs: z.number().int().min(1).optional().describe("Max wall-clock time per tool call in ms"),
   hot: z.boolean().default(false).describe("Enable hot module replacement for .tsx workflows"),
-});
-
-const runOptions = commonRunOptions.extend({
   input: z.string().optional().describe("Input data as JSON string"),
   resume: z.boolean().default(false).describe("Resume a previous run instead of starting fresh"),
+  force: z.boolean().default(false).describe("Resume even if still marked running"),
+  serve: z.boolean().default(false).describe("Start an HTTP server alongside the workflow"),
+  port: z.number().int().min(1).default(7331).describe("HTTP server port (with --serve)"),
+  host: z.string().default("127.0.0.1").describe("HTTP server bind address (with --serve)"),
+  authToken: z.string().optional().describe("Bearer token for HTTP auth (or set SMITHERS_API_KEY)"),
+  metrics: z.boolean().default(true).describe("Expose /metrics endpoint (with --serve)"),
 });
 
-const resumeOptions = commonRunOptions.extend({
-  runId: z.string().describe("Run ID to resume"),
-  input: z.string().optional().describe("Input data as JSON string (overrides persisted input)"),
-  force: z.boolean().default(false).describe("Resume even if the run is still marked as running"),
+const psOptions = z.object({
+  status: z.string().optional().describe("Filter by status: running, finished, failed, cancelled, waiting-approval"),
+  limit: z.number().int().min(1).default(20).describe("Maximum runs to return"),
+  all: z.boolean().default(false).describe("Include all statuses"),
 });
 
-const approvalOptions = z.object({
+const logsOptions = z.object({
+  follow: z.boolean().default(true).describe("Keep tailing (default true for active runs)"),
+  since: z.number().int().optional().describe("Start from event sequence number"),
+  tail: z.number().int().min(1).default(50).describe("Show last N events first"),
+});
+
+const chatArgs = z.object({
+  runId: z.string().optional().describe("Run ID to inspect (default: latest run)"),
+});
+
+const chatOptions = z.object({
+  all: z.boolean().default(false).describe("Show all agent attempts in the run (default: latest only)"),
+  follow: z.boolean().default(false).describe("Watch for new agent output"),
+  tail: z.number().int().min(1).optional().describe("Show only the last N chat blocks"),
+  stderr: z.boolean().default(true).describe("Include agent stderr output"),
+});
+
+const inspectArgs = z.object({
+  runId: z.string().describe("Run ID to inspect"),
+});
+
+const approveArgs = z.object({
   runId: z.string().describe("Run ID containing the approval gate"),
-  nodeId: z.string().describe("Node ID of the approval gate"),
+});
+
+const approveOptions = z.object({
+  node: z.string().optional().describe("Node ID (required if multiple pending)"),
   iteration: z.number().int().min(0).default(0).describe("Loop iteration number"),
   note: z.string().optional().describe("Approval/denial note"),
-  decidedBy: z.string().optional().describe("Name or identifier of the approver"),
+  by: z.string().optional().describe("Name or identifier of the approver"),
 });
 
-const statusOptions = z.object({
-  runId: z.string().describe("Run ID to query"),
+const cancelArgs = z.object({
+  runId: z.string().describe("Run ID to cancel"),
 });
 
-const framesOptions = z.object({
-  runId: z.string().describe("Run ID to query"),
-  tail: z.number().int().min(1).default(20).describe("Number of recent frames to return"),
-  compact: z.boolean().default(false).describe("Omit full XML tree, show only task states"),
+const hijackArgs = z.object({
+  runId: z.string().describe("Run ID whose latest agent session should be hijacked"),
 });
 
-const listOptions = z.object({
-  limit: z.number().int().min(1).default(50).describe("Maximum runs to return"),
-  status: z.string().optional().describe("Filter by status: running, finished, failed, cancelled, waiting-approval"),
+const hijackOptions = z.object({
+  target: z.string().optional().describe("Expected agent engine (claude-code or codex)"),
+  timeoutMs: z.number().int().min(1).default(30_000).describe("How long to wait for a live run to hand off"),
+  launch: z.boolean().default(true).describe("Open the hijacked session immediately"),
 });
 
 const graphOptions = z.object({
   runId: z.string().default("graph").describe("Run ID for context"),
-  input: z.string().optional().describe("Input data as JSON (overrides persisted input)"),
+  input: z.string().optional().describe("Input data as JSON"),
 });
 
 const revertOptions = z.object({
   runId: z.string().describe("Run ID to revert"),
   nodeId: z.string().describe("Node ID to revert to"),
-  attempt: z.number().int().min(1).default(1).describe("Attempt number to revert to"),
+  attempt: z.number().int().min(1).default(1).describe("Attempt number"),
   iteration: z.number().int().min(0).default(0).describe("Loop iteration number"),
 });
 
-const cancelOptions = z.object({
-  runId: z.string().describe("Run ID to cancel"),
+const initOptions = z.object({
+  force: z.boolean().default(false).describe("Overwrite existing scaffold files"),
 });
 
-let commandExitOverride: number | undefined;
+const workflowPathArgs = z.object({
+  name: z.string().describe("Workflow ID"),
+});
 
-const cli = Cli.create({
-  name: "smithers",
-  description:
-    "Run, resume, approve, inspect, and revert Smithers workflows from the command line.",
-  version: readPackageVersion(),
-  format: "json",
+const workflowDoctorArgs = z.object({
+  name: z.string().optional().describe("Workflow ID"),
+});
+
+const workflowRunOptions = upOptions.extend({
+  prompt: z.string().optional().describe("Prompt text mapped to input.prompt when --input is omitted"),
+});
+
+type UpCommandOptions = z.infer<typeof upOptions>;
+type WorkflowRunCommandOptions = z.infer<typeof workflowRunOptions>;
+
+function normalizeWorkflowRunOptions(
+  options: WorkflowRunCommandOptions,
+): UpCommandOptions {
+  return {
+    ...options,
+    input:
+      options.input ??
+      (options.prompt !== undefined
+        ? JSON.stringify({ prompt: options.prompt })
+        : undefined),
+    root: options.root ?? ".",
+  };
+}
+
+async function executeUpCommand(
+  c: { ok: (...args: any[]) => any },
+  workflowPath: string,
+  options: UpCommandOptions,
+  fail: FailFn,
+) {
+  try {
+    const resolvedWorkflowPath = resolve(process.cwd(), workflowPath);
+    const input = parseJsonInput(options.input, "input", fail) ?? {};
+    const runId = options.runId;
+    const resume = Boolean(options.resume);
+
+    // Detached mode: spawn ourselves as a background process
+    if (options.detach) {
+      const cliPath = new URL(import.meta.url).pathname;
+      const childArgs = ["up", workflowPath];
+      if (runId) childArgs.push("--run-id", runId);
+      if (options.input) childArgs.push("--input", options.input);
+      if (options.maxConcurrency) childArgs.push("--max-concurrency", String(options.maxConcurrency));
+      if (options.root) childArgs.push("--root", options.root);
+      if (!options.log) childArgs.push("--no-log");
+      if (options.logDir) childArgs.push("--log-dir", options.logDir);
+      if (options.allowNetwork) childArgs.push("--allow-network");
+      if (options.maxOutputBytes) childArgs.push("--max-output-bytes", String(options.maxOutputBytes));
+      if (options.toolTimeoutMs) childArgs.push("--tool-timeout-ms", String(options.toolTimeoutMs));
+      if (options.hot) childArgs.push("--hot");
+      if (resume) childArgs.push("--resume");
+      if (options.force) childArgs.push("--force");
+      if (options.serve) childArgs.push("--serve");
+      if (options.serve && options.port !== 7331) childArgs.push("--port", String(options.port));
+      if (options.serve && options.host !== "127.0.0.1") childArgs.push("--host", options.host);
+      if (options.authToken) childArgs.push("--auth-token", options.authToken);
+      if (options.serve && !options.metrics) childArgs.push("--metrics", "false");
+
+      const logFileDir = options.logDir ?? dirname(resolvedWorkflowPath);
+      const effectiveRunId = runId ?? `run-${Date.now()}`;
+      const logFile = resolve(logFileDir, `${effectiveRunId}.log`);
+      if (!runId) childArgs.push("--run-id", effectiveRunId);
+
+      const fd = openSync(logFile, "a");
+      const child = spawn("bun", [cliPath, ...childArgs], {
+        detached: true,
+        stdio: ["ignore", fd, fd],
+        env: process.env,
+      });
+      child.unref();
+
+      return c.ok(
+        { runId: effectiveRunId, logFile, pid: child.pid },
+        {
+          cta: {
+            description: "Next steps:",
+            commands: [
+              { command: `logs ${effectiveRunId}`, description: "Tail run logs" },
+              { command: `chat ${effectiveRunId} --follow`, description: "Watch agent chat" },
+              { command: `ps`, description: "List all runs" },
+              { command: `inspect ${effectiveRunId}`, description: "Inspect run state" },
+            ],
+          },
+        },
+      );
+    }
+
+    if (options.hot) {
+      process.env.SMITHERS_HOT = "1";
+    }
+
+    const workflow = await loadWorkflow(workflowPath);
+    ensureSmithersTables(workflow.db as any);
+    if (options.hot) {
+      process.stderr.write(`[hot] Hot reload enabled\n`);
+    }
+    setupSqliteCleanup(workflow);
+
+    const adapter = new SmithersDb(workflow.db as any);
+
+    if (!resume) {
+      const staleRuns = await adapter.listRuns(10, "running");
+      if (staleRuns.length > 0) {
+        process.stderr.write(`⚠ Found ${staleRuns.length} run(s) still marked as 'running':\n`);
+        for (const r of staleRuns as any[]) {
+          process.stderr.write(`  ${r.runId} (started ${new Date(r.startedAtMs ?? r.createdAtMs).toISOString()})\n`);
+        }
+        process.stderr.write("  Use 'smithers cancel' to mark them as cancelled, or 'smithers up --resume' to continue.\n");
+      }
+    }
+
+    if (runId) {
+      const existing = await adapter.getRun(runId);
+      if (resume && !existing) {
+        return fail({ code: "RUN_NOT_FOUND", message: `Run not found: ${runId}`, exitCode: 4 });
+      }
+      if (resume && existing?.status === "running" && !options.force) {
+        return fail({ code: "RUN_STILL_RUNNING", message: `Run is still marked running: ${runId}. Use --force to resume anyway.`, exitCode: 4 });
+      }
+      if (!resume && existing) {
+        return fail({ code: "RUN_EXISTS", message: `Run already exists: ${runId}`, exitCode: 4 });
+      }
+    }
+
+    const rootDir = options.root ? resolve(process.cwd(), options.root) : dirname(resolvedWorkflowPath);
+    const logDir = options.log ? options.logDir : null;
+    const onProgress = buildProgressReporter();
+    const abort = setupAbortSignal();
+
+    if (options.serve) {
+      const { createServeApp } = await import("../server/serve");
+      const effectiveRunId = runId ?? `run-${Date.now()}`;
+      const serveApp = createServeApp({
+        workflow: workflow!,
+        adapter: adapter!,
+        runId: effectiveRunId,
+        abort,
+        authToken: options.authToken ?? process.env.SMITHERS_API_KEY,
+        metrics: options.metrics,
+      });
+
+      const bunServer = Bun.serve({
+        port: options.port,
+        hostname: options.host,
+        fetch: serveApp.fetch,
+      });
+
+      process.stderr.write(
+        `[smithers] HTTP server listening on http://${options.host}:${bunServer.port}\n`,
+      );
+
+      const workflowPromise = runWorkflow(workflow!, {
+        input,
+        runId: effectiveRunId,
+        resume,
+        workflowPath: resolvedWorkflowPath,
+        maxConcurrency: options.maxConcurrency,
+        rootDir,
+        logDir,
+        allowNetwork: options.allowNetwork,
+        maxOutputBytes: options.maxOutputBytes,
+        toolTimeoutMs: options.toolTimeoutMs,
+        hot: options.hot,
+        onProgress,
+        signal: abort.signal,
+      });
+
+      workflowPromise.then((result) => {
+        process.stderr.write(
+          `[smithers] Workflow ${result.status}. Server still running — press Ctrl+C to stop.\n`,
+        );
+      }).catch((err) => {
+        process.stderr.write(
+          `[smithers] Workflow error: ${err?.message ?? String(err)}. Server still running.\n`,
+        );
+      });
+
+      const result = await new Promise<any>((resolvePromise) => {
+        const shutdown = async () => {
+          abort.abort();
+          bunServer.stop(true);
+          try {
+            const r = await workflowPromise;
+            resolvePromise(r);
+          } catch {
+            resolvePromise({ runId: effectiveRunId, status: "cancelled" });
+          }
+        };
+        process.once("SIGINT", () => shutdown());
+        process.once("SIGTERM", () => shutdown());
+      });
+
+      process.exitCode = formatStatusExitCode(result.status);
+      return c.ok(result, {
+        cta: result.runId ? {
+          description: "Next steps:",
+          commands: [
+            { command: `inspect ${result.runId}`, description: "Inspect run state" },
+            { command: `logs ${result.runId}`, description: "View run logs" },
+            { command: `chat ${result.runId}`, description: "View agent chat" },
+          ],
+        } : undefined,
+      });
+    }
+
+    const result = await runWorkflow(workflow!, {
+      input,
+      runId,
+      resume,
+      workflowPath: resolvedWorkflowPath,
+      maxConcurrency: options.maxConcurrency,
+      rootDir,
+      logDir,
+      allowNetwork: options.allowNetwork,
+      maxOutputBytes: options.maxOutputBytes,
+      toolTimeoutMs: options.toolTimeoutMs,
+      hot: options.hot,
+      onProgress,
+      signal: abort.signal,
+    });
+
+    process.exitCode = formatStatusExitCode(result.status);
+    return c.ok(result, {
+      cta: result.runId ? {
+        description: "Next steps:",
+        commands: [
+          { command: `inspect ${result.runId}`, description: "Inspect run state" },
+          { command: `logs ${result.runId}`, description: "View run logs" },
+          { command: `chat ${result.runId}`, description: "View agent chat" },
+        ],
+      } : undefined,
+    });
+  } catch (err: any) {
+    return fail({ code: "RUN_FAILED", message: err?.message ?? String(err), exitCode: 1 });
+  }
+}
+
+const workflowCli = Cli.create({
+  name: "workflow",
+  description: "Discover local workflows from .smithers/workflows.",
 })
   .command("run", {
-    description: "Execute a workflow from a .tsx or .toon file.",
-    args: workflowArgs,
-    options: runOptions,
-    alias: { runId: "r", input: "i", maxConcurrency: "c" },
-    async run({ args, options, ok, error }) {
+    description: "Run a discovered workflow by ID.",
+    args: workflowPathArgs,
+    options: workflowRunOptions,
+    alias: { detach: "d", runId: "r", input: "i", maxConcurrency: "c", prompt: "p" },
+    async run(c) {
       const fail: FailFn = (opts) => {
         commandExitOverride = opts.exitCode ?? 1;
-        return error(opts);
+        return c.error(opts);
       };
-
       try {
-        const workflowPath = args.workflow;
-        const resolvedWorkflowPath = resolve(process.cwd(), workflowPath);
-        const isToon = extname(resolvedWorkflowPath) === ".toon";
-        const input = parseJsonInput(options.input, "input", fail) ?? {};
-        const runId = options.runId;
-        const resume = Boolean(options.resume);
-
-        if (options.hot) {
-          process.env.SMITHERS_HOT = "1";
-        }
-
-        let workflow: SmithersWorkflow<any> | null = null;
-        if (!isToon) {
-          workflow = await loadWorkflow(workflowPath);
-          ensureSmithersTables(workflow.db as any);
-          if (options.hot) {
-            process.stderr.write(`[hot] Hot reload enabled\n`);
-          }
-          setupSqliteCleanup(workflow);
-        }
-
-        if (resume && !runId) {
+        const workflow = resolveWorkflow(c.args.name, process.cwd());
+        return executeUpCommand(
+          c,
+          workflow.entryFile,
+          normalizeWorkflowRunOptions(c.options),
+          fail,
+        );
+      } catch (err: any) {
+        if (err instanceof SmithersError) {
           return fail({
-            code: "MISSING_RUN_ID",
-            message: "Missing --run-id for resume",
+            code: err.code,
+            message: err.message,
             exitCode: 4,
           });
         }
-
-        const adapter = workflow ? new SmithersDb(workflow.db as any) : null;
-
-        if (!resume && adapter) {
-          const staleRuns = await adapter.listRuns(10, "running");
-          if (staleRuns.length > 0) {
-            process.stderr.write(
-              `⚠ Found ${staleRuns.length} run(s) still marked as 'running':\n`,
-            );
-            for (const r of staleRuns as any[]) {
-              process.stderr.write(
-                `  ${r.runId} (started ${new Date(r.startedAtMs ?? r.createdAtMs).toISOString()})\n`,
-              );
-            }
-            process.stderr.write(
-              "  Use 'smithers cancel' to mark them as cancelled, or 'smithers resume' to continue.\n",
-            );
-          }
-        }
-
-        if (runId && adapter) {
-          const existing = await adapter.getRun(runId);
-          if (resume && !existing) {
-            return fail({
-              code: "RUN_NOT_FOUND",
-              message: `Run not found: ${runId}`,
-              exitCode: 4,
-            });
-          }
-          if (resume && existing?.status === "running") {
-            return fail({
-              code: "RUN_STILL_RUNNING",
-              message: `Run is still marked running: ${runId}. Use --force to resume anyway.`,
-              exitCode: 4,
-            });
-          }
-          if (!resume && existing) {
-            return fail({
-              code: "RUN_EXISTS",
-              message: `Run already exists: ${runId}`,
-              exitCode: 4,
-            });
-          }
-        }
-
-        const rootDir = options.root
-          ? resolve(process.cwd(), options.root)
-          : dirname(resolvedWorkflowPath);
-        const logDir = options.log ? options.logDir : null;
-        const onProgress = buildProgressReporter();
-        const abort = setupAbortSignal();
-
-        if (isToon) {
-          const dbPath = resolve(dirname(resolvedWorkflowPath), "smithers.db");
-          const toonWorkflow = Smithers.loadToon(workflowPath);
-          const result = await runPromise(
-            toonWorkflow
-              .execute(input, {
-                runId,
-                resume,
-                workflowPath: resolvedWorkflowPath,
-                maxConcurrency: options.maxConcurrency,
-                rootDir,
-                logDir,
-                allowNetwork: options.allowNetwork,
-                maxOutputBytes: options.maxOutputBytes,
-                toolTimeoutMs: options.toolTimeoutMs,
-                hot: options.hot,
-                onProgress,
-                signal: abort.signal,
-              })
-              .pipe(Effect.provide(Smithers.sqlite({ filename: dbPath }))),
-          );
-          const status = (result as any)?.status;
-          process.exitCode = formatStatusExitCode(
-            typeof status === "string" ? status : undefined,
-          );
-          return ok(result);
-        }
-
-        const result = await runWorkflow(workflow!, {
-          input,
-          runId,
-          resume,
-          workflowPath: resolvedWorkflowPath,
-          maxConcurrency: options.maxConcurrency,
-          rootDir,
-          logDir,
-          allowNetwork: options.allowNetwork,
-          maxOutputBytes: options.maxOutputBytes,
-          toolTimeoutMs: options.toolTimeoutMs,
-          hot: options.hot,
-          onProgress,
-          signal: abort.signal,
-        });
-
-        process.exitCode = formatStatusExitCode(result.status);
-        return ok(result);
-      } catch (err: any) {
         return fail({
-          code: "RUN_FAILED",
-          message: err?.message ?? String(err),
-          exitCode: 1,
-        });
-      }
-    },
-  })
-  .command("resume", {
-    description: "Resume a paused or crashed run.",
-    args: workflowArgs,
-    options: resumeOptions,
-    alias: { runId: "r", maxConcurrency: "c" },
-    async run({ args, options, ok, error }) {
-      const fail: FailFn = (opts) => {
-        commandExitOverride = opts.exitCode ?? 1;
-        return error(opts);
-      };
-
-      try {
-        const workflowPath = args.workflow;
-        const resolvedWorkflowPath = resolve(process.cwd(), workflowPath);
-        const isToon = extname(resolvedWorkflowPath) === ".toon";
-        const input = parseJsonInput(options.input, "input", fail) ?? {};
-        const runId = options.runId;
-
-        if (options.hot) {
-          process.env.SMITHERS_HOT = "1";
-        }
-
-        let workflow: SmithersWorkflow<any> | null = null;
-        if (!isToon) {
-          workflow = await loadWorkflow(workflowPath);
-          ensureSmithersTables(workflow.db as any);
-          if (options.hot) {
-            process.stderr.write(`[hot] Hot reload enabled\n`);
-          }
-          setupSqliteCleanup(workflow);
-        }
-
-        const adapter = workflow ? new SmithersDb(workflow.db as any) : null;
-        if (adapter) {
-          const existing = await adapter.getRun(runId);
-          if (!existing) {
-            return fail({
-              code: "RUN_NOT_FOUND",
-              message: `Run not found: ${runId}`,
-              exitCode: 4,
-            });
-          }
-          if (existing?.status === "running" && !options.force) {
-            return fail({
-              code: "RUN_STILL_RUNNING",
-              message: `Run is still marked running: ${runId}. Use --force to resume anyway.`,
-              exitCode: 4,
-            });
-          }
-        }
-
-        const rootDir = options.root
-          ? resolve(process.cwd(), options.root)
-          : dirname(resolvedWorkflowPath);
-        const logDir = options.log ? options.logDir : null;
-        const onProgress = buildProgressReporter();
-        const abort = setupAbortSignal();
-
-        if (isToon) {
-          const dbPath = resolve(dirname(resolvedWorkflowPath), "smithers.db");
-          const toonWorkflow = Smithers.loadToon(workflowPath);
-          const result = await runPromise(
-            toonWorkflow
-              .execute(input, {
-                runId,
-                resume: true,
-                workflowPath: resolvedWorkflowPath,
-                maxConcurrency: options.maxConcurrency,
-                rootDir,
-                logDir,
-                allowNetwork: options.allowNetwork,
-                maxOutputBytes: options.maxOutputBytes,
-                toolTimeoutMs: options.toolTimeoutMs,
-                hot: options.hot,
-                onProgress,
-                signal: abort.signal,
-              })
-              .pipe(Effect.provide(Smithers.sqlite({ filename: dbPath }))),
-          );
-          const status = (result as any)?.status;
-          process.exitCode = formatStatusExitCode(
-            typeof status === "string" ? status : undefined,
-          );
-          return ok(result);
-        }
-
-        const result = await runWorkflow(workflow!, {
-          input,
-          runId,
-          resume: true,
-          workflowPath: resolvedWorkflowPath,
-          maxConcurrency: options.maxConcurrency,
-          rootDir,
-          logDir,
-          allowNetwork: options.allowNetwork,
-          maxOutputBytes: options.maxOutputBytes,
-          toolTimeoutMs: options.toolTimeoutMs,
-          hot: options.hot,
-          onProgress,
-          signal: abort.signal,
-        });
-
-        process.exitCode = formatStatusExitCode(result.status);
-        return ok(result);
-      } catch (err: any) {
-        return fail({
-          code: "RESUME_FAILED",
-          message: err?.message ?? String(err),
-          exitCode: 1,
-        });
-      }
-    },
-  })
-  .command("approve", {
-    description: "Approve a task that requires human approval.",
-    args: workflowArgs,
-    options: approvalOptions,
-    alias: { runId: "r", nodeId: "n" },
-    async run({ args, options, ok, error }) {
-      const fail: FailFn = (opts) => {
-        commandExitOverride = opts.exitCode ?? 1;
-        return error(opts);
-      };
-      try {
-        const { adapter, cleanup } = await loadWorkflowDb(args.workflow);
-        try {
-          await approveNode(
-            adapter,
-            options.runId,
-            options.nodeId,
-            options.iteration,
-            options.note,
-            options.decidedBy,
-          );
-          return ok({
-            runId: options.runId,
-            nodeId: options.nodeId,
-            status: "approve",
-          });
-        } finally {
-          cleanup?.();
-        }
-      } catch (err: any) {
-        return fail({
-          code: "APPROVE_FAILED",
-          message: err?.message ?? String(err),
-          exitCode: 1,
-        });
-      }
-    },
-  })
-  .command("deny", {
-    description: "Deny a task approval.",
-    args: workflowArgs,
-    options: approvalOptions,
-    alias: { runId: "r", nodeId: "n" },
-    async run({ args, options, ok, error }) {
-      const fail: FailFn = (opts) => {
-        commandExitOverride = opts.exitCode ?? 1;
-        return error(opts);
-      };
-      try {
-        const { adapter, cleanup } = await loadWorkflowDb(args.workflow);
-        try {
-          await denyNode(
-            adapter,
-            options.runId,
-            options.nodeId,
-            options.iteration,
-            options.note,
-            options.decidedBy,
-          );
-          return ok({
-            runId: options.runId,
-            nodeId: options.nodeId,
-            status: "deny",
-          });
-        } finally {
-          cleanup?.();
-        }
-      } catch (err: any) {
-        return fail({
-          code: "DENY_FAILED",
-          message: err?.message ?? String(err),
-          exitCode: 1,
-        });
-      }
-    },
-  })
-  .command("status", {
-    description: "Print the current status of a run as JSON.",
-    args: workflowArgs,
-    options: statusOptions,
-    alias: { runId: "r" },
-    async run({ args, options, ok, error }) {
-      const fail: FailFn = (opts) => {
-        commandExitOverride = opts.exitCode ?? 1;
-        return error(opts);
-      };
-      try {
-        const { adapter, cleanup } = await loadWorkflowDb(args.workflow);
-        try {
-          const run = await adapter.getRun(options.runId);
-          return ok(run);
-        } finally {
-          cleanup?.();
-        }
-      } catch (err: any) {
-        return fail({
-          code: "STATUS_FAILED",
-          message: err?.message ?? String(err),
-          exitCode: 1,
-        });
-      }
-    },
-  })
-  .command("frames", {
-    description: "List render frames for a run.",
-    args: workflowArgs,
-    options: framesOptions,
-    alias: { runId: "r", tail: "t" },
-    async run({ args, options, ok, error }) {
-      const fail: FailFn = (opts) => {
-        commandExitOverride = opts.exitCode ?? 1;
-        return error(opts);
-      };
-      try {
-        const { adapter, cleanup } = await loadWorkflowDb(args.workflow);
-        try {
-          const frames = await adapter.listFrames(options.runId, options.tail);
-          if (!options.compact) return ok(frames);
-          const compact = frames.map((frame: any) => {
-            const result: Record<string, any> = {
-              frameNo: frame.frameNo,
-              createdAtMs: frame.createdAtMs,
-            };
-            if (frame.taskIndexJson) {
-              try {
-                result.tasks = JSON.parse(frame.taskIndexJson);
-              } catch {}
-            }
-            if (frame.mountedTaskIdsJson) {
-              try {
-                result.mountedTaskIds = JSON.parse(frame.mountedTaskIdsJson);
-              } catch {}
-            }
-            return result;
-          });
-          return ok(compact);
-        } finally {
-          cleanup?.();
-        }
-      } catch (err: any) {
-        return fail({
-          code: "FRAMES_FAILED",
+          code: "WORKFLOW_RUN_FAILED",
           message: err?.message ?? String(err),
           exitCode: 1,
         });
@@ -689,63 +605,1166 @@ const cli = Cli.create({
     },
   })
   .command("list", {
-    description: "List workflow runs stored in the database.",
-    args: workflowArgs,
-    options: listOptions,
-    alias: { limit: "l", status: "s" },
-    async run({ args, options, ok, error }) {
+    description: "List discovered local workflows.",
+    run(c) {
+      return c.ok({
+        workflows: discoverWorkflows(process.cwd()),
+      });
+    },
+  })
+  .command("path", {
+    description: "Resolve a workflow ID to its entry file.",
+    args: workflowPathArgs,
+    run(c) {
+      const workflow = resolveWorkflow(c.args.name, process.cwd());
+      return c.ok({
+        id: workflow.id,
+        path: workflow.entryFile,
+        sourceType: workflow.sourceType,
+      });
+    },
+  })
+  .command("create", {
+    description: "Create a new flat workflow scaffold in .smithers/workflows.",
+    args: workflowPathArgs,
+    run(c) {
       const fail: FailFn = (opts) => {
         commandExitOverride = opts.exitCode ?? 1;
-        return error(opts);
+        return c.error(opts);
       };
       try {
-        const { adapter, cleanup } = await loadWorkflowDb(args.workflow);
-        try {
-          const runs = await adapter.listRuns(options.limit, options.status);
-          return ok(runs);
-        } finally {
-          cleanup?.();
-        }
+        return c.ok(createWorkflowFile(c.args.name, process.cwd()));
       } catch (err: any) {
+        if (err instanceof SmithersError) {
+          return fail({
+            code: err.code,
+            message: err.message,
+            exitCode: 4,
+          });
+        }
         return fail({
-          code: "LIST_FAILED",
+          code: "WORKFLOW_CREATE_FAILED",
           message: err?.message ?? String(err),
           exitCode: 1,
         });
       }
     },
   })
+  .command("doctor", {
+    description: "Inspect workflow discovery, preload files, and detected agents.",
+    args: workflowDoctorArgs,
+    run(c) {
+      const workflows = c.args.name
+        ? [resolveWorkflow(c.args.name, process.cwd())]
+        : discoverWorkflows(process.cwd());
+      const workflowRoot = resolve(process.cwd(), ".smithers");
+      return c.ok({
+        workflowRoot,
+        workflows,
+        preload: {
+          path: resolve(workflowRoot, "preload.ts"),
+          exists: existsSync(resolve(workflowRoot, "preload.ts")),
+        },
+        bunfig: {
+          path: resolve(workflowRoot, "bunfig.toml"),
+          exists: existsSync(resolve(workflowRoot, "bunfig.toml")),
+        },
+        agents: detectAvailableAgents(),
+      });
+    },
+  });
+
+const cronPathArgs = z.object({
+  pattern: z.string().describe("Cron execution pattern (e.g. '0 * * * *')"),
+  workflowPath: z.string().describe("Path or ID of the workflow to schedule"),
+});
+
+const cronCli = Cli.create({
+  name: "cron",
+  description: "Manage and run background schedule triggers.",
+})
+  .command("start", {
+    description: "Start the background scheduler loop in the current terminal.",
+    async run(c) {
+      await runScheduler();
+      return c.ok({ status: "running" });
+    },
+  })
+  .command("add", {
+    description: "Register a new workflow cron schedule.",
+    args: cronPathArgs,
+    async run(c) {
+      const { adapter, cleanup } = await findAndOpenDb();
+      try {
+        const cronId = crypto.randomUUID();
+        await adapter.upsertCron({
+          cronId,
+          pattern: c.args.pattern,
+          workflowPath: c.args.workflowPath,
+          enabled: true,
+          createdAtMs: Date.now(),
+          lastRunAtMs: null,
+          nextRunAtMs: null,
+          errorJson: null,
+        });
+        console.log(`[+] Scheduled ${c.args.workflowPath} with pattern '${c.args.pattern}'`);
+        return c.ok({ cronId, pattern: c.args.pattern, workflowPath: c.args.workflowPath });
+      } finally {
+        cleanup();
+      }
+    },
+  })
+  .command("list", {
+    description: "List all registered background cron schedules.",
+    async run(c) {
+      const { adapter, cleanup } = await findAndOpenDb();
+      try {
+        const crons = await adapter.listCrons(false);
+        return c.ok({ crons });
+      } finally {
+        cleanup();
+      }
+    },
+  })
+  .command("rm", {
+    description: "Delete an existing cron schedule by ID.",
+    args: z.object({ cronId: z.string().describe("Cron ID to delete") }),
+    async run(c) {
+      const { adapter, cleanup } = await findAndOpenDb();
+      try {
+        await adapter.deleteCron(c.args.cronId);
+        console.log(`[-] Deleted cron ${c.args.cronId}`);
+        return c.ok({ deleted: c.args.cronId });
+      } finally {
+        cleanup();
+      }
+    },
+  });
+
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
+
+let commandExitOverride: number | undefined;
+
+const cli = Cli.create({
+  name: "smithers",
+  description: "Durable AI workflow orchestrator. Run, monitor, and manage workflow executions.",
+  version: readPackageVersion(),
+  format: "toon",
+})
+
+  // =========================================================================
+  // smithers init
+  // =========================================================================
+  .command("init", {
+    description: "Install the local Smithers workflow pack into .smithers/.",
+    options: initOptions,
+    run(c) {
+      const fail: FailFn = (opts) => {
+        commandExitOverride = opts.exitCode ?? 1;
+        return c.error(opts);
+      };
+      try {
+        return c.ok(initWorkflowPack({ force: c.options.force }));
+      } catch (err: any) {
+        if (err instanceof SmithersError) {
+          return fail({
+            code: err.code,
+            message: err.message,
+            exitCode: 4,
+          });
+        }
+        return fail({
+          code: "INIT_FAILED",
+          message: err?.message ?? String(err),
+          exitCode: 1,
+        });
+      }
+    },
+  })
+
+  // =========================================================================
+  // smithers up [workflow]
+  // =========================================================================
+  .command("up", {
+    description: "Start a workflow execution. Use -d for detached (background) mode.",
+    args: workflowArgs,
+    options: upOptions,
+    alias: { detach: "d", runId: "r", input: "i", maxConcurrency: "c" },
+    async run(c) {
+      const fail: FailFn = (opts) => {
+        commandExitOverride = opts.exitCode ?? 1;
+        return c.error(opts);
+      };
+      return executeUpCommand(c, c.args.workflow, c.options, fail);
+    },
+  })
+
+  // =========================================================================
+  // smithers tui
+  // =========================================================================
+  .command("tui", {
+    description: "Open the interactive Smithers observability dashboard",
+    async run(c) {
+      const fail: FailFn = (opts) => {
+        commandExitOverride = opts.exitCode ?? 1;
+        return c.error(opts);
+      };
+      let cleanup: (() => void) | undefined;
+      let renderer: any;
+      try {
+        const db = await findAndOpenDb();
+        const adapter = db.adapter;
+        cleanup = db.cleanup;
+
+        const { createCliRenderer } = await import("@opentui/core");
+        const { createRoot } = await import("@opentui/react");
+        const { TuiApp } = await import("./tui/app.js");
+        const React = await import("react");
+
+        renderer = await createCliRenderer({ exitOnCtrlC: false });
+        const root = createRoot(renderer);
+        
+        await new Promise((resolve) => {
+          root.render(
+            React.createElement(TuiApp, {
+              adapter,
+              onExit: () => resolve(true),
+            })
+          );
+        });
+
+        return c.ok(undefined);
+      } catch (err: any) {
+        return fail({ code: "TUI_FAILED", message: err?.message ?? String(err), exitCode: 1 });
+      } finally {
+        if (renderer) renderer.destroy();
+        cleanup?.();
+      }
+    }
+  })
+
+  // =========================================================================
+  // smithers ps
+  // =========================================================================
+  .command("ps", {
+    description: "List active, paused, and recently completed runs.",
+    options: psOptions,
+    alias: { status: "s", limit: "l", all: "a" },
+    async run(c) {
+      const fail: FailFn = (opts) => {
+        commandExitOverride = opts.exitCode ?? 1;
+        return c.error(opts);
+      };
+      try {
+        const { adapter, cleanup } = await findAndOpenDb();
+        try {
+          const runs = await adapter.listRuns(c.options.limit, c.options.status);
+          const rows: any[] = [];
+          for (const run of runs as any[]) {
+            const nodes = await adapter.listNodes(run.runId);
+            const activeNode = (nodes as any[]).find((n: any) => n.state === "in-progress");
+            rows.push({
+              id: run.runId,
+              workflow: run.workflowName ?? (run.workflowPath ? basename(run.workflowPath) : "—"),
+              status: run.status,
+              step: activeNode?.label ?? activeNode?.nodeId ?? "—",
+              started: run.startedAtMs ? formatAge(run.startedAtMs) : run.createdAtMs ? formatAge(run.createdAtMs) : "—",
+            });
+          }
+
+          // Build CTAs based on what's available
+          const ctaCommands: any[] = [];
+          const firstActive = rows.find((r) => r.status === "running");
+          const firstWaiting = rows.find((r) => r.status === "waiting-approval");
+          if (firstActive) {
+            ctaCommands.push({ command: `logs ${firstActive.id}`, description: "Tail active run" });
+            ctaCommands.push({ command: `chat ${firstActive.id} --follow`, description: "Watch agent chat" });
+          }
+          if (firstWaiting) {
+            ctaCommands.push({ command: `approve ${firstWaiting.id}`, description: "Approve waiting run" });
+          }
+          if (rows.length > 0) {
+            ctaCommands.push({ command: `inspect ${rows[0].id}`, description: "Inspect most recent run" });
+          }
+
+          return c.ok(
+            { runs: rows },
+            ctaCommands.length > 0 ? { cta: { commands: ctaCommands } } : undefined,
+          );
+        } finally {
+          cleanup();
+        }
+      } catch (err: any) {
+        return fail({ code: "PS_FAILED", message: err?.message ?? String(err), exitCode: 1 });
+      }
+    },
+  })
+
+  // =========================================================================
+  // smithers logs <run_id>
+  // =========================================================================
+  .command("logs", {
+    description: "Tail the event log of a specific run.",
+    args: z.object({ runId: z.string().describe("Run ID to tail") }),
+    options: logsOptions,
+    alias: { follow: "f", tail: "n" },
+    async *run(c) {
+      let adapter: SmithersDb | undefined;
+      let cleanup: (() => void) | undefined;
+      try {
+        const db = await findAndOpenDb();
+        adapter = db.adapter;
+        cleanup = db.cleanup;
+
+        const run = await adapter.getRun(c.args.runId);
+        if (!run) {
+          yield `Error: Run not found: ${c.args.runId}`;
+          return;
+        }
+
+        const baseMs = (run as any).startedAtMs ?? (run as any).createdAtMs ?? Date.now();
+        let lastSeq = c.options.since ?? -1;
+
+        // If --since not specified, get recent events to show tail
+        if (c.options.since === undefined) {
+          const lastEventSeq = await adapter.getLastEventSeq(c.args.runId);
+          if (lastEventSeq !== undefined) {
+            lastSeq = Math.max(-1, lastEventSeq - c.options.tail);
+          }
+        }
+
+        // Dump existing events
+        const initialEvents = await adapter.listEvents(c.args.runId, lastSeq, 1000);
+        for (const event of initialEvents as any[]) {
+          yield formatEventLine(event, baseMs);
+          lastSeq = event.seq;
+        }
+
+        // If not following, or run already done, stop
+        const isActive = (run as any).status === "running" || (run as any).status === "waiting-approval";
+        if (!c.options.follow || !isActive) {
+          return c.ok(undefined, {
+            cta: {
+              commands: [
+                { command: `inspect ${c.args.runId}`, description: "Inspect run state" },
+              ],
+            },
+          });
+        }
+
+        // Poll for new events
+        while (true) {
+          await new Promise((r) => setTimeout(r, 500));
+
+          const newEvents = await adapter.listEvents(c.args.runId, lastSeq, 200);
+          for (const event of newEvents as any[]) {
+            yield formatEventLine(event, baseMs);
+            lastSeq = event.seq;
+          }
+
+          // Check if run is still active
+          const currentRun = await adapter.getRun(c.args.runId);
+          const currentStatus = (currentRun as any)?.status;
+          if (currentStatus !== "running" && currentStatus !== "waiting-approval") {
+            // Drain remaining events
+            const finalEvents = await adapter.listEvents(c.args.runId, lastSeq, 1000);
+            for (const event of finalEvents as any[]) {
+              yield formatEventLine(event, baseMs);
+              lastSeq = event.seq;
+            }
+
+            const ctaCommands: any[] = [
+              { command: `inspect ${c.args.runId}`, description: "Inspect run state" },
+            ];
+            if (currentStatus === "waiting-approval") {
+              ctaCommands.push({ command: `approve ${c.args.runId}`, description: "Approve run" });
+            }
+            return c.ok(undefined, { cta: { commands: ctaCommands } });
+          }
+        }
+      } finally {
+        cleanup?.();
+      }
+    },
+  })
+
+  // =========================================================================
+  // smithers chat [run_id]
+  // =========================================================================
+  .command("chat", {
+    description: "Show agent chat output for the latest run or a specific run.",
+    args: chatArgs,
+    options: chatOptions,
+    alias: { follow: "f", tail: "n", all: "a" },
+    async *run(c) {
+      let cleanup: (() => void) | undefined;
+      try {
+        const db = await findAndOpenDb();
+        const adapter = db.adapter;
+        cleanup = db.cleanup;
+
+        let run: any | undefined;
+        if (c.args.runId) {
+          run = await adapter.getRun(c.args.runId);
+        } else {
+          const latestRuns = await adapter.listRuns(1);
+          run = (latestRuns as any[])[0];
+        }
+
+        if (!run) {
+          yield c.args.runId
+            ? `Error: Run not found: ${c.args.runId}`
+            : "Error: No runs found.";
+          return;
+        }
+
+        const runId = run.runId;
+        const baseMs = (run as any).startedAtMs ?? (run as any).createdAtMs ?? Date.now();
+        const printedHeaders = new Set<string>();
+        const emittedBlockIds = new Set<string>();
+        const stdoutSeenAttempts = new Set<string>();
+        const selectedAttemptKeys = new Set<string>();
+
+        const attemptByKey = new Map<string, any>();
+        const knownOutputAttemptKeys = new Set<string>();
+
+        const renderLines = (blocks: Array<{ attemptKey: string; blockId: string; timestampMs: number; text: string }>) => {
+          const lines: string[] = [];
+          for (const block of blocks) {
+            if (emittedBlockIds.has(block.blockId)) continue;
+            emittedBlockIds.add(block.blockId);
+            const attempt = attemptByKey.get(block.attemptKey);
+            if (!attempt) continue;
+            if (!printedHeaders.has(block.attemptKey)) {
+              if (lines.length > 0) lines.push("");
+              lines.push(formatChatAttemptHeader(attempt));
+              printedHeaders.add(block.attemptKey);
+            }
+            lines.push(block.text);
+          }
+          return lines;
+        };
+
+        const buildPromptBlock = (attempt: any) => {
+          const attemptKey = chatAttemptKey(attempt);
+          const meta = parseChatAttemptMeta(attempt.metaJson);
+          const prompt = typeof meta.prompt === "string" ? meta.prompt.trim() : "";
+          if (!prompt) return null;
+          return {
+            attemptKey,
+            blockId: `prompt:${attemptKey}`,
+            timestampMs: attempt.startedAtMs ?? baseMs,
+            text: formatChatBlock({
+              baseMs,
+              timestampMs: attempt.startedAtMs ?? baseMs,
+              role: "user",
+              attempt,
+              text: prompt,
+            }),
+          };
+        };
+
+        const buildOutputBlock = (event: ReturnType<typeof parseNodeOutputEvent>) => {
+          if (!event) return null;
+          const attemptKey = chatAttemptKey(event);
+          if (!selectedAttemptKeys.has(attemptKey)) return null;
+          if (event.stream === "stderr" && !c.options.stderr) return null;
+          if (event.stream === "stdout") {
+            stdoutSeenAttempts.add(attemptKey);
+          }
+          return {
+            attemptKey,
+            blockId: `event:${event.seq}`,
+            timestampMs: event.timestampMs,
+            text: formatChatBlock({
+              baseMs,
+              timestampMs: event.timestampMs,
+              role: event.stream === "stderr" ? "stderr" : "assistant",
+              attempt: event,
+              text: event.text,
+            }),
+          };
+        };
+
+        const buildFallbackBlock = (attempt: any) => {
+          const attemptKey = chatAttemptKey(attempt);
+          const responseText = typeof attempt.responseText === "string"
+            ? attempt.responseText.trim()
+            : "";
+          if (!responseText || stdoutSeenAttempts.has(attemptKey)) return null;
+          return {
+            attemptKey,
+            blockId: `response:${attemptKey}`,
+            timestampMs: attempt.finishedAtMs ?? attempt.startedAtMs ?? baseMs,
+            text: formatChatBlock({
+              baseMs,
+              timestampMs: attempt.finishedAtMs ?? attempt.startedAtMs ?? baseMs,
+              role: "assistant",
+              attempt,
+              text: responseText,
+            }),
+          };
+        };
+
+        const syncAttempts = (attempts: any[]) => {
+          for (const attempt of attempts) {
+            attemptByKey.set(chatAttemptKey(attempt), attempt);
+          }
+          const selected = selectChatAttempts(
+            attempts,
+            knownOutputAttemptKeys,
+            c.options.all,
+          );
+          if (c.options.all || selectedAttemptKeys.size === 0) {
+            for (const attempt of selected) {
+              selectedAttemptKeys.add(chatAttemptKey(attempt));
+            }
+          }
+          return selected;
+        };
+
+        const initialAttempts = await adapter.listAttemptsForRun(runId);
+        syncAttempts(initialAttempts as any[]);
+
+        const initialEvents = await listAllEvents(adapter, runId);
+        const parsedInitialOutputs = (initialEvents as any[])
+          .map((event) => parseNodeOutputEvent(event))
+          .filter(Boolean) as Array<NonNullable<ReturnType<typeof parseNodeOutputEvent>>>;
+
+        for (const event of parsedInitialOutputs) {
+          knownOutputAttemptKeys.add(chatAttemptKey(event));
+        }
+
+        const selectedInitialAttempts = syncAttempts(initialAttempts as any[]);
+        const initialBlocks: Array<{ attemptKey: string; blockId: string; timestampMs: number; text: string }> = [];
+
+        for (const attempt of selectedInitialAttempts) {
+          const promptBlock = buildPromptBlock(attempt);
+          if (promptBlock) initialBlocks.push(promptBlock);
+        }
+
+        for (const event of parsedInitialOutputs) {
+          const block = buildOutputBlock(event);
+          if (block) initialBlocks.push(block);
+        }
+
+        for (const attempt of selectedInitialAttempts) {
+          const fallbackBlock = buildFallbackBlock(attempt);
+          if (fallbackBlock) initialBlocks.push(fallbackBlock);
+        }
+
+        initialBlocks.sort((a, b) => {
+          if (a.timestampMs !== b.timestampMs) return a.timestampMs - b.timestampMs;
+          return a.blockId.localeCompare(b.blockId);
+        });
+
+        const visibleInitialBlocks = c.options.tail
+          ? initialBlocks.slice(-c.options.tail)
+          : initialBlocks;
+
+        const initialLines = renderLines(visibleInitialBlocks);
+        for (const line of initialLines) {
+          yield line;
+        }
+
+        if (selectedAttemptKeys.size === 0 && !c.options.follow) {
+          yield `No agent chat logs found for run: ${runId}`;
+          return;
+        }
+
+        let lastSeq = (initialEvents as any[]).length > 0
+          ? (initialEvents as any[])[(initialEvents as any[]).length - 1]!.seq
+          : -1;
+
+        if (!c.options.follow) {
+          return c.ok(undefined, {
+            cta: {
+              commands: [
+                { command: `inspect ${runId}`, description: "Inspect run state" },
+                { command: `logs ${runId}`, description: "Tail lifecycle events" },
+              ],
+            },
+          });
+        }
+
+        while (true) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+
+          const attempts = await adapter.listAttemptsForRun(runId);
+          syncAttempts(attempts as any[]);
+
+          const newRows = await adapter.listEvents(runId, lastSeq, 200);
+          const newBlocks: Array<{ attemptKey: string; blockId: string; timestampMs: number; text: string }> = [];
+
+          for (const eventRow of newRows as any[]) {
+            lastSeq = eventRow.seq;
+            const parsed = parseNodeOutputEvent(eventRow);
+            if (!parsed) continue;
+            knownOutputAttemptKeys.add(chatAttemptKey(parsed));
+            if (c.options.all || selectedAttemptKeys.size === 0) {
+              syncAttempts(attempts as any[]);
+            }
+            const block = buildOutputBlock(parsed);
+            if (block) newBlocks.push(block);
+          }
+
+          for (const attempt of (attempts as any[]).filter((entry) => selectedAttemptKeys.has(chatAttemptKey(entry)))) {
+            const promptBlock = buildPromptBlock(attempt);
+            if (promptBlock && !emittedBlockIds.has(promptBlock.blockId)) {
+              newBlocks.push(promptBlock);
+            }
+            const fallbackBlock = buildFallbackBlock(attempt);
+            if (fallbackBlock && !emittedBlockIds.has(fallbackBlock.blockId)) {
+              newBlocks.push(fallbackBlock);
+            }
+          }
+
+          newBlocks.sort((a, b) => {
+            if (a.timestampMs !== b.timestampMs) return a.timestampMs - b.timestampMs;
+            return a.blockId.localeCompare(b.blockId);
+          });
+
+          const newLines = renderLines(newBlocks);
+          for (const line of newLines) {
+            yield line;
+          }
+
+          const currentRun = await adapter.getRun(runId);
+          const currentStatus = (currentRun as any)?.status;
+          if (currentStatus !== "running" && currentStatus !== "waiting-approval") {
+            const finalAttempts = await adapter.listAttemptsForRun(runId);
+            syncAttempts(finalAttempts as any[]);
+            const finalBlocks = (finalAttempts as any[])
+              .filter((attempt) => selectedAttemptKeys.has(chatAttemptKey(attempt)))
+              .map((attempt) => buildFallbackBlock(attempt))
+              .filter(Boolean) as Array<{ attemptKey: string; blockId: string; timestampMs: number; text: string }>;
+
+            const finalLines = renderLines(finalBlocks);
+            for (const line of finalLines) {
+              yield line;
+            }
+
+            return c.ok(undefined, {
+              cta: {
+                commands: [
+                  { command: `inspect ${runId}`, description: "Inspect run state" },
+                  { command: `logs ${runId}`, description: "Tail lifecycle events" },
+                ],
+              },
+            });
+          }
+        }
+      } finally {
+        cleanup?.();
+      }
+    },
+  })
+
+  // =========================================================================
+  // smithers hijack <run_id>
+  // =========================================================================
+  .command("hijack", {
+    description: "Hand off the latest resumable agent session or conversation for a run.",
+    args: hijackArgs,
+    options: hijackOptions,
+    async run(c) {
+      const fail: FailFn = (opts) => {
+        commandExitOverride = opts.exitCode ?? 1;
+        return c.error(opts);
+      };
+
+      const { adapter, cleanup } = await findAndOpenDb();
+      try {
+        const run = await adapter.getRun(c.args.runId);
+        if (!run) {
+          return fail({
+            code: "RUN_NOT_FOUND",
+            message: `Run not found: ${c.args.runId}`,
+            exitCode: 4,
+          });
+        }
+
+        let candidate = await resolveHijackCandidate(adapter, c.args.runId, c.options.target);
+        const runIsLive = (run as any).status === "running";
+        const requestedAtMs = Date.now();
+
+        if (runIsLive) {
+          const event = {
+            type: "RunHijackRequested" as const,
+            runId: c.args.runId,
+            target: c.options.target ?? undefined,
+            timestampMs: requestedAtMs,
+          };
+          await adapter.requestRunHijack(c.args.runId, requestedAtMs, c.options.target ?? null);
+          await adapter.insertEventWithNextSeq({
+            runId: c.args.runId,
+            timestampMs: requestedAtMs,
+            type: "RunHijackRequested",
+            payloadJson: JSON.stringify(event),
+          });
+          runSync(trackEvent(event));
+          try {
+            candidate = await waitForHijackCandidate(adapter, c.args.runId, {
+              target: c.options.target,
+              timeoutMs: c.options.timeoutMs,
+            });
+          } catch (error: any) {
+            await adapter.clearRunHijack(c.args.runId).catch(() => undefined);
+            return fail({
+              code: "HIJACK_TIMEOUT",
+              message: error?.message ?? String(error),
+              exitCode: 4,
+            });
+          }
+        }
+
+        if (!candidate) {
+          return fail({
+            code: "HIJACK_UNAVAILABLE",
+            message: `No resumable agent session or conversation found for run ${c.args.runId}.`,
+            exitCode: 4,
+          });
+        }
+
+        if (c.options.target && candidate.engine !== c.options.target) {
+          return fail({
+            code: "HIJACK_TARGET_MISMATCH",
+            message: `Run ${c.args.runId} is resumable in ${candidate.engine}, not ${c.options.target}. Cross-engine hijack is not supported.`,
+            exitCode: 4,
+          });
+        }
+
+        const resumeCommand =
+          (run as any).workflowPath
+            ? `smithers up ${(run as any).workflowPath} --resume --run-id ${c.args.runId}`
+            : null;
+
+        if (!c.options.launch) {
+          const launchSpec = isNativeHijackCandidate(candidate)
+            ? buildHijackLaunchSpec(candidate)
+            : null;
+          const launch = launchSpec
+            ? {
+                command: launchSpec.command,
+                args: launchSpec.args,
+                cwd: launchSpec.cwd,
+              }
+            : null;
+          return c.ok({
+            runId: c.args.runId,
+            engine: candidate.engine,
+            mode: candidate.mode,
+            nodeId: candidate.nodeId,
+            attempt: candidate.attempt,
+            iteration: candidate.iteration,
+            resume: candidate.resume ?? null,
+            messageCount: candidate.messages?.length ?? 0,
+            cwd: candidate.cwd,
+            launch,
+            resumeCommand,
+          });
+        }
+
+        let exitCode = 0;
+        let resumedBySmithers = false;
+
+        if (isNativeHijackCandidate(candidate)) {
+          const launchSpec = buildHijackLaunchSpec(candidate);
+          process.stderr.write(
+            `[smithers] hijacking ${candidate.engine} session ${candidate.resume} from ${candidate.nodeId}#${candidate.attempt}\n`,
+          );
+          exitCode = await launchHijackSession(launchSpec);
+        } else {
+          if (!candidate.messages?.length) {
+            return fail({
+              code: "HIJACK_CONVERSATION_MISSING",
+              message: `Run ${c.args.runId} did not persist a resumable conversation for ${candidate.engine}.`,
+              exitCode: 4,
+            });
+          }
+          const result = await launchConversationHijackSession(adapter, {
+            ...candidate,
+            mode: "conversation",
+            messages: candidate.messages,
+          });
+          await persistConversationHijackHandoff(adapter, candidate, result.messages);
+          exitCode = result.code;
+        }
+
+        if (exitCode === 0 && runIsLive && (run as any).workflowPath) {
+          const pid = resumeRunDetached((run as any).workflowPath, c.args.runId);
+          resumedBySmithers = true;
+          process.stderr.write(
+            `[smithers] returned control to Smithers${pid ? ` (pid ${pid})` : ""}\n`,
+          );
+        } else if (resumeCommand) {
+          process.stderr.write(`[smithers] return control to Smithers with:\n  ${resumeCommand}\n`);
+        }
+
+        if (exitCode !== 0) {
+          return fail({
+            code: "HIJACK_LAUNCH_FAILED",
+            message: `${candidate.engine} exited with code ${exitCode}`,
+            exitCode,
+          });
+        }
+
+        return c.ok({
+          runId: c.args.runId,
+          engine: candidate.engine,
+          mode: candidate.mode,
+          resumedSession: candidate.resume ?? null,
+          resumedBySmithers,
+        });
+      } finally {
+        cleanup();
+      }
+    },
+  })
+
+  // =========================================================================
+  // smithers inspect <run_id>
+  // =========================================================================
+  .command("inspect", {
+    description: "Output detailed state of a run: steps, agents, approvals, and outputs.",
+    args: inspectArgs,
+    async run(c) {
+      const fail: FailFn = (opts) => {
+        commandExitOverride = opts.exitCode ?? 1;
+        return c.error(opts);
+      };
+      try {
+        const { adapter, cleanup } = await findAndOpenDb();
+        try {
+          const run = await adapter.getRun(c.args.runId);
+          if (!run) {
+            return fail({ code: "RUN_NOT_FOUND", message: `Run not found: ${c.args.runId}`, exitCode: 4 });
+          }
+
+          const r = run as any;
+          const nodes = await adapter.listNodes(c.args.runId);
+          const approvals = await adapter.listPendingApprovals(c.args.runId);
+          const loops = await adapter.listRalph(c.args.runId);
+
+          const steps = (nodes as any[]).map((n: any) => ({
+            id: n.nodeId,
+            state: n.state,
+            attempt: n.lastAttempt ?? 0,
+            label: n.label ?? n.nodeId,
+          }));
+
+          const pendingApprovals = (approvals as any[]).map((a: any) => ({
+            nodeId: a.nodeId,
+            status: a.status,
+            requestedAt: a.requestedAtMs ? new Date(a.requestedAtMs).toISOString() : "—",
+          }));
+
+          const loopState = (loops as any[]).map((l: any) => ({
+            loopId: l.ralphId,
+            iteration: l.iteration,
+            maxIterations: l.maxIterations,
+          }));
+
+          let config: any = undefined;
+          if (r.configJson) {
+            try { config = JSON.parse(r.configJson); } catch {}
+          }
+
+          let error: any = undefined;
+          if (r.errorJson) {
+            try { error = JSON.parse(r.errorJson); } catch {}
+          }
+
+          const result: Record<string, any> = {
+            run: {
+              id: r.runId,
+              workflow: r.workflowName ?? (r.workflowPath ? basename(r.workflowPath) : "—"),
+              status: r.status,
+              started: r.startedAtMs ? new Date(r.startedAtMs).toISOString() : "—",
+              elapsed: r.startedAtMs ? formatElapsedCompact(r.startedAtMs, r.finishedAtMs ?? undefined) : "—",
+              ...(r.finishedAtMs ? { finished: new Date(r.finishedAtMs).toISOString() } : {}),
+              ...(error ? { error } : {}),
+            },
+            steps,
+          };
+
+          if (pendingApprovals.length > 0) {
+            result.approvals = pendingApprovals;
+          }
+          if (loopState.length > 0) {
+            result.loops = loopState;
+          }
+          if (config) {
+            result.config = config;
+          }
+
+          const ctaCommands: any[] = [
+            { command: `logs ${c.args.runId}`, description: "Tail run logs" },
+            { command: `chat ${c.args.runId}`, description: "View agent chat" },
+          ];
+          if (r.status === "running" || r.status === "waiting-approval") {
+            ctaCommands.push({ command: `cancel ${c.args.runId}`, description: "Cancel run" });
+          }
+          if (pendingApprovals.length > 0) {
+            ctaCommands.push({ command: `approve ${c.args.runId}`, description: "Approve pending gate" });
+          }
+
+          return c.ok(result, { cta: { commands: ctaCommands } });
+        } finally {
+          cleanup();
+        }
+      } catch (err: any) {
+        return fail({ code: "INSPECT_FAILED", message: err?.message ?? String(err), exitCode: 1 });
+      }
+    },
+  })
+
+  // =========================================================================
+  // smithers approve <run_id>
+  // =========================================================================
+  .command("approve", {
+    description: "Approve a paused approval gate. Auto-detects the pending node if only one exists.",
+    args: approveArgs,
+    options: approveOptions,
+    alias: { node: "n" },
+    async run(c) {
+      const fail: FailFn = (opts) => {
+        commandExitOverride = opts.exitCode ?? 1;
+        return c.error(opts);
+      };
+      try {
+        const { adapter, cleanup } = await findAndOpenDb();
+        try {
+          const pending = await adapter.listPendingApprovals(c.args.runId);
+          if ((pending as any[]).length === 0) {
+            return fail({ code: "NO_PENDING_APPROVALS", message: `No pending approvals for run: ${c.args.runId}`, exitCode: 4 });
+          }
+
+          let nodeId = c.options.node;
+          if (!nodeId) {
+            if ((pending as any[]).length > 1) {
+              const nodeList = (pending as any[]).map((a: any) => `  ${a.nodeId} (iteration ${a.iteration})`).join("\n");
+              return fail({
+                code: "AMBIGUOUS_APPROVAL",
+                message: `Multiple pending approvals. Specify --node:\n${nodeList}`,
+                exitCode: 4,
+              });
+            }
+            nodeId = (pending as any[])[0].nodeId;
+          }
+
+          await approveNode(adapter, c.args.runId, nodeId!, c.options.iteration, c.options.note, c.options.by);
+
+          return c.ok(
+            { runId: c.args.runId, nodeId, status: "approved" },
+            {
+              cta: {
+                commands: [
+                  { command: `logs ${c.args.runId}`, description: "Tail run logs" },
+                  { command: `ps`, description: "List all runs" },
+                ],
+              },
+            },
+          );
+        } finally {
+          cleanup();
+        }
+      } catch (err: any) {
+        return fail({ code: "APPROVE_FAILED", message: err?.message ?? String(err), exitCode: 1 });
+      }
+    },
+  })
+
+  // =========================================================================
+  // smithers deny <run_id>
+  // =========================================================================
+  .command("deny", {
+    description: "Deny a paused approval gate.",
+    args: approveArgs,
+    options: approveOptions,
+    alias: { node: "n" },
+    async run(c) {
+      const fail: FailFn = (opts) => {
+        commandExitOverride = opts.exitCode ?? 1;
+        return c.error(opts);
+      };
+      try {
+        const { adapter, cleanup } = await findAndOpenDb();
+        try {
+          const pending = await adapter.listPendingApprovals(c.args.runId);
+          if ((pending as any[]).length === 0) {
+            return fail({ code: "NO_PENDING_APPROVALS", message: `No pending approvals for run: ${c.args.runId}`, exitCode: 4 });
+          }
+
+          let nodeId = c.options.node;
+          if (!nodeId) {
+            if ((pending as any[]).length > 1) {
+              const nodeList = (pending as any[]).map((a: any) => `  ${a.nodeId} (iteration ${a.iteration})`).join("\n");
+              return fail({
+                code: "AMBIGUOUS_APPROVAL",
+                message: `Multiple pending approvals. Specify --node:\n${nodeList}`,
+                exitCode: 4,
+              });
+            }
+            nodeId = (pending as any[])[0].nodeId;
+          }
+
+          await denyNode(adapter, c.args.runId, nodeId!, c.options.iteration, c.options.note, c.options.by);
+
+          return c.ok(
+            { runId: c.args.runId, nodeId, status: "denied" },
+            {
+              cta: {
+                commands: [
+                  { command: `logs ${c.args.runId}`, description: "Tail run logs" },
+                  { command: `ps`, description: "List all runs" },
+                ],
+              },
+            },
+          );
+        } finally {
+          cleanup();
+        }
+      } catch (err: any) {
+        return fail({ code: "DENY_FAILED", message: err?.message ?? String(err), exitCode: 1 });
+      }
+    },
+  })
+
+  // =========================================================================
+  // smithers cancel <run_id>
+  // =========================================================================
+  .command("cancel", {
+    description: "Safely halt agents and terminate a run.",
+    args: cancelArgs,
+    async run(c) {
+      const fail: FailFn = (opts) => {
+        commandExitOverride = opts.exitCode ?? 1;
+        return c.error(opts);
+      };
+      try {
+        const { adapter, cleanup } = await findAndOpenDb();
+        try {
+          const run = await adapter.getRun(c.args.runId);
+          if (!run) {
+            return fail({ code: "RUN_NOT_FOUND", message: `Run not found: ${c.args.runId}`, exitCode: 4 });
+          }
+          if ((run as any).status !== "running" && (run as any).status !== "waiting-approval") {
+            return fail({ code: "RUN_NOT_ACTIVE", message: `Run is not active (status: ${(run as any).status})`, exitCode: 4 });
+          }
+
+          const inProgress = await adapter.listInProgressAttempts(c.args.runId);
+          const now = Date.now();
+          for (const attempt of inProgress as any[]) {
+            await adapter.updateAttempt(c.args.runId, attempt.nodeId, attempt.iteration, attempt.attempt, {
+              state: "cancelled",
+              finishedAtMs: now,
+            });
+          }
+          await adapter.updateRun(c.args.runId, { status: "cancelled", finishedAtMs: now });
+
+          process.exitCode = 2;
+          return c.ok(
+            { runId: c.args.runId, status: "cancelled", cancelledAttempts: (inProgress as any[]).length },
+            {
+              cta: {
+                commands: [
+                  { command: `ps`, description: "List all runs" },
+                ],
+              },
+            },
+          );
+        } finally {
+          cleanup();
+        }
+      } catch (err: any) {
+        return fail({ code: "CANCEL_FAILED", message: err?.message ?? String(err), exitCode: 1 });
+      }
+    },
+  })
+
+  // =========================================================================
+  // smithers down
+  // =========================================================================
+  .command("down", {
+    description: "Cancel all active runs. Like 'docker compose down' for workflows.",
+    options: z.object({
+      force: z.boolean().default(false).describe("Cancel runs even if they appear stale"),
+    }),
+    async run(c) {
+      const fail: FailFn = (opts) => {
+        commandExitOverride = opts.exitCode ?? 1;
+        return c.error(opts);
+      };
+      try {
+        const { adapter, cleanup } = await findAndOpenDb();
+        try {
+          const activeRuns = await adapter.listRuns(100, "running");
+          const waitingRuns = await adapter.listRuns(100, "waiting-approval");
+          const allActive = [...(activeRuns as any[]), ...(waitingRuns as any[])];
+
+          if (allActive.length === 0) {
+            return c.ok({ cancelled: 0, message: "No active runs to cancel." });
+          }
+
+          const now = Date.now();
+          let cancelled = 0;
+
+          for (const run of allActive) {
+            const inProgress = await adapter.listInProgressAttempts(run.runId);
+            for (const attempt of inProgress as any[]) {
+              await adapter.updateAttempt(run.runId, attempt.nodeId, attempt.iteration, attempt.attempt, {
+                state: "cancelled",
+                finishedAtMs: now,
+              });
+            }
+            await adapter.updateRun(run.runId, { status: "cancelled", finishedAtMs: now });
+            process.stderr.write(`⊘ Cancelled: ${run.runId}\n`);
+            cancelled++;
+          }
+
+          return c.ok(
+            { cancelled, runs: allActive.map((r: any) => r.runId) },
+            { cta: { commands: [{ command: `ps`, description: "Verify all runs stopped" }] } },
+          );
+        } finally {
+          cleanup();
+        }
+      } catch (err: any) {
+        return fail({ code: "DOWN_FAILED", message: err?.message ?? String(err), exitCode: 1 });
+      }
+    },
+  })
+
+  // =========================================================================
+  // smithers graph <workflow>
+  // =========================================================================
   .command("graph", {
     description: "Render the workflow graph without executing it.",
     args: workflowArgs,
     options: graphOptions,
     alias: { runId: "r" },
-    async run({ args, options, ok, error }) {
+    async run(c) {
       const fail: FailFn = (opts) => {
         commandExitOverride = opts.exitCode ?? 1;
-        return error(opts);
+        return c.error(opts);
       };
       try {
-        const resolvedWorkflowPath = resolve(process.cwd(), args.workflow);
-        if (extname(resolvedWorkflowPath) === ".toon") {
-          return fail({
-            code: "GRAPH_UNSUPPORTED",
-            message: "The graph command is not yet supported for .toon workflows. Use a .tsx workflow instead.",
-            exitCode: 1,
-          });
-        }
-        const workflow = await loadWorkflow(args.workflow);
+        const resolvedWorkflowPath = resolve(process.cwd(), c.args.workflow);
+        const workflow = await loadWorkflow(c.args.workflow);
         ensureSmithersTables(workflow.db as any);
         const schema = resolveSchema(workflow.db);
         const inputTable = schema.input;
-        const inputRow = options.input
-          ? parseJsonInput(options.input, "input", fail)
+        const inputRow = c.options.input
+          ? parseJsonInput(c.options.input, "input", fail)
           : inputTable
-            ? ((await loadInput(workflow.db as any, inputTable, options.runId)) ?? {})
+            ? ((await loadInput(workflow.db as any, inputTable, c.options.runId)) ?? {})
             : {};
-        const outputs = await loadOutputs(workflow.db as any, schema, options.runId);
+        const outputs = await loadOutputs(workflow.db as any, schema, c.options.runId);
         const ctx = buildContext({
-          runId: options.runId,
+          runId: c.options.runId,
           iteration: 0,
           input: inputRow ?? {},
           outputs,
@@ -753,7 +1772,7 @@ const cli = Cli.create({
         const baseRootDir = dirname(resolvedWorkflowPath);
         const snap = await renderFrame(workflow, ctx, { baseRootDir });
         const seen = new WeakSet<object>();
-        return ok(
+        return c.ok(
           JSON.parse(
             JSON.stringify(snap, (_key, value) => {
               if (typeof value === "function") return undefined;
@@ -766,112 +1785,48 @@ const cli = Cli.create({
           ),
         );
       } catch (err: any) {
-        return fail({
-          code: "GRAPH_FAILED",
-          message: err?.message ?? String(err),
-          exitCode: 1,
-        });
+        return fail({ code: "GRAPH_FAILED", message: err?.message ?? String(err), exitCode: 1 });
       }
     },
   })
+
+  // =========================================================================
+  // smithers revert <workflow>
+  // =========================================================================
   .command("revert", {
     description: "Revert the workspace to a previous task attempt's filesystem state.",
     args: workflowArgs,
     options: revertOptions,
     alias: { runId: "r", nodeId: "n" },
-    async run({ args, options, ok, error }) {
+    async run(c) {
       const fail: FailFn = (opts) => {
         commandExitOverride = opts.exitCode ?? 1;
-        return error(opts);
+        return c.error(opts);
       };
       try {
-        const { adapter, cleanup } = await loadWorkflowDb(args.workflow);
+        const { adapter, cleanup } = await loadWorkflowDb(c.args.workflow);
         try {
           const result = await revertToAttempt(adapter, {
-            runId: options.runId,
-            nodeId: options.nodeId,
-            iteration: options.iteration,
-            attempt: options.attempt,
+            runId: c.options.runId,
+            nodeId: c.options.nodeId,
+            iteration: c.options.iteration,
+            attempt: c.options.attempt,
             onProgress: (e) => console.log(JSON.stringify(e)),
           });
           process.exitCode = result.success ? 0 : 1;
-          return ok(result);
+          return c.ok(result);
         } finally {
           cleanup?.();
         }
       } catch (err: any) {
-        return fail({
-          code: "REVERT_FAILED",
-          message: err?.message ?? String(err),
-          exitCode: 1,
-        });
+        return fail({ code: "REVERT_FAILED", message: err?.message ?? String(err), exitCode: 1 });
       }
     },
   })
-  .command("cancel", {
-    description: "Cancel a running or waiting-approval workflow.",
-    args: workflowArgs,
-    options: cancelOptions,
-    alias: { runId: "r" },
-    async run({ args, options, ok, error }) {
-      const fail: FailFn = (opts) => {
-        commandExitOverride = opts.exitCode ?? 1;
-        return error(opts);
-      };
-      try {
-        const { adapter, cleanup } = await loadWorkflowDb(args.workflow);
-        try {
-          const run = await adapter.getRun(options.runId);
-          if (!run) {
-            return fail({
-              code: "RUN_NOT_FOUND",
-              message: `Run not found: ${options.runId}`,
-              exitCode: 4,
-            });
-          }
-          if (run.status !== "running" && run.status !== "waiting-approval") {
-            return fail({
-              code: "RUN_NOT_ACTIVE",
-              message: `Run is not active (status: ${run.status})`,
-              exitCode: 4,
-            });
-          }
-          const inProgress = await adapter.listInProgressAttempts(options.runId);
-          const now = Date.now();
-          for (const attempt of inProgress) {
-            await adapter.updateAttempt(
-              options.runId,
-              attempt.nodeId,
-              attempt.iteration,
-              attempt.attempt,
-              {
-                state: "cancelled",
-                finishedAtMs: now,
-              },
-            );
-          }
-          await adapter.updateRun(options.runId, {
-            status: "cancelled",
-            finishedAtMs: now,
-          });
-          process.exitCode = 2;
-          return ok({
-            runId: options.runId,
-            status: "cancelled",
-            cancelledAttempts: inProgress.length,
-          });
-        } finally {
-          cleanup?.();
-        }
-      } catch (err: any) {
-        return fail({
-          code: "CANCEL_FAILED",
-          message: err?.message ?? String(err),
-          exitCode: 1,
-        });
-      }
-    },
-  })
+
+  // =========================================================================
+  // smithers observability
+  // =========================================================================
   .command("observability", {
     description: "Start the local observability stack (Grafana, Prometheus, Tempo, OTLP Collector) via Docker Compose.",
     options: z.object({
@@ -879,13 +1834,12 @@ const cli = Cli.create({
       down: z.boolean().default(false).describe("Stop and remove the observability stack"),
     }),
     alias: { detach: "d" },
-    async run({ options, ok, error }) {
+    async run(c) {
       const fail: FailFn = (opts) => {
         commandExitOverride = opts.exitCode ?? 1;
-        return error(opts);
+        return c.error(opts);
       };
 
-      // Resolve the observability directory relative to the package
       const composeDir = resolve(dirname(new URL(import.meta.url).pathname), "../../observability");
       const composeFile = resolve(composeDir, "docker-compose.otel.yml");
 
@@ -898,13 +1852,12 @@ const cli = Cli.create({
       }
 
       const composeArgs = [
-        "compose",
-        "-f", composeFile,
-        ...(options.down ? ["down"] : ["up", ...(options.detach ? ["-d"] : [])]),
+        "compose", "-f", composeFile,
+        ...(c.options.down ? ["down"] : ["up", ...(c.options.detach ? ["-d"] : [])]),
       ];
 
       process.stderr.write(
-        options.down
+        c.options.down
           ? `[smithers] Stopping observability stack...\n`
           : `[smithers] Starting observability stack...\n` +
             `  Grafana:    http://localhost:3001\n` +
@@ -912,10 +1865,7 @@ const cli = Cli.create({
             `  Tempo:      http://localhost:3200\n`,
       );
 
-      const child = spawn("docker", composeArgs, {
-        stdio: "inherit",
-        cwd: composeDir,
-      });
+      const child = spawn("docker", composeArgs, { stdio: "inherit", cwd: composeDir });
 
       const result = await new Promise<{ exitCode: number }>((resolve) => {
         child.on("close", (code) => resolve({ exitCode: code ?? 0 }));
@@ -927,138 +1877,426 @@ const cli = Cli.create({
       });
 
       process.exitCode = result.exitCode;
-      return ok({
-        action: options.down ? "down" : "up",
-        exitCode: result.exitCode,
-      });
+      return c.ok({ action: c.options.down ? "down" : "up", exitCode: result.exitCode });
     },
   })
-  .command("tui", {
-    description: "Launch the PI coding agent with the Smithers extension for interactive workflow management.",
-    options: z.object({
-      url: z.string().default("http://127.0.0.1:7331").describe("Smithers server URL"),
-      key: z.string().optional().describe("Smithers API key"),
-      provider: z.string().optional().describe("PI model provider (e.g. anthropic, openai)"),
-      model: z.string().optional().describe("PI model to use (e.g. claude-opus-4-6)"),
-      theme: z.string().optional().describe("PI theme name"),
-      session: z.string().optional().describe("PI session ID to resume"),
-      continue: z.boolean().default(false).describe("Continue the last PI session"),
-      resume: z.boolean().default(false).describe("Resume a PI session"),
-      print: z.boolean().default(false).describe("Run in non-interactive print mode"),
-      prompt: z.string().optional().describe("Initial prompt to send (non-interactive)"),
-      extension: z.array(z.string()).default([]).describe("Additional PI extensions to load"),
-      verbose: z.boolean().default(false).describe("Enable verbose output"),
+
+  // =========================================================================
+  // smithers ask <question>
+  // =========================================================================
+  .command("ask", {
+    description: "Ask a question about Smithers using your installed agent and the Smithers MCP server.",
+    args: z.object({
+      question: z.string().describe("The question to ask"),
     }),
-    alias: { url: "u", key: "k", provider: "p", model: "m", session: "s" },
-    async run({ options, ok, error }) {
+    async run(c) {
+      try {
+        await ask(c.args.question, process.cwd());
+        return c.ok({ answered: true });
+      } catch (err: any) {
+        commandExitOverride = 1;
+        return c.error({
+          code: "ASK_FAILED",
+          message: err?.message ?? String(err),
+        });
+      }
+    },
+  })
+
+  // =========================================================================
+  // smithers scores <run_id>
+  // =========================================================================
+  .command("scores", {
+    description: "View scorer results for a specific run.",
+    args: z.object({ runId: z.string().describe("Run ID to inspect") }),
+    options: z.object({
+      node: z.string().optional().describe("Filter scores to a specific node ID"),
+    }),
+    async run(c) {
       const fail: FailFn = (opts) => {
         commandExitOverride = opts.exitCode ?? 1;
-        return error(opts);
+        return c.error(opts);
       };
-
-      // Resolve the smithers extension path
-      const extensionPath = resolve(dirname(new URL(import.meta.url).pathname), "../pi-plugin/extension.ts");
-      if (!existsSync(extensionPath)) {
-        return fail({
-          code: "EXTENSION_NOT_FOUND",
-          message: `Smithers PI extension not found at ${extensionPath}`,
-          exitCode: 1,
-        });
+      try {
+        const { adapter, cleanup } = await findAndOpenDb();
+        try {
+          const results = await adapter.listScorerResults(c.args.runId, c.options.node);
+          if (!results || (results as any[]).length === 0) {
+            return c.ok({ scores: [], message: "No scores found for this run." });
+          }
+          const rows = (results as any[]).map((r: any) => ({
+            node: r.nodeId,
+            scorer: r.scorerName,
+            score: typeof r.score === "number" ? r.score.toFixed(2) : String(r.score),
+            reason: r.reason ?? "—",
+            source: r.source,
+          }));
+          return c.ok({ scores: rows });
+        } finally {
+          cleanup();
+        }
+      } catch (err: any) {
+        return fail({ code: "SCORES_FAILED", message: err?.message ?? String(err), exitCode: 1 });
       }
-
-      const args: string[] = [];
-
-      // Load smithers extension + any user-provided extensions
-      args.push("--extension", extensionPath);
-      for (const ext of options.extension) {
-        args.push("--extension", ext);
-      }
-
-      // Pass smithers connection flags
-      args.push("--smithers-url", options.url);
-      if (options.key) {
-        args.push("--smithers-key", options.key);
-      } else if (process.env.SMITHERS_API_KEY) {
-        args.push("--smithers-key", process.env.SMITHERS_API_KEY);
-      }
-
-      // PI model/provider flags
-      if (options.provider) args.push("--provider", options.provider);
-      if (options.model) args.push("--model", options.model);
-      if (options.theme) args.push("--theme", options.theme);
-
-      // Session flags
-      if (options.session) args.push("--session", options.session);
-      if (options.continue) args.push("--continue");
-      if (options.resume) args.push("--resume");
-
-      if (options.verbose) args.push("--verbose");
-
-      // Non-interactive mode
-      if (options.print) {
-        args.push("--print");
-        if (options.prompt) args.push(options.prompt);
-
-        const result = await new Promise<{ exitCode: number }>((resolve) => {
-          const child = spawn("pi", args, {
-            stdio: "inherit",
-            env: process.env,
-          });
-          child.on("close", (code) => resolve({ exitCode: code ?? 0 }));
-          child.on("error", (err) => {
-            process.stderr.write(`Failed to launch pi: ${err.message}\n`);
-            process.stderr.write(`Make sure pi is installed: npm i -g @mariozechner/pi-coding-agent\n`);
-            resolve({ exitCode: 1 });
-          });
-        });
-
-        process.exitCode = result.exitCode;
-        return ok({ exitCode: result.exitCode });
-      }
-
-      // Interactive mode — hand off stdio entirely
-      if (options.prompt) args.push(options.prompt);
-
-      const child = spawn("pi", args, {
-        stdio: "inherit",
-        env: process.env,
-      });
-
-      const result = await new Promise<{ exitCode: number }>((resolve) => {
-        child.on("close", (code) => resolve({ exitCode: code ?? 0 }));
-        child.on("error", (err) => {
-          process.stderr.write(`Failed to launch pi: ${err.message}\n`);
-          process.stderr.write(`Make sure pi is installed: npm i -g @mariozechner/pi-coding-agent\n`);
-          resolve({ exitCode: 1 });
-        });
-      });
-
-      process.exitCode = result.exitCode;
-      return ok({ exitCode: result.exitCode });
     },
-  });
+  })
+
+  // =========================================================================
+  // smithers replay <workflow>
+  // =========================================================================
+  .command("replay", {
+    description: "Fork from a checkpoint and resume execution (time travel).",
+    args: workflowArgs,
+    options: z.object({
+      runId: z.string().describe("Source run ID to replay from"),
+      frame: z.number().int().describe("Frame number to fork from"),
+      node: z.string().optional().describe("Node ID to reset to pending"),
+      input: z.string().optional().describe("Input overrides as JSON string"),
+      label: z.string().optional().describe("Branch label for the fork"),
+      restoreVcs: z.boolean().default(false).describe("Restore jj filesystem state to the source frame's revision"),
+    }),
+    alias: { runId: "r", frame: "f", node: "n", input: "i", label: "l" },
+    async run(c) {
+      const fail: FailFn = (opts) => {
+        commandExitOverride = opts.exitCode ?? 1;
+        return c.error(opts);
+      };
+      try {
+        const { replayFromCheckpoint } = await import("../time-travel/replay");
+        const { adapter, cleanup } = await loadWorkflowDb(c.args.workflow);
+        try {
+          const inputOverrides = parseJsonInput(c.options.input, "input", fail);
+          const resetNodes = c.options.node ? [c.options.node] : undefined;
+          const result = await replayFromCheckpoint(adapter, {
+            parentRunId: c.options.runId,
+            frameNo: c.options.frame,
+            inputOverrides,
+            resetNodes,
+            branchLabel: c.options.label,
+            restoreVcs: c.options.restoreVcs,
+          });
+          process.stderr.write(
+            `[smithers] Forked run ${result.runId} from ${c.options.runId}:${c.options.frame}\n`,
+          );
+          if (result.vcsRestored) {
+            process.stderr.write(`[smithers] VCS state restored to ${result.vcsPointer}\n`);
+          }
+          // Now resume the forked run
+          process.stderr.write(`[smithers] Resuming forked run...\n`);
+          const workflow = await loadWorkflow(c.args.workflow);
+          const onProgress = buildProgressReporter();
+          const abort = setupAbortSignal();
+          const { runWorkflow } = await import("../engine");
+          const runResult = await runWorkflow(workflow, {
+            input: {},
+            runId: result.runId,
+            workflowPath: c.args.workflow,
+            resume: true,
+            force: true,
+            onProgress,
+            signal: abort.signal,
+          });
+          process.exitCode = formatStatusExitCode(runResult.status);
+          return c.ok({
+            forkedRunId: result.runId,
+            parentRunId: c.options.runId,
+            parentFrame: c.options.frame,
+            vcsRestored: result.vcsRestored,
+            status: runResult.status,
+          });
+        } finally {
+          cleanup?.();
+        }
+      } catch (err: any) {
+        return fail({ code: "REPLAY_FAILED", message: err?.message ?? String(err), exitCode: 1 });
+      }
+    },
+  })
+
+  // =========================================================================
+  // smithers diff <snapshot_a> <snapshot_b>
+  // =========================================================================
+  .command("diff", {
+    description: "Compare two snapshots (time travel diff).",
+    args: z.object({
+      a: z.string().describe("First snapshot ref: run_id:frame_no or run_id (latest)"),
+      b: z.string().describe("Second snapshot ref: run_id:frame_no or run_id (latest)"),
+    }),
+    options: z.object({
+      json: z.boolean().default(false).describe("Output as JSON"),
+    }),
+    async run(c) {
+      const fail: FailFn = (opts) => {
+        commandExitOverride = opts.exitCode ?? 1;
+        return c.error(opts);
+      };
+      try {
+        const { diffRawSnapshots, formatDiffForTui, formatDiffAsJson } = await import("../time-travel/diff");
+        const { loadSnapshot, loadLatestSnapshot } = await import("../time-travel/snapshot");
+        const { adapter, cleanup } = await findAndOpenDb();
+        try {
+          const parseRef = async (ref: string) => {
+            if (ref.includes(":")) {
+              const [runId, frameStr] = ref.split(":");
+              const frameNo = parseInt(frameStr!, 10);
+              if (isNaN(frameNo)) return fail({ code: "INVALID_REF", message: `Invalid frame number in ref: ${ref}`, exitCode: 4 });
+              const snap = await loadSnapshot(adapter, runId!, frameNo);
+              if (!snap) return fail({ code: "SNAPSHOT_NOT_FOUND", message: `No snapshot for ${ref}`, exitCode: 4 });
+              return snap;
+            }
+            const snap = await loadLatestSnapshot(adapter, ref);
+            if (!snap) return fail({ code: "SNAPSHOT_NOT_FOUND", message: `No snapshots for run ${ref}`, exitCode: 4 });
+            return snap;
+          };
+          const snapA = await parseRef(c.args.a);
+          const snapB = await parseRef(c.args.b);
+          const diff = diffRawSnapshots(snapA, snapB);
+          if (c.options.json) {
+            console.log(JSON.stringify(formatDiffAsJson(diff), null, 2));
+          } else {
+            console.log(formatDiffForTui(diff));
+          }
+          return c.ok({ diff: formatDiffAsJson(diff) });
+        } finally {
+          cleanup();
+        }
+      } catch (err: any) {
+        return fail({ code: "DIFF_FAILED", message: err?.message ?? String(err), exitCode: 1 });
+      }
+    },
+  })
+
+  // =========================================================================
+  // smithers fork <workflow>
+  // =========================================================================
+  .command("fork", {
+    description: "Create a branched run from a snapshot checkpoint (time travel).",
+    args: workflowArgs,
+    options: z.object({
+      runId: z.string().describe("Source run ID"),
+      frame: z.number().int().describe("Frame number to fork from"),
+      resetNode: z.string().optional().describe("Node ID to reset to pending"),
+      input: z.string().optional().describe("Input overrides as JSON string"),
+      label: z.string().optional().describe("Branch label"),
+      run: z.boolean().default(false).describe("Immediately start the forked run"),
+    }),
+    alias: { runId: "r", frame: "f", resetNode: "n", input: "i", label: "l" },
+    async run(c) {
+      const fail: FailFn = (opts) => {
+        commandExitOverride = opts.exitCode ?? 1;
+        return c.error(opts);
+      };
+      try {
+        const { forkRun } = await import("../time-travel/fork");
+        const { adapter, cleanup } = await loadWorkflowDb(c.args.workflow);
+        try {
+          const inputOverrides = parseJsonInput(c.options.input, "input", fail);
+          const resetNodes = c.options.resetNode ? [c.options.resetNode] : undefined;
+          const result = await forkRun(adapter, {
+            parentRunId: c.options.runId,
+            frameNo: c.options.frame,
+            inputOverrides,
+            resetNodes,
+            branchLabel: c.options.label,
+          });
+          process.stderr.write(
+            `[smithers] Forked run ${result.runId} from ${c.options.runId}:${c.options.frame}\n`,
+          );
+          if (c.options.run) {
+            process.stderr.write(`[smithers] Starting forked run...\n`);
+            const workflow = await loadWorkflow(c.args.workflow);
+            const onProgress = buildProgressReporter();
+            const abort = setupAbortSignal();
+            const { runWorkflow } = await import("../engine");
+            const runResult = await runWorkflow(workflow, {
+              input: {},
+              runId: result.runId,
+              workflowPath: c.args.workflow,
+              resume: true,
+              force: true,
+              onProgress,
+              signal: abort.signal,
+            });
+            process.exitCode = formatStatusExitCode(runResult.status);
+            return c.ok({
+              forkedRunId: result.runId,
+              parentRunId: c.options.runId,
+              parentFrame: c.options.frame,
+              started: true,
+              status: runResult.status,
+            });
+          }
+          return c.ok({
+            forkedRunId: result.runId,
+            parentRunId: c.options.runId,
+            parentFrame: c.options.frame,
+            started: false,
+          });
+        } finally {
+          cleanup?.();
+        }
+      } catch (err: any) {
+        return fail({ code: "FORK_FAILED", message: err?.message ?? String(err), exitCode: 1 });
+      }
+    },
+  })
+
+  // =========================================================================
+  // smithers timeline <run_id>
+  // =========================================================================
+  .command("timeline", {
+    description: "View execution timeline for a run and its forks (time travel).",
+    args: z.object({ runId: z.string().describe("Run ID") }),
+    options: z.object({
+      tree: z.boolean().default(false).describe("Include all child forks recursively"),
+      json: z.boolean().default(false).describe("Output as JSON"),
+    }),
+    async run(c) {
+      const fail: FailFn = (opts) => {
+        commandExitOverride = opts.exitCode ?? 1;
+        return c.error(opts);
+      };
+      try {
+        const { buildTimeline, buildTimelineTree, formatTimelineForTui, formatTimelineAsJson } = await import("../time-travel/timeline");
+        const { adapter, cleanup } = await findAndOpenDb();
+        try {
+          if (c.options.tree) {
+            const tree = await buildTimelineTree(adapter, c.args.runId);
+            if (c.options.json) {
+              console.log(JSON.stringify(formatTimelineAsJson(tree), null, 2));
+            } else {
+              console.log(formatTimelineForTui(tree));
+            }
+            return c.ok({ timeline: formatTimelineAsJson(tree) });
+          }
+          const timeline = await buildTimeline(adapter, c.args.runId);
+          const tree = { timeline, children: [] };
+          if (c.options.json) {
+            console.log(JSON.stringify(formatTimelineAsJson(tree), null, 2));
+          } else {
+            console.log(formatTimelineForTui(tree));
+          }
+          return c.ok({ timeline: formatTimelineAsJson(tree) });
+        } finally {
+          cleanup();
+        }
+      } catch (err: any) {
+        return fail({ code: "TIMELINE_FAILED", message: err?.message ?? String(err), exitCode: 1 });
+      }
+    },
+  })
+
+  .command(workflowCli)
+  .command(cronCli);
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 
 const KNOWN_COMMANDS = new Set([
-  "run", "resume", "approve", "deny", "status", "frames",
-  "list", "graph", "revert", "cancel", "observability", "tui",
+  "init", "up", "down", "ps", "logs", "chat", "inspect", "approve", "deny",
+  "cancel", "graph", "revert", "scores", "observability", "workflow", "ask", "cron",
+  "replay", "diff", "fork", "timeline",
 ]);
+
+const BUILTIN_FLAGS_WITH_VALUES = new Set([
+  "--format",
+  "--filter-output",
+  "--token-limit",
+  "--token-offset",
+]);
+
+const WORKFLOW_UTILITY_COMMANDS = new Set([
+  "run",
+  "list",
+  "path",
+  "create",
+  "doctor",
+]);
+
+function findFirstPositionalIndex(argv: string[], startIndex = 0): number {
+  for (let index = startIndex; index < argv.length; index++) {
+    const arg = argv[index]!;
+    if (!arg.startsWith("-")) {
+      return index;
+    }
+    if (BUILTIN_FLAGS_WITH_VALUES.has(arg)) {
+      index++;
+    }
+  }
+  return -1;
+}
+
+function hasHelpFlag(argv: string[], startIndex = 0) {
+  for (let index = startIndex; index < argv.length; index++) {
+    const arg = argv[index]!;
+    if (arg === "--help" || arg === "-h") {
+      return true;
+    }
+  }
+  return false;
+}
+
+function rewriteWorkflowCommandArgv(argv: string[]) {
+  const workflowIndex = findFirstPositionalIndex(argv);
+  if (workflowIndex < 0 || argv[workflowIndex] !== "workflow") {
+    return argv;
+  }
+
+  if (hasHelpFlag(argv, workflowIndex + 1)) {
+    return argv;
+  }
+
+  const subcommandIndex = findFirstPositionalIndex(argv, workflowIndex + 1);
+  if (subcommandIndex < 0) {
+    return [
+      ...argv.slice(0, workflowIndex + 1),
+      "list",
+      ...argv.slice(workflowIndex + 1),
+    ];
+  }
+
+  const subcommand = argv[subcommandIndex]!;
+  if (WORKFLOW_UTILITY_COMMANDS.has(subcommand)) {
+    return argv;
+  }
+
+  const prefix = argv.slice(0, workflowIndex + 1);
+
+  try {
+    const workflow = resolveWorkflow(subcommand, process.cwd());
+    return [
+      ...prefix,
+      "run",
+      workflow.id,
+      ...argv.slice(subcommandIndex + 1),
+    ];
+  } catch {
+    return argv;
+  }
+}
 
 async function main() {
   const rawArgv = process.argv.slice(2);
   let argv = rawArgv.map((arg) => (arg === "-v" ? "--version" : arg));
+  argv = rewriteWorkflowCommandArgv(argv);
 
-  // Allow running workflow files directly: `smithers workflow.toon` → `smithers run workflow.toon`
-  const firstPositional = argv.find((arg) => !arg.startsWith("-"));
+  // Allow running workflow files directly: `smithers workflow.tsx` → `smithers up workflow.tsx`
+  const firstPositionalIndex = findFirstPositionalIndex(argv);
+  const firstPositional = firstPositionalIndex >= 0 ? argv[firstPositionalIndex] : undefined;
   if (
     firstPositional &&
     !KNOWN_COMMANDS.has(firstPositional) &&
-    (firstPositional.endsWith(".toon") || firstPositional.endsWith(".tsx"))
+    firstPositional.endsWith(".tsx")
   ) {
-    argv = ["run", ...argv];
+    argv = [
+      ...argv.slice(0, firstPositionalIndex),
+      "up",
+      ...argv.slice(firstPositionalIndex),
+    ];
   }
 
   // --mcp mode: the MCP server needs to stay alive listening on stdin.
-  // Do not call process.exit() — let the process stay open until stdin closes.
   if (argv.includes("--mcp")) {
     try {
       await cli.serve(argv);
@@ -1066,7 +2304,6 @@ async function main() {
       console.error(err?.message ?? String(err));
       process.exit(1);
     }
-    // Keep process alive — MCP server is listening on stdin
     return;
   }
 

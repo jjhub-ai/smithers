@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { createInterface } from "node:readline";
-import { Effect } from "effect";
+import { Effect, Metric } from "effect";
 import type {
   Agent,
   GenerateTextResult,
@@ -10,10 +10,13 @@ import type {
   ModelMessage,
 } from "ai";
 import { spawnCaptureEffect } from "../effect/child-process";
+import { fromPromise } from "../effect/interop";
 import { runPromise } from "../effect/runtime";
+import { logDebug, logWarning } from "../effect/logging";
+import { toolOutputTruncatedTotal } from "../effect/metrics";
 import { getToolContext } from "../tools/context";
-import { SmithersError } from "../utils/errors";
-import { launchDiagnostics, enrichReportWithErrorAnalysis } from "./diagnostics";
+import { SmithersError, toSmithersError } from "../utils/errors";
+import { launchDiagnostics, enrichReportWithErrorAnalysis, formatDiagnosticSummary } from "./diagnostics";
 
 type TimeoutInput = number | { totalMs?: number; idleMs?: number } | undefined;
 
@@ -58,12 +61,13 @@ type RunRpcCommandOptions = {
   idleTimeoutMs?: number;
   signal?: AbortSignal;
   maxOutputBytes?: number;
+  onStdout?: (chunk: string) => void;
   onStderr?: (chunk: string) => void;
+  onJsonEvent?: (event: Record<string, unknown>) => Promise<void> | void;
   onExtensionUiRequest?: (request: PiExtensionUiRequest) =>
     | Promise<PiExtensionUiResponse | null>
     | PiExtensionUiResponse
     | null;
-  onEvent?: (event: unknown) => void;
 };
 
 type PromptParts = {
@@ -83,7 +87,7 @@ type RunCommandOptions = {
   onStderr?: (chunk: string) => void;
 };
 
-type RunCommandResult = {
+export type RunCommandResult = {
   stdout: string;
   stderr: string;
   exitCode: number | null;
@@ -101,6 +105,69 @@ type CliCommandSpec = {
   stdoutErrorPatterns?: RegExp[];
   errorOnBannerOnly?: boolean;
 };
+
+export type AgentCliActionKind =
+  | "turn"
+  | "command"
+  | "tool"
+  | "file_change"
+  | "web_search"
+  | "todo_list"
+  | "reasoning"
+  | "warning"
+  | "note";
+
+export type AgentCliActionPhase = "started" | "updated" | "completed";
+export type AgentCliEventLevel = "debug" | "info" | "warning" | "error";
+
+export type AgentCliStartedEvent = {
+  type: "started";
+  engine: string;
+  title: string;
+  resume?: string;
+  detail?: Record<string, unknown>;
+};
+
+export type AgentCliActionEvent = {
+  type: "action";
+  engine: string;
+  phase: AgentCliActionPhase;
+  entryType?: "thought" | "message";
+  action: {
+    id: string;
+    kind: AgentCliActionKind;
+    title: string;
+    detail?: Record<string, unknown>;
+  };
+  message?: string;
+  ok?: boolean;
+  level?: AgentCliEventLevel;
+};
+
+export type AgentCliCompletedEvent = {
+  type: "completed";
+  engine: string;
+  ok: boolean;
+  answer?: string;
+  error?: string;
+  resume?: string;
+  usage?: Record<string, unknown>;
+};
+
+export type AgentCliEvent =
+  | AgentCliStartedEvent
+  | AgentCliActionEvent
+  | AgentCliCompletedEvent;
+
+export type CliOutputInterpreter = {
+  onStdoutLine?: (line: string) => AgentCliEvent[] | AgentCliEvent | null | undefined;
+  onStderrLine?: (line: string) => AgentCliEvent[] | AgentCliEvent | null | undefined;
+  onExit?: (result: RunCommandResult) => AgentCliEvent[] | AgentCliEvent | null | undefined;
+};
+
+export function isBlockingAgentActionKind(kind: AgentCliActionKind): boolean {
+  return kind === "command" || kind === "tool" || kind === "web_search";
+}
 
 export function resolveTimeouts(
   timeout: TimeoutInput,
@@ -284,6 +351,179 @@ export function extractTextFromPiNdjson(raw: string): string | undefined {
   }
 
   return extractTextFromJsonPayload(raw);
+}
+
+type AgentStdoutTextEmitterOptions = {
+  outputFormat?: string;
+  onText?: (text: string) => void;
+};
+
+type AgentStdoutTextEmitter = {
+  push: (chunk: string) => void;
+  flush: (finalText?: string) => void;
+};
+
+function extractLastAssistantMessage(messages: unknown): unknown | undefined {
+  if (!Array.isArray(messages)) return undefined;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i] as any;
+    if (message?.role === "assistant") return message;
+  }
+  return undefined;
+}
+
+function extractCliStreamTextChunks(
+  parsed: any,
+  state: { sawDeltaSinceBoundary: boolean },
+): string[] {
+  const chunks: string[] = [];
+
+  const emitDelta = (text: string | undefined) => {
+    if (!text) return;
+    state.sawDeltaSinceBoundary = true;
+    chunks.push(text);
+  };
+
+  const emitFinal = (text: string | undefined) => {
+    if (text && !state.sawDeltaSinceBoundary) {
+      chunks.push(text);
+    }
+    state.sawDeltaSinceBoundary = false;
+  };
+
+  const type = typeof parsed?.type === "string" ? parsed.type : "";
+  const upperType = type.toUpperCase();
+
+  if (type === "content_block_delta" && parsed?.delta?.type === "text_delta") {
+    emitDelta(typeof parsed.delta.text === "string" ? parsed.delta.text : undefined);
+  }
+
+  if (type === "message_update") {
+    const assistantEvent = parsed?.assistantMessageEvent;
+    if (
+      assistantEvent?.type === "text_delta" &&
+      typeof assistantEvent.delta === "string"
+    ) {
+      emitDelta(assistantEvent.delta);
+    }
+  }
+
+  if (/delta/i.test(type) && type !== "content_block_delta" && type !== "message_update") {
+    if (typeof parsed?.delta === "string") {
+      emitDelta(parsed.delta);
+    } else if (typeof parsed?.delta?.text === "string") {
+      emitDelta(parsed.delta.text);
+    } else if (typeof parsed?.text === "string") {
+      emitDelta(parsed.text);
+    }
+  }
+
+  if (type === "message" && parsed?.role === "assistant") {
+    emitFinal(extractTextFromJsonValue(parsed.content ?? parsed.message ?? parsed));
+  }
+
+  if (upperType === "MESSAGE" && parsed?.role === "assistant") {
+    if (parsed?.delta === true && typeof parsed?.content === "string") {
+      emitDelta(parsed.content);
+    } else {
+      emitFinal(extractTextFromJsonValue(parsed.content ?? parsed.message ?? parsed));
+    }
+  }
+
+  if (parsed?.role === "assistant" && typeof parsed?.content === "string") {
+    emitFinal(parsed.content);
+  }
+
+  if (type === "assistant" && parsed?.message?.role === "assistant") {
+    emitFinal(extractTextFromJsonValue(parsed.message));
+  }
+
+  if (type === "result") {
+    emitFinal(extractTextFromJsonValue(parsed.result ?? parsed.response ?? parsed.output ?? parsed));
+  }
+
+  if (type === "turn_end" && parsed?.message?.role === "assistant") {
+    emitFinal(extractTextFromJsonValue(parsed.message));
+  }
+
+  if (type === "message_end" && parsed?.message?.role === "assistant") {
+    emitFinal(extractTextFromJsonValue(parsed.message));
+  }
+
+  if (type === "agent_end") {
+    emitFinal(extractTextFromJsonValue(extractLastAssistantMessage(parsed.messages)));
+  }
+
+  if (
+    type === "message_stop" ||
+    type === "turn.completed" ||
+    type === "turn_end" ||
+    type === "message_end" ||
+    type === "agent_end" ||
+    type === "result"
+  ) {
+    state.sawDeltaSinceBoundary = false;
+  }
+
+  return chunks;
+}
+
+export function createAgentStdoutTextEmitter(
+  options: AgentStdoutTextEmitterOptions,
+): AgentStdoutTextEmitter {
+  const { outputFormat, onText } = options;
+  let buffer = "";
+  let emittedAnyText = false;
+  const state = { sawDeltaSinceBoundary: false };
+
+  const emitText = (text: string | undefined) => {
+    if (!onText || !text) return;
+    emittedAnyText = true;
+    onText(text);
+  };
+
+  const processLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      return;
+    }
+    for (const chunk of extractCliStreamTextChunks(parsed, state)) {
+      emitText(chunk);
+    }
+  };
+
+  return {
+    push(chunk: string) {
+      if (!onText || !chunk) return;
+      if (!outputFormat || outputFormat === "text") {
+        emitText(chunk);
+        return;
+      }
+
+      buffer += chunk;
+      let newlineIndex = buffer.indexOf("\n");
+      while (newlineIndex >= 0) {
+        const line = buffer.slice(0, newlineIndex);
+        processLine(line);
+        buffer = buffer.slice(newlineIndex + 1);
+        newlineIndex = buffer.indexOf("\n");
+      }
+    },
+    flush(finalText?: string) {
+      if (!onText) return;
+      if (outputFormat && outputFormat !== "text" && buffer.trim()) {
+        processLine(buffer);
+      }
+      buffer = "";
+      if (!emittedAnyText && finalText) {
+        emitText(finalText);
+      }
+    },
+  };
 }
 
 export function truncateToBytes(text: string, maxBytes?: number): string {
@@ -566,7 +806,7 @@ export function runCommandEffect(
   command: string,
   args: string[],
   options: RunCommandOptions,
-): Effect.Effect<RunCommandResult, Error> {
+): Effect.Effect<RunCommandResult, SmithersError> {
   const {
     cwd,
     env,
@@ -612,22 +852,47 @@ export function runRpcCommandEffect(command: string, args: string[], options: Ru
    stderr: string;
    exitCode: number | null;
    usage?: any;
- }, Error> {
-   const { cwd, env, prompt, timeoutMs, idleTimeoutMs, signal, maxOutputBytes, onStderr, onExtensionUiRequest } = options;
+ }, SmithersError> {
+   const {
+     cwd,
+     env,
+     prompt,
+     timeoutMs,
+     idleTimeoutMs,
+     signal,
+     maxOutputBytes,
+     onStdout,
+     onStderr,
+     onJsonEvent,
+     onExtensionUiRequest,
+   } = options;
+   const span = `agent:${command}:rpc`;
+   const logAnnotations = {
+     agentCommand: command,
+     agentArgs: args.join(" "),
+     cwd,
+     rpc: true,
+     timeoutMs: timeoutMs ?? null,
+     idleTimeoutMs: idleTimeoutMs ?? null,
+   };
    return Effect.async<{
      text: string;
      output: unknown;
      stderr: string;
      exitCode: number | null;
      usage?: any;
-   }, Error>((resume) => {
+   }, SmithersError>((resume) => {
      let stderr = "";
      let settled = false;
      let exitCode: number | null = null;
      let textDeltas = "";
+     let streamedAnyText = false;
      let finalMessage: unknown | null = null;
      let promptResponseError: string | null = null;
      let extractedUsage: any = undefined;
+     let stderrTruncated = false;
+
+     logDebug("starting agent RPC command", logAnnotations, span);
  
      const child = spawn(command, args, {
        cwd,
@@ -636,10 +901,38 @@ export function runRpcCommandEffect(command: string, args: string[], options: Ru
      });
  
      const rl = createInterface({ input: child.stdout });
+
+     const makeAgentCliError = (
+       message: string,
+       details?: Record<string, unknown>,
+       cause?: unknown,
+     ) =>
+       new SmithersError(
+         "AGENT_CLI_ERROR",
+         message,
+         {
+           agentArgs: args,
+           agentCommand: command,
+           cwd,
+           ...details,
+         },
+         { cause },
+       );
  
-     const handleError = (err: Error) => {
+     const handleError = (
+       err: SmithersError,
+       message = "agent RPC command failed",
+     ) => {
        if (settled) return;
        settled = true;
+       logWarning(
+         message,
+         {
+           ...logAnnotations,
+           error: err.message,
+         },
+         span,
+       );
        try {
          rl.close();
        } catch {
@@ -651,6 +944,16 @@ export function runRpcCommandEffect(command: string, args: string[], options: Ru
      const finalize = (text: string, output: unknown) => {
        if (settled) return;
        settled = true;
+       logDebug(
+         "agent RPC command completed",
+         {
+           ...logAnnotations,
+           exitCode: child.exitCode ?? exitCode,
+           stderrBytes: Buffer.byteLength(stderr, "utf8"),
+           textBytes: Buffer.byteLength(text, "utf8"),
+         },
+         span,
+       );
        try {
          rl.close();
        } catch {
@@ -677,7 +980,7 @@ export function runRpcCommandEffect(command: string, args: string[], options: Ru
  
      const kill = (reason: string) => {
        terminateChild();
-       handleError(new Error(reason));
+       handleError(makeAgentCliError(reason), "agent RPC command interrupted");
      };
 
      const totalTimeout = createOneShotTimer(timeoutMs, () =>
@@ -704,30 +1007,30 @@ export function runRpcCommandEffect(command: string, args: string[], options: Ru
          response = { type: "extension_ui_response", id: request.id, cancelled: true };
        }
        if (!response) return;
-       const normalized = { ...response, id: request.id, type: "extension_ui_response" } as PiExtensionUiResponse;
+      const normalized = { ...response, id: request.id, type: "extension_ui_response" } as PiExtensionUiResponse;
       if (!child.stdin) {
-        handleError(new Error("Failed to send extension UI response: child stdin is not available"));
+        handleError(
+          makeAgentCliError(
+            "Failed to send extension UI response: child stdin is not available",
+          ),
+        );
         terminateChild();
         return;
       }
       child.stdin.write(`${JSON.stringify(normalized)}\n`);
      };
  
-    const handleLine = async (line: string) => {
-      inactivity.reset();
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        return;
-      }
-      if (!parsed || typeof parsed !== "object") return;
-      try {
-        options.onEvent?.(parsed);
-      } catch {
-        // ignore observer errors
-      }
-      const event = parsed as Record<string, unknown>;
+     const handleLine = async (line: string) => {
+       inactivity.reset();
+       let parsed: unknown;
+       try {
+         parsed = JSON.parse(line);
+       } catch {
+         return;
+       }
+       if (!parsed || typeof parsed !== "object") return;
+       const event = parsed as Record<string, unknown>;
+       void Promise.resolve(onJsonEvent?.(event)).catch(() => undefined);
        const type = event.type;
        if (type === "response" && event.command === "prompt" && event.success === false) {
          const errorMessage = typeof event.error === "string" ? event.error : "PI RPC prompt failed";
@@ -739,6 +1042,8 @@ export function runRpcCommandEffect(command: string, args: string[], options: Ru
          const assistantEvent = (event as any).assistantMessageEvent as { type?: string; delta?: string } | undefined;
          if (assistantEvent?.type === "text_delta" && typeof assistantEvent.delta === "string") {
            textDeltas += assistantEvent.delta;
+           streamedAnyText = true;
+           onStdout?.(assistantEvent.delta);
          }
        }
        if (type === "message_end") {
@@ -761,55 +1066,22 @@ export function runRpcCommandEffect(command: string, args: string[], options: Ru
            if (message.usage) extractedUsage = message.usage;
            if (message.stopReason === "error" || message.stopReason === "aborted") {
              promptResponseError = message.errorMessage || `Request ${message.stopReason}`;
-             inactivity.clear();
-             totalTimeout.clear();
-             handleError(new Error(promptResponseError));
-             return;
            }
-           // Do not finalize on tool-use turns. Pi continues with additional
-           // turns after tool execution and only reaches the real final answer
-           // on a later turn/agent_end.
-           if (message.stopReason !== "toolUse") {
-             const extracted = finalMessage ? extractTextFromJsonValue(finalMessage) : undefined;
-             const text = extracted ?? textDeltas;
-             inactivity.clear();
-             totalTimeout.clear();
-             finalize(text, finalMessage ?? text);
-             child.stdin?.end();
-             terminateChild();
-             return;
+           const extracted = finalMessage ? extractTextFromJsonValue(finalMessage) : undefined;
+           const text = extracted ?? textDeltas;
+           if (!streamedAnyText && text) {
+             onStdout?.(text);
            }
-         }
-       }
-       if (type === "agent_end") {
-         const messages = (event as any).messages as Array<any> | undefined;
-         if (Array.isArray(messages)) {
-           for (let i = messages.length - 1; i >= 0; i--) {
-             const message = messages[i];
-             if (message?.role === "assistant") {
-               finalMessage = message;
-               if (message.usage) extractedUsage = message.usage;
-               if (message.stopReason === "error" || message.stopReason === "aborted") {
-                 promptResponseError = message.errorMessage || `Request ${message.stopReason}`;
-               }
-               break;
-             }
-           }
-         }
-         if (promptResponseError) {
            inactivity.clear();
            totalTimeout.clear();
-           handleError(new Error(promptResponseError));
-           return;
+           if (promptResponseError) {
+             handleError(makeAgentCliError(promptResponseError));
+             return;
+           }
+           finalize(text, finalMessage ?? text);
+           child.stdin?.end();
+           terminateChild();
          }
-         const extracted = finalMessage ? extractTextFromJsonValue(finalMessage) : undefined;
-         const text = extracted ?? textDeltas;
-         inactivity.clear();
-         totalTimeout.clear();
-         finalize(text, finalMessage ?? text);
-         child.stdin?.end();
-         terminateChild();
-         return;
        }
        if (type === "extension_ui_request") {
          await maybeWriteExtensionResponse(event as PiExtensionUiRequest);
@@ -819,7 +1091,11 @@ export function runRpcCommandEffect(command: string, args: string[], options: Ru
      let lineQueue = Promise.resolve();
      rl.on("line", (line) => {
        lineQueue = lineQueue.then(() => handleLine(line)).catch((err) => {
-         handleError(err instanceof Error ? err : new Error(String(err)));
+         handleError(
+           err instanceof SmithersError
+             ? err
+             : toSmithersError(err, undefined, { code: "AGENT_CLI_ERROR" }),
+         );
        });
      });
 
@@ -830,14 +1106,36 @@ export function runRpcCommandEffect(command: string, args: string[], options: Ru
      child.stderr?.on("data", (chunk) => {
        inactivity.reset();
        const text = chunk.toString("utf8");
-       stderr = truncateToBytes(stderr + text, maxOutputBytes);
+       const nextStderr = stderr + text;
+       if (!stderrTruncated && maxOutputBytes && Buffer.byteLength(nextStderr, "utf8") > maxOutputBytes) {
+         stderrTruncated = true;
+         void runPromise(Metric.increment(toolOutputTruncatedTotal));
+         logWarning(
+           "agent RPC stderr truncated",
+           {
+             ...logAnnotations,
+             maxOutputBytes,
+           },
+           span,
+         );
+       }
+       stderr = truncateToBytes(nextStderr, maxOutputBytes);
        onStderr?.(text);
      });
 
      child.on("error", (err) => {
        inactivity.clear();
        totalTimeout.clear();
-       handleError(err);
+       handleError(
+         toSmithersError(err, undefined, {
+           code: "AGENT_CLI_ERROR",
+           details: {
+             agentArgs: args,
+             agentCommand: command,
+             cwd,
+           },
+         }),
+       );
      });
 
      child.on("close", (code) => {
@@ -846,20 +1144,29 @@ export function runRpcCommandEffect(command: string, args: string[], options: Ru
        totalTimeout.clear();
        if (settled) return;
        if (promptResponseError) {
-         handleError(new Error(promptResponseError));
+         handleError(makeAgentCliError(promptResponseError));
          return;
        }
        if (code && code !== 0) {
-         handleError(new Error(stderr.trim() || `CLI exited with code ${code}`));
+         handleError(
+           makeAgentCliError(stderr.trim() || `CLI exited with code ${code}`),
+         );
          return;
        }
        const text = finalMessage ? extractTextFromJsonValue(finalMessage) ?? textDeltas : textDeltas;
+       if (!streamedAnyText && text) {
+         onStdout?.(text);
+       }
        finalize(text ?? "", finalMessage ?? text ?? "");
      });
  
      const promptPayload = { id: randomUUID(), type: "prompt", message: prompt };
      if (!child.stdin) {
-       handleError(new Error("Child process stdin is not available; cannot send prompt payload."));
+       handleError(
+         makeAgentCliError(
+           "Child process stdin is not available; cannot send prompt payload.",
+         ),
+       );
        return;
      }
      child.stdin.write(`${JSON.stringify(promptPayload)}\n`);
@@ -876,13 +1183,8 @@ export function runRpcCommandEffect(command: string, args: string[], options: Ru
        }
      });
    }).pipe(
-     Effect.annotateLogs({
-       agentCommand: command,
-       agentArgs: args.join(" "),
-       cwd,
-       rpc: true,
-     }),
-     Effect.withLogSpan(`agent:${command}:rpc`),
+     Effect.annotateLogs(logAnnotations),
+     Effect.withLogSpan(span),
    );
 }
 
@@ -947,12 +1249,87 @@ export abstract class BaseCliAgent implements Agent<any, any, any> {
     const commandEnv = commandSpec.env
       ? ({ ...env, ...commandSpec.env } as Record<string, string>)
       : env;
+    const stdoutEmitter = createAgentStdoutTextEmitter({
+      outputFormat: commandSpec.outputFormat,
+      onText: options?.onStdout,
+    });
+    const interpreter = this.createOutputInterpreter();
+    let stdoutBuffer = "";
+    let stderrBuffer = "";
+
+    const emitEvents = (
+      eventPayload: AgentCliEvent[] | AgentCliEvent | null | undefined,
+    ) => {
+      if (!eventPayload || !options?.onEvent) return;
+      const events = Array.isArray(eventPayload) ? eventPayload : [eventPayload];
+      for (const event of events) {
+        void Promise.resolve(options.onEvent(event)).catch(() => undefined);
+      }
+    };
+
+    const flushBufferedLines = (
+      stream: "stdout" | "stderr",
+      includePartial: boolean,
+    ) => {
+      if (!interpreter) return;
+      let buffer = stream === "stdout" ? stdoutBuffer : stderrBuffer;
+      const lines = buffer.split("\n");
+      if (!includePartial) {
+        buffer = lines.pop() ?? "";
+      } else {
+        buffer = "";
+      }
+
+      for (const line of lines) {
+        if (!line) continue;
+        emitEvents(
+          stream === "stdout"
+            ? interpreter.onStdoutLine?.(line)
+            : interpreter.onStderrLine?.(line),
+        );
+      }
+
+      if (stream === "stdout") {
+        stdoutBuffer = buffer;
+      } else {
+        stderrBuffer = buffer;
+      }
+    };
+
+    const handleInterpreterChunk = (
+      stream: "stdout" | "stderr",
+      chunk: string,
+    ) => {
+      if (!interpreter || !chunk) return;
+      if (stream === "stdout") {
+        stdoutBuffer += chunk;
+      } else {
+        stderrBuffer += chunk;
+      }
+      flushBufferedLines(stream, false);
+    };
 
     // Launch diagnostics optimistically alongside the agent
     const diagnosticsPromise = launchDiagnostics(commandSpec.command, commandEnv, cwd);
 
-    try {
-      const result = await runCommand(commandSpec.command, commandSpec.args, {
+    function filterBenignStderr(stderr: string): string {
+      const benignPatterns = [
+        /^.*state db missing rollout path.*$/gm,
+        /^.*codex_core::rollout::list.*$/gm,
+        /^.*failed to record rollout items: failed to queue rollout items: channel closed.*$/gim,
+        /^.*Failed to shutdown rollout recorder.*$/gm,
+        /^.*failed to renew cache TTL: Operation not permitted.*$/gim,
+      ];
+      let filtered = stderr;
+      for (const pattern of benignPatterns) {
+        filtered = filtered.replace(pattern, "");
+      }
+      // Clean up extra blank lines
+      return filtered.replace(/\n{3,}/g, "\n\n").trim();
+    }
+
+    const program = Effect.gen(this, function* () {
+      const result = yield* runCommandEffect(commandSpec.command, commandSpec.args, {
         cwd,
         env: commandEnv,
         input: commandSpec.stdin,
@@ -960,31 +1337,24 @@ export abstract class BaseCliAgent implements Agent<any, any, any> {
         idleTimeoutMs: callTimeouts.idleMs,
         signal: options?.abortSignal,
         maxOutputBytes: this.maxOutputBytes ?? getToolContext()?.maxOutputBytes,
-        onStdout: options?.onStdout,
-        onStderr: options?.onStderr,
+        onStdout: (chunk) => {
+          stdoutEmitter.push(chunk);
+          handleInterpreterChunk("stdout", chunk);
+        },
+        onStderr: (chunk) => {
+          options?.onStderr?.(chunk);
+          handleInterpreterChunk("stderr", chunk);
+        },
       });
+      flushBufferedLines("stdout", true);
+      flushBufferedLines("stderr", true);
+      emitEvents(interpreter?.onExit?.(result));
 
       const stdout = commandSpec.outputFile
-        ? await fs
-            .readFile(commandSpec.outputFile, "utf8")
-            .catch(() => result.stdout)
+        ? yield* fromPromise("read output file", () =>
+            fs.readFile(commandSpec.outputFile!, "utf8"),
+          ).pipe(Effect.catchAll(() => Effect.succeed(result.stdout)))
         : result.stdout;
-
-      function filterBenignStderr(stderr: string): string {
-        const benignPatterns = [
-          /^.*state db missing rollout path.*$/gm,
-          /^.*codex_core::rollout::list.*$/gm,
-          /^.*failed to record rollout items: failed to queue rollout items: channel closed.*$/gim,
-          /^.*Failed to shutdown rollout recorder.*$/gm,
-          /^.*failed to renew cache TTL: Operation not permitted.*$/gim,
-        ];
-        let filtered = stderr;
-        for (const pattern of benignPatterns) {
-          filtered = filtered.replace(pattern, "");
-        }
-        // Clean up extra blank lines
-        return filtered.replace(/\n{3,}/g, "\n\n").trim();
-      }
 
       if (result.exitCode && result.exitCode !== 0) {
         const filteredStderr = filterBenignStderr(result.stderr);
@@ -993,7 +1363,7 @@ export abstract class BaseCliAgent implements Agent<any, any, any> {
             filteredStderr ||
             result.stdout.trim() ||
             `CLI exited with code ${result.exitCode}`;
-          throw new SmithersError("AGENT_CLI_ERROR", errorText);
+          return yield* Effect.fail(new SmithersError("AGENT_CLI_ERROR", errorText));
         }
       }
 
@@ -1009,10 +1379,10 @@ export abstract class BaseCliAgent implements Agent<any, any, any> {
 
       // Optionally treat "banner-only" output as an error when requested.
       if (commandSpec.errorOnBannerOnly && !rawText && stdout.trim()) {
-        throw new SmithersError(
+        return yield* Effect.fail(new SmithersError(
           "AGENT_CLI_ERROR",
           `CLI agent error (stdout): output was only a banner with no model response`,
-        );
+        ));
       }
 
       // Some CLIs report failures on stdout even with exit code 0. Keep
@@ -1022,7 +1392,9 @@ export abstract class BaseCliAgent implements Agent<any, any, any> {
         for (const pattern of stdoutErrorPatterns) {
           const regex = new RegExp(pattern.source, pattern.flags);
           if (regex.test(rawText)) {
-            throw new SmithersError("AGENT_CLI_ERROR", `CLI agent error (stdout): ${rawText.slice(0, 500)}`);
+            return yield* Effect.fail(
+              new SmithersError("AGENT_CLI_ERROR", `CLI agent error (stdout): ${rawText.slice(0, 500)}`),
+            );
           }
         }
       }
@@ -1051,32 +1423,43 @@ export abstract class BaseCliAgent implements Agent<any, any, any> {
         },
         totalTokens: (cliUsage.inputTokens ?? 0) + (cliUsage.outputTokens ?? 0) || undefined,
       } : undefined;
+      stdoutEmitter.flush(extractedText);
       return buildGenerateResult(
         extractedText,
         output,
         this.model ?? commandSpec.command,
         usage,
       );
-    } catch (err) {
-      // Enrich error with diagnostics on failure
-      if (diagnosticsPromise) {
-        const report = await diagnosticsPromise.catch(() => null);
-        if (report && err instanceof SmithersError) {
-          enrichReportWithErrorAnalysis(report, err.message);
-          err.details = { ...err.details, diagnostics: report };
-        }
-      }
-      throw err;
-    } finally {
-      if (commandSpec.cleanup) {
-        await commandSpec.cleanup().catch(() => undefined);
-      }
-    }
+    }).pipe(
+      Effect.tapError((err) =>
+        fromPromise("enrich diagnostics", async () => {
+          if (!diagnosticsPromise) return;
+          const report = await diagnosticsPromise.catch(() => null);
+          if (report && err instanceof SmithersError) {
+            enrichReportWithErrorAnalysis(report, err.message);
+            err.details = { ...err.details, diagnostics: report };
+            console.warn(formatDiagnosticSummary(report));
+          }
+        }).pipe(Effect.ignore),
+      ),
+      Effect.ensuring(Effect.sync(() => { stdoutEmitter.flush(); })),
+      Effect.ensuring(
+        commandSpec.cleanup
+          ? fromPromise("agent cleanup", () => commandSpec.cleanup!()).pipe(Effect.ignore)
+          : Effect.void,
+      ),
+    );
+
+    return runPromise(program);
   }
 
   async stream(options: any): Promise<StreamTextResult<any, any>> {
     const result = await this.generate(options);
     return buildStreamResult(result);
+  }
+
+  protected createOutputInterpreter(): CliOutputInterpreter | undefined {
+    return undefined;
   }
 
   protected abstract buildCommand(params: {

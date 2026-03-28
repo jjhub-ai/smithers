@@ -1,6 +1,7 @@
 import { Effect, Metric } from "effect";
 import { runPromise } from "../effect/runtime";
 import { dbRetries } from "../effect/metrics";
+import { type SmithersError, toSmithersError } from "../utils/errors";
 
 const DEFAULT_MAX_ATTEMPTS = 6;
 const DEFAULT_BASE_DELAY_MS = 50;
@@ -41,9 +42,9 @@ function computeDelayMs(attempt: number, baseDelayMs: number, maxDelayMs: number
 }
 
 export function withSqliteWriteRetryEffect<A>(
-  operation: () => Effect.Effect<A, Error>,
+  operation: () => Effect.Effect<A, SmithersError>,
   opts: SqliteWriteRetryOptions = {},
-): Effect.Effect<A, Error> {
+): Effect.Effect<A, SmithersError> {
   const {
     label = "sqlite write",
     maxAttempts = DEFAULT_MAX_ATTEMPTS,
@@ -52,7 +53,7 @@ export function withSqliteWriteRetryEffect<A>(
     sleep,
   } = opts;
 
-  const loop = (attempt: number): Effect.Effect<A, Error> =>
+  const loop = (attempt: number): Effect.Effect<A, SmithersError> =>
     operation().pipe(
       Effect.catchAll((error) => {
         if (!isRetryableSqliteWriteError(error) || attempt >= maxAttempts) {
@@ -68,7 +69,10 @@ export function withSqliteWriteRetryEffect<A>(
             yield* Effect.tryPromise({
               try: () => sleep(delayMs),
               catch: (cause) =>
-                cause instanceof Error ? cause : new Error(String(cause)),
+                toSmithersError(cause, label, {
+                  code: "DB_WRITE_FAILED",
+                  details: { retryDelayMs: delayMs },
+                }),
             });
           } else {
             yield* Effect.sleep(delayMs);
@@ -99,7 +103,9 @@ export async function withSqliteWriteRetry<T>(
         Effect.tryPromise({
           try: () => operation(),
           catch: (cause) =>
-            cause instanceof Error ? cause : new Error(String(cause)),
+            toSmithersError(cause, opts.label ?? "sqlite write", {
+              code: "DB_WRITE_FAILED",
+            }),
         }),
       opts,
     ),

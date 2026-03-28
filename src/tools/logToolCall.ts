@@ -1,10 +1,9 @@
 import { Effect, Metric } from "effect";
 import { nowMs } from "../utils/time";
-import { sha256Hex } from "../utils/hash";
 import { errorToJson } from "../utils/errors";
 import { getToolContext, nextToolSeq } from "./context";
 import { runPromise } from "../effect/runtime";
-import { toolDuration } from "../effect/metrics";
+import { toolDuration, toolOutputTruncatedTotal } from "../effect/metrics";
 
 export function logToolCallEffect(
   toolName: string,
@@ -23,9 +22,13 @@ export function logToolCallEffect(
   const finished = nowMs();
   const durationMs = finished - started;
   const maxLogBytes = ctx.maxOutputBytes ?? 200_000;
-  const inputJson = safeJson(input, maxLogBytes);
-  const outputJson = safeJson(output, maxLogBytes);
-  const errorJson = error ? safeJson(errorToJson(error), maxLogBytes) : null;
+  const inputLog = safeJson(input, maxLogBytes);
+  const outputLog = safeJson(output, maxLogBytes);
+  const errorLog = error ? safeJson(errorToJson(error), maxLogBytes) : null;
+  const truncatedLogCount =
+    (inputLog.truncated ? 1 : 0) +
+    (outputLog.truncated ? 1 : 0) +
+    (errorLog?.truncated ? 1 : 0);
   void ctx.emitEvent?.({
     type: "ToolCallFinished",
     runId: ctx.runId,
@@ -37,7 +40,12 @@ export function logToolCallEffect(
     status,
     timestampMs: finished,
   });
-  return Metric.update(toolDuration, durationMs).pipe(
+  return Effect.all([
+    Metric.update(toolDuration, durationMs),
+    truncatedLogCount > 0
+      ? Metric.incrementBy(toolOutputTruncatedTotal, truncatedLogCount)
+      : Effect.void,
+  ], { discard: true }).pipe(
     Effect.andThen(
       ctx.db.insertToolCallEffect({
         runId: ctx.runId,
@@ -46,12 +54,12 @@ export function logToolCallEffect(
         attempt: ctx.attempt,
         seq,
         toolName,
-        inputJson,
-        outputJson,
+        inputJson: inputLog.json,
+        outputJson: outputLog.json,
         startedAtMs: started,
         finishedAtMs: finished,
         status,
-        errorJson,
+        errorJson: errorLog?.json ?? null,
       }),
     ),
     Effect.annotateLogs({
@@ -106,13 +114,21 @@ export function truncateToBytes(text: string, maxBytes: number): string {
   return buf.subarray(0, maxBytes).toString("utf8");
 }
 
-export function safeJson(value: unknown, maxBytes: number): string {
+export function safeJson(
+  value: unknown,
+  maxBytes: number,
+): { json: string; truncated: boolean } {
   const json = JSON.stringify(value ?? null);
-  if (Buffer.byteLength(json, "utf8") <= maxBytes) return json;
+  if (Buffer.byteLength(json, "utf8") <= maxBytes) {
+    return { json, truncated: false };
+  }
   const preview = truncateToBytes(json, maxBytes);
-  return JSON.stringify({
+  return {
+    json: JSON.stringify({
+      truncated: true,
+      bytes: Buffer.byteLength(json, "utf8"),
+      preview,
+    }),
     truncated: true,
-    bytes: Buffer.byteLength(json, "utf8"),
-    preview,
-  });
+  };
 }
