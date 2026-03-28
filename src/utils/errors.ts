@@ -335,14 +335,6 @@ export const smithersErrorDefinitions = {
     when: "The Pi or server integration receives a non-success HTTP response from Smithers.",
   },
 
-  MCP_SERVER_START_FAILED: {
-    category: "integrations",
-    when: "The MCP server fails to start or bind to the requested transport.",
-  },
-  MCP_TOOL_EXECUTION_FAILED: {
-    category: "integrations",
-    when: "An MCP tool call fails during execution.",
-  },
   OPENAPI_SPEC_LOAD_FAILED: {
     category: "integrations",
     when: "An OpenAPI spec cannot be loaded or parsed.",

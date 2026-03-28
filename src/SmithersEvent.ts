@@ -319,28 +319,7 @@ export type SmithersEvent =
       topScore: number;
       timestampMs: number;
     }
-  | {
-      type: "McpServerStarted";
-      runId: string;
-      transport: "stdio" | "http";
-      port?: number;
-      toolCount: number;
-      timestampMs: number;
-    }
-  | {
-      type: "McpToolCalled";
-      runId: string;
-      toolName: string;
-      durationMs: number;
-      status: "success" | "error";
-      timestampMs: number;
-    }
-  | {
-      type: "McpServerStopped";
-      runId: string;
-      timestampMs: number;
-    }
-  | {
+| {
       type: "MemoryFactSet";
       runId: string;
       namespace: string;

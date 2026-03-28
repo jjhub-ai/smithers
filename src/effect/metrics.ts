@@ -75,13 +75,6 @@ export const voiceOperationsTotal = Metric.counter("smithers.voice.operations_to
 export const voiceErrorsTotal = Metric.counter("smithers.voice.errors_total");
 
 // ---------------------------------------------------------------------------
-// Counters — MCP
-// ---------------------------------------------------------------------------
-
-export const mcpToolCallsTotal = Metric.counter("smithers.mcp.tool_calls");
-export const mcpToolCallErrorsTotal = Metric.counter("smithers.mcp.tool_call_errors");
-
-// ---------------------------------------------------------------------------
 // Counters — events
 // ---------------------------------------------------------------------------
 
@@ -98,8 +91,6 @@ export const schedulerQueueDepth = Metric.gauge("smithers.scheduler.queue_depth"
 // ---------------------------------------------------------------------------
 // Gauges — MCP
 // ---------------------------------------------------------------------------
-
-export const mcpActiveConnections = Metric.gauge("smithers.mcp.active_connections");
 
 // ---------------------------------------------------------------------------
 // Gauges — new
@@ -223,10 +214,6 @@ export const voiceDuration = Metric.histogram(
   durationBuckets,
 );
 
-export const mcpToolDuration = Metric.histogram(
-  "smithers.mcp.tool_duration_ms",
-  toolBuckets,
-);
 
 // TODO: instrument once TaskDescriptor carries `pendingSinceMs` from the node
 // row's `updatedAtMs` — currently the timestamp is not available at dispatch
@@ -455,32 +442,6 @@ export function trackEvent(event: SmithersEvent): Effect.Effect<void> {
       return Effect.all([
         countEvent,
         Metric.increment(ragRetrieveCount),
-      ], { discard: true });
-
-    case "McpServerStarted":
-      return Effect.all([
-        countEvent,
-        Metric.update(mcpActiveConnections, 1),
-      ], { discard: true });
-
-    case "McpToolCalled":
-      return event.status === "error"
-        ? Effect.all([
-            countEvent,
-            Metric.increment(mcpToolCallsTotal),
-            Metric.increment(mcpToolCallErrorsTotal),
-            Metric.update(mcpToolDuration, event.durationMs),
-          ], { discard: true })
-        : Effect.all([
-            countEvent,
-            Metric.increment(mcpToolCallsTotal),
-            Metric.update(mcpToolDuration, event.durationMs),
-          ], { discard: true });
-
-    case "McpServerStopped":
-      return Effect.all([
-        countEvent,
-        Metric.update(mcpActiveConnections, -1),
       ], { discard: true });
 
     case "MemoryFactSet":

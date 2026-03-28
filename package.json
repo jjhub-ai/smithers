@@ -26,7 +26,6 @@
     "./scorers": "./src/scorers/index.ts",
     "./voice": "./src/voice/index.ts",
     "./rag": "./src/rag/index.ts",
-    "./mcp": "./src/mcp/index.ts",
     "./openapi": "./src/openapi/index.ts"
   },
   "files": [
