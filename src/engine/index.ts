@@ -3,6 +3,9 @@ import type { RunOptions } from "../RunOptions";
 import type { RunResult } from "../RunResult";
 import type { SmithersEvent } from "../SmithersEvent";
 import type { TaskDescriptor } from "../TaskDescriptor";
+import type { GraphSnapshot } from "../GraphSnapshot";
+import type { AgentCliEvent } from "../agents/BaseCliAgent";
+import { isBlockingAgentActionKind } from "../agents/BaseCliAgent";
 import { SmithersRenderer } from "../dom/renderer";
 import { buildContext } from "../context";
 import { loadInput, loadOutputs } from "../db/snapshot";
@@ -34,6 +37,7 @@ import {
   type RalphStateMap,
 } from "./scheduler";
 import { runWithToolContext } from "../tools/context";
+import { captureSnapshot } from "../time-travel/snapshot";
 import { EventBus } from "../events";
 import { getJjPointer } from "../vcs/jj";
 import { findVcsRoot } from "../vcs/find-root";
@@ -41,14 +45,27 @@ import { z } from "zod";
 import { eq, getTableName } from "drizzle-orm";
 import { getTableColumns } from "drizzle-orm/utils";
 import { Effect, Metric } from "effect";
-import { cacheHits, cacheMisses, nodeDuration, attemptDuration, schedulerQueueDepth, promptSizeBytes, responseSizeBytes, runDuration, runsResumedTotal } from "../effect/metrics";
+import {
+  attemptDuration,
+  cacheHits,
+  cacheMisses,
+  nodeDuration,
+  promptSizeBytes,
+  responseSizeBytes,
+  runDuration,
+  runsResumedTotal,
+  schedulerConcurrencyUtilization,
+  schedulerQueueDepth,
+  schedulerWaitDuration,
+} from "../effect/metrics";
+import { runScorersAsync } from "../scorers/run-scorers";
 import { dirname, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fromPromise } from "../effect/interop";
 import { logDebug, logError, logInfo, logWarning } from "../effect/logging";
 import { runPromise } from "../effect/runtime";
-import { HotWorkflowController } from "../hot/HotWorkflowController";
+import { HotWorkflowController } from "../hot";
 import type { HotReloadOptions } from "../RunOptions";
 import { spawn as nodeSpawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -61,10 +78,10 @@ import { withTaskRuntime } from "../effect/task-runtime";
  */
 const createdWorktrees = new Set<string>();
 
-function makeAbortError(message = "Task aborted"): Error {
-  const err = new Error(message);
-  (err as any).name = "AbortError";
-  return err;
+function makeAbortError(message = "Task aborted"): SmithersError {
+  return new SmithersError("TASK_ABORTED", message, undefined, {
+    name: "AbortError",
+  });
 }
 
 function isAbortError(err: unknown): boolean {
@@ -91,6 +108,104 @@ function abortPromise(signal?: AbortSignal): Promise<never> | null {
       once: true,
     });
   });
+}
+
+type HijackCompletion = {
+  requestedAtMs: number;
+  nodeId: string;
+  iteration: number;
+  attempt: number;
+  engine: string;
+  mode: "native-cli" | "conversation";
+  resume?: string;
+  messages?: unknown[];
+  cwd: string;
+};
+
+type HijackState = {
+  request: { requestedAtMs: number; target?: string | null } | null;
+  completion: HijackCompletion | null;
+};
+
+function parseAttemptMetaJson(metaJson?: string | null): Record<string, unknown> {
+  if (!metaJson) return {};
+  try {
+    const parsed = JSON.parse(metaJson);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function asConversationMessages(value: unknown): unknown[] | undefined {
+  return Array.isArray(value) ? value : undefined;
+}
+
+function cloneJsonValue<T>(value: T): T | undefined {
+  if (value === undefined) return undefined;
+  try {
+    return JSON.parse(JSON.stringify(value)) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+function extractHijackContinuation(
+  meta: Record<string, unknown>,
+  engine: string,
+): { mode: "native-cli"; resume: string } | { mode: "conversation"; messages: unknown[] } | null {
+  const handoff = meta.hijackHandoff;
+  if (handoff && typeof handoff === "object" && !Array.isArray(handoff)) {
+    const handoffEngine = typeof (handoff as any).engine === "string" ? (handoff as any).engine : undefined;
+    const handoffMode = (handoff as any).mode === "conversation" ? "conversation" : "native-cli";
+    if (handoffEngine === engine) {
+      if (handoffMode === "native-cli") {
+        const handoffResume = typeof (handoff as any).resume === "string" ? (handoff as any).resume : undefined;
+        if (handoffResume) {
+          return { mode: "native-cli", resume: handoffResume };
+        }
+      }
+      const handoffMessages = asConversationMessages((handoff as any).messages);
+      if (handoffMode === "conversation" && handoffMessages?.length) {
+        return { mode: "conversation", messages: handoffMessages };
+      }
+    }
+  }
+
+  const resume = typeof meta.agentResume === "string" ? meta.agentResume : undefined;
+  if (typeof meta.agentEngine === "string" && meta.agentEngine === engine && resume) {
+    return { mode: "native-cli", resume };
+  }
+
+  const messages = asConversationMessages(meta.agentConversation);
+  if (typeof meta.agentEngine === "string" && meta.agentEngine === engine && messages?.length) {
+    return { mode: "conversation", messages };
+  }
+
+  return null;
+}
+
+function findHijackContinuation(
+  attempts: Array<{ metaJson?: string | null }>,
+  engine: string,
+): { mode: "native-cli"; resume: string } | { mode: "conversation"; messages: unknown[] } | undefined {
+  for (const attempt of attempts) {
+    const meta = parseAttemptMetaJson(attempt.metaJson);
+    const continuation = extractHijackContinuation(meta, engine);
+    if (continuation) {
+      return continuation;
+    }
+  }
+  return undefined;
+}
+
+function buildHijackAbortError(completion: HijackCompletion): Error {
+  const err = makeAbortError(`Hijack requested for ${completion.engine}`);
+  (err as any).code = "RUN_HIJACKED";
+  (err as any).hijack = completion;
+  return err;
 }
 
 async function runGitCommand(
@@ -576,6 +691,7 @@ function startRunSupervisor(
   runId: string,
   runtimeOwnerId: string,
   controller: AbortController,
+  hijackState: HijackState,
 ) {
   let closed = false;
 
@@ -595,6 +711,22 @@ function startRunSupervisor(
     while (!closed && !controller.signal.aborted) {
       try {
         const run = await adapter.getRun(runId);
+        if (
+          run?.hijackRequestedAtMs &&
+          (!hijackState.request ||
+            run.hijackRequestedAtMs > hijackState.request.requestedAtMs)
+        ) {
+          hijackState.request = {
+            requestedAtMs: run.hijackRequestedAtMs,
+            target: run.hijackTarget ?? null,
+          };
+          logInfo("detected durable run hijack request", {
+            runId,
+            runtimeOwnerId,
+            hijackRequestedAtMs: run.hijackRequestedAtMs,
+            hijackTarget: run.hijackTarget ?? null,
+          }, "engine:hijack-watch");
+        }
         if (run?.cancelRequestedAtMs) {
           logInfo("detected durable run cancellation", {
             runId,
@@ -1198,6 +1330,7 @@ export function applyConcurrencyLimits(
       inProgressTotal += 1;
     }
   }
+  void runPromise(Metric.set(schedulerConcurrencyUtilization, maxConcurrency > 0 ? inProgressTotal / maxConcurrency : 0));
 
   const capacity = Math.max(0, maxConcurrency - inProgressTotal);
   for (const desc of runnable) {
@@ -1293,6 +1426,8 @@ async function executeTask(
   cacheEnabled: boolean,
   signal?: AbortSignal,
   disabledAgents?: Set<any>,
+  runAbortController?: AbortController,
+  hijackState?: HijackState,
 ) {
   const taskStartMs = performance.now();
   const attempts = await adapter.listAttempts(
@@ -1301,6 +1436,24 @@ async function executeTask(
     desc.iteration,
   );
   const attemptNo = (attempts[0]?.attempt ?? 0) + 1;
+  const attemptMeta: Record<string, unknown> = {
+    kind: desc.agent ? "agent" : desc.computeFn ? "compute" : "static",
+    prompt: desc.prompt ?? null,
+    staticPayload: desc.staticPayload ?? null,
+    label: desc.label ?? null,
+    outputTable: desc.outputTableName,
+    needsApproval: desc.needsApproval,
+    retries: desc.retries,
+    timeoutMs: desc.timeoutMs,
+    agentId: null,
+    agentModel: null,
+    agentEngine: null,
+    agentResume: null,
+    agentConversation: null,
+    resumedFromSession: null,
+    resumedFromConversation: false,
+    hijackHandoff: null,
+  };
 
   await adapter.insertAttempt({
     runId,
@@ -1314,15 +1467,7 @@ async function executeTask(
     jjPointer: null,
     jjCwd: desc.worktreePath ?? toolConfig.rootDir,
     cached: false,
-    metaJson: JSON.stringify({
-      prompt: desc.prompt ?? null,
-      staticPayload: desc.staticPayload ?? null,
-      label: desc.label ?? null,
-      outputTable: desc.outputTableName,
-      needsApproval: desc.needsApproval,
-      retries: desc.retries,
-      timeoutMs: desc.timeoutMs,
-    }),
+    metaJson: JSON.stringify(attemptMeta),
   });
   await adapter.insertNode({
     runId,
@@ -1490,75 +1635,278 @@ async function executeTask(
       effectiveAgent = agents.length > 0
         ? agents[Math.min(attemptNo - 1, agents.length - 1)]
         : allAgents[Math.min(attemptNo - 1, allAgents.length - 1)]; // fallback to disabled agent if all disabled
+      const emitOutput = (text: string, stream: "stdout" | "stderr") => {
+        void eventBus.emitEventQueued({
+          type: "NodeOutput",
+          runId,
+          nodeId: desc.nodeId,
+          iteration: desc.iteration,
+          attempt: attemptNo,
+          text,
+          stream,
+          timestampMs: nowMs(),
+        });
+      };
       // Capture the agent result at this scope so schema-retry can build
       // conversation history from the original response messages.
       let agentResult: any;
       if (effectiveAgent) {
-        // Use fallback agent on retry attempts when available
-        const result = await runWithToolContext(
-          {
-            db: adapter,
+        attemptMeta.agentId =
+          (effectiveAgent as any).id ??
+          (effectiveAgent as any).constructor?.name ??
+          null;
+        attemptMeta.agentModel =
+          (effectiveAgent as any).model ??
+          (effectiveAgent as any).modelId ??
+          null;
+        const currentAgentEngine =
+          typeof (effectiveAgent as any).cliEngine === "string"
+            ? (effectiveAgent as any).cliEngine
+            : typeof (effectiveAgent as any).hijackEngine === "string"
+              ? (effectiveAgent as any).hijackEngine
+              : (typeof (effectiveAgent as any).constructor?.name === "string"
+                  ? (effectiveAgent as any).constructor.name
+                  : null);
+        attemptMeta.agentEngine = currentAgentEngine;
+        const priorContinuation =
+          currentAgentEngine
+            ? findHijackContinuation(attempts as any[], currentAgentEngine)
+            : undefined;
+        const resumeSession =
+          priorContinuation?.mode === "native-cli"
+            ? priorContinuation.resume
+            : undefined;
+        const resumeMessages =
+          priorContinuation?.mode === "conversation"
+            ? (cloneJsonValue(priorContinuation.messages) ?? priorContinuation.messages)
+            : undefined;
+        if (resumeSession) {
+          attemptMeta.resumedFromSession = resumeSession;
+        }
+        if (resumeMessages?.length) {
+          attemptMeta.resumedFromConversation = true;
+          attemptMeta.agentConversation = resumeMessages;
+        }
+        await adapter.updateAttempt(runId, desc.nodeId, desc.iteration, attemptNo, {
+          metaJson: JSON.stringify(attemptMeta),
+        });
+
+        const activeCliActions = new Set<string>();
+        let conversationMessages = resumeMessages ? [...resumeMessages] : null;
+
+        const updateConversation = (messages: unknown[] | undefined) => {
+          const cloned = cloneJsonValue(messages);
+          if (!cloned?.length) {
+            return;
+          }
+          conversationMessages = cloned;
+          attemptMeta.agentConversation = cloned;
+          maybeCompleteHijack();
+        };
+
+        let effectivePrompt = desc.prompt ?? "";
+        if (desc.outputTable) {
+          const schemaDesc = describeSchemaShape(desc.outputTable as any, desc.outputSchema);
+          const jsonInstructions = [
+            "**REQUIRED OUTPUT** — You MUST end your response with a JSON object in a code fence matching this schema:",
+            "```json",
+            schemaDesc,
+            "```",
+            "Output the JSON at the END of your response. The workflow will fail without it.",
+          ].join("\n");
+          effectivePrompt = [
+            "IMPORTANT: After completing the task below, you MUST output a JSON object in a ```json code fence at the very end of your response. Do NOT forget this — the workflow fails without it.",
+            "",
+            effectivePrompt,
+            "",
+            "",
+            jsonInstructions,
+          ].join("\n");
+        }
+
+        const maybeCompleteHijack = () => {
+          if (!hijackState?.request || hijackState.completion || !runAbortController) {
+            return;
+          }
+          const target = hijackState.request.target ?? null;
+          const engine =
+            typeof attemptMeta.agentEngine === "string" ? attemptMeta.agentEngine : null;
+          const resume =
+            typeof attemptMeta.agentResume === "string" ? attemptMeta.agentResume : undefined;
+          const messages = asConversationMessages(attemptMeta.agentConversation);
+          const handoffMode =
+            resume
+              ? "native-cli"
+              : (messages?.length ? "conversation" : null);
+          if (!engine || !handoffMode) {
+            return;
+          }
+          if (target && target !== engine) {
+            return;
+          }
+          if (handoffMode === "native-cli" && activeCliActions.size > 0) {
+            return;
+          }
+          const completion: HijackCompletion = {
+            requestedAtMs: hijackState.request.requestedAtMs,
+            nodeId: desc.nodeId,
+            iteration: desc.iteration,
+            attempt: attemptNo,
+            engine,
+            mode: handoffMode,
+            resume,
+            messages: handoffMode === "conversation" ? cloneJsonValue(messages) : undefined,
+            cwd: desc.worktreePath ?? taskRoot,
+          };
+          hijackState.completion = completion;
+          attemptMeta.hijackHandoff = {
+            engine: completion.engine,
+            mode: completion.mode,
+            resume: completion.resume ?? null,
+            messages: completion.mode === "conversation" ? completion.messages ?? null : null,
+            requestedAtMs: completion.requestedAtMs,
+            cwd: completion.cwd,
+            nodeId: completion.nodeId,
+            iteration: completion.iteration,
+            attempt: completion.attempt,
+          };
+          void eventBus.emitEventQueued({
+            type: "RunHijacked",
+            runId,
+            nodeId: completion.nodeId,
+            iteration: completion.iteration,
+            attempt: completion.attempt,
+            engine: completion.engine,
+            mode: completion.mode,
+            resume: completion.resume ?? null,
+            cwd: completion.cwd,
+            timestampMs: nowMs(),
+          });
+          runAbortController.abort();
+        };
+
+        const handleAgentEvent = (event: AgentCliEvent) => {
+          attemptMeta.agentEngine = event.engine ?? attemptMeta.agentEngine;
+          if ("resume" in event && typeof event.resume === "string") {
+            attemptMeta.agentResume = event.resume;
+          }
+          if (event.type === "completed" && !responseText && event.answer) {
+            responseText = event.answer;
+          }
+          if (
+            event.type === "action" &&
+            isBlockingAgentActionKind(event.action.kind)
+          ) {
+            if (event.phase === "started") {
+              activeCliActions.add(event.action.id);
+            } else if (event.phase === "completed") {
+              activeCliActions.delete(event.action.id);
+            }
+          }
+          void eventBus.emitEventQueued({
+            type: "AgentEvent",
             runId,
             nodeId: desc.nodeId,
             iteration: desc.iteration,
             attempt: attemptNo,
-            rootDir: taskRoot,
-            allowNetwork: toolConfig.allowNetwork,
-            maxOutputBytes: toolConfig.maxOutputBytes,
-            timeoutMs: desc.timeoutMs ?? toolConfig.toolTimeoutMs,
-            seq: 0,
-            emitEvent: (event) => eventBus.emitEventQueued(event),
-          },
-          async () => {
-            // Auto-append structured output instructions when an output table is defined.
-            // This prevents agents from needing manual "REQUIRED OUTPUT" blocks in every prompt
-            // and avoids costly retry round-trips when the agent forgets to output JSON.
-            let effectivePrompt = desc.prompt ?? "";
-            if (desc.outputTable) {
-              const schemaDesc = describeSchemaShape(desc.outputTable as any, desc.outputSchema);
-              const jsonInstructions = [
-                "**REQUIRED OUTPUT** — You MUST end your response with a JSON object in a code fence matching this schema:",
-                "```json",
-                schemaDesc,
-                "```",
-                "Output the JSON at the END of your response. The workflow will fail without it.",
-              ].join("\n");
-              // Prepend a brief reminder at the top AND append full instructions at the end.
-              // This ensures models with long outputs don't lose track of the JSON requirement.
-              effectivePrompt = [
-                "IMPORTANT: After completing the task below, you MUST output a JSON object in a ```json code fence at the very end of your response. Do NOT forget this — the workflow fails without it.",
-                "",
-                effectivePrompt,
-                "",
-                "",
-                jsonInstructions,
-              ].join("\n");
-            }
-            const emitOutput = (text: string, stream: "stdout" | "stderr") => {
-              void eventBus.emitEventQueued({
-                type: "NodeOutput",
-                runId,
-                nodeId: desc.nodeId,
-                iteration: desc.iteration,
-                attempt: attemptNo,
-                text,
-                stream,
-                timestampMs: nowMs(),
+            engine: event.engine,
+            event,
+            timestampMs: nowMs(),
+          });
+          maybeCompleteHijack();
+        };
+
+        const handleSdkStepFinish = (stepResult: any) => {
+          if (!conversationMessages) {
+            conversationMessages = [
+              { role: "user", content: effectivePrompt },
+            ];
+          }
+          const stepMessages = Array.isArray(stepResult?.response?.messages)
+            ? (cloneJsonValue(stepResult.response.messages) ?? stepResult.response.messages)
+            : [];
+          if (!stepMessages.length) {
+            maybeCompleteHijack();
+            return;
+          }
+          conversationMessages = [
+            ...conversationMessages,
+            ...stepMessages,
+          ];
+          attemptMeta.agentConversation = conversationMessages;
+          maybeCompleteHijack();
+        };
+
+        const hijackPollingInterval = hijackState
+          ? setInterval(() => {
+              try {
+                maybeCompleteHijack();
+              } catch {
+                // Best-effort only; the normal event hooks still drive hijack.
+              }
+            }, 100)
+          : undefined;
+
+        // Use fallback agent on retry attempts when available
+        let result: any;
+        try {
+          result = await runWithToolContext(
+            {
+              db: adapter,
+              runId,
+              nodeId: desc.nodeId,
+              iteration: desc.iteration,
+              attempt: attemptNo,
+              rootDir: taskRoot,
+              allowNetwork: toolConfig.allowNetwork,
+              maxOutputBytes: toolConfig.maxOutputBytes,
+              timeoutMs: desc.timeoutMs ?? toolConfig.toolTimeoutMs,
+              seq: 0,
+              emitEvent: (event) => eventBus.emitEventQueued(event),
+            },
+            async () => {
+              const agentCall = resumeMessages?.length
+                ? {
+                    messages: resumeMessages,
+                  }
+                : {
+                    prompt: effectivePrompt,
+                  };
+              return (effectiveAgent as any).generate({
+                options: undefined as any,
+                abortSignal: signal,
+                ...agentCall,
+                resumeSession,
+                timeout: desc.timeoutMs ? { totalMs: desc.timeoutMs } : undefined,
+                onStdout: (text: string) => emitOutput(text, "stdout"),
+                onStderr: (text: string) => emitOutput(text, "stderr"),
+                onEvent: handleAgentEvent,
+                onStepFinish: handleSdkStepFinish,
+                outputSchema: desc.outputSchema,
               });
-            };
-            return (effectiveAgent as any).generate({
-              options: undefined as any,
-              abortSignal: signal,
-              prompt: effectivePrompt,
-              timeout: desc.timeoutMs ? { totalMs: desc.timeoutMs } : undefined,
-              onStdout: (text: string) => emitOutput(text, "stdout"),
-              onStderr: (text: string) => emitOutput(text, "stderr"),
-              outputSchema: desc.outputSchema,
-            });
-          },
-        );
+            },
+          );
+        } finally {
+          if (hijackPollingInterval) {
+            clearInterval(hijackPollingInterval);
+          }
+        }
 
         agentResult = result;
+        if (!conversationMessages) {
+          const responseMessages = Array.isArray((result as any)?.response?.messages)
+            ? (cloneJsonValue((result as any).response.messages) ?? (result as any).response.messages)
+            : [];
+          if (responseMessages.length > 0) {
+            updateConversation([
+              ...(resumeMessages?.length ? resumeMessages : [{ role: "user", content: effectivePrompt }]),
+              ...responseMessages,
+            ]);
+          }
+        } else {
+          updateConversation(conversationMessages);
+        }
+        maybeCompleteHijack();
 
         // --- Track prompt/response sizes ---
         const promptBytes = Buffer.byteLength(desc.prompt ?? "", "utf8");
@@ -1776,8 +2124,11 @@ async function executeTask(
               abortSignal: signal,
               prompt: jsonPrompt,
               timeout: desc.timeoutMs ? { totalMs: desc.timeoutMs } : undefined,
+              onStdout: (text: string) => emitOutput(text, "stdout"),
+              onStderr: (text: string) => emitOutput(text, "stderr"),
             });
             const retryText = (retryResult as any).text ?? "";
+            responseText = retryText || responseText;
             try {
               const trimmed = retryText.trim();
               if (trimmed.startsWith("{")) {
@@ -1864,8 +2215,14 @@ async function executeTask(
               setTimeout(
                 () =>
                   reject(
-                    new Error(
+                    new SmithersError(
+                      "TASK_TIMEOUT",
                       `Compute callback timed out after ${desc.timeoutMs}ms`,
+                      {
+                        attempt: attemptNo,
+                        nodeId: desc.nodeId,
+                        timeoutMs: desc.timeoutMs,
+                      },
                     ),
                   ),
                 desc.timeoutMs!,
@@ -1974,8 +2331,11 @@ async function executeTask(
           abortSignal: signal,
           messages: retryMessages,
           timeout: desc.timeoutMs ? { totalMs: desc.timeoutMs } : undefined,
+          onStdout: (text: string) => emitOutput(text, "stdout"),
+          onStderr: (text: string) => emitOutput(text, "stderr"),
         });
         const retryText = ((schemaRetryResult as any).text ?? "").trim();
+        responseText = retryText || responseText;
 
         // Update conversation history for the next iteration
         const retryResponseMessages = (schemaRetryResult as any)?.response?.messages;
@@ -1990,6 +2350,8 @@ async function executeTask(
             { role: "assistant", content: retryText },
           ];
         }
+        attemptMeta.agentConversation =
+          cloneJsonValue(schemaRetryMessages) ?? schemaRetryMessages;
 
         // Try to parse the retry response
         let retryOutput: any;
@@ -2107,6 +2469,7 @@ async function executeTask(
       finishedAtMs: nowMs(),
       jjPointer,
       cached,
+      metaJson: JSON.stringify(attemptMeta),
       responseText,
     });
     await adapter.insertNode({
@@ -2133,6 +2496,26 @@ async function executeTask(
       Metric.update(nodeDuration, taskElapsedMs),
       Metric.update(attemptDuration, taskElapsedMs),
     ], { discard: true }));
+
+    // Fire async scorers if the task has any attached
+    if (desc.scorers && Object.keys(desc.scorers).length > 0) {
+      runScorersAsync(
+        desc.scorers,
+        {
+          runId,
+          nodeId: desc.nodeId,
+          iteration: desc.iteration,
+          attempt: attemptNo,
+          input: desc.prompt ?? desc.staticPayload ?? null,
+          output: payload,
+          latencyMs: taskElapsedMs,
+          outputSchema: desc.outputSchema,
+        },
+        adapter,
+        eventBus,
+      );
+    }
+
     logInfo("task execution finished", {
       runId,
       nodeId: desc.nodeId,
@@ -2162,6 +2545,7 @@ async function executeTask(
         state: "cancelled",
         finishedAtMs: nowMs(),
         errorJson: JSON.stringify(errorToJson(err)),
+        metaJson: JSON.stringify(attemptMeta),
         responseText,
       });
       await adapter.insertNode({
@@ -2204,6 +2588,7 @@ async function executeTask(
       state: "failed",
       finishedAtMs: nowMs(),
       errorJson: JSON.stringify(errorToJson(err)),
+      metaJson: JSON.stringify(attemptMeta),
       responseText,
     });
     await adapter.insertNode({
@@ -2275,12 +2660,7 @@ async function renderFrameAsync<Schema>(
   workflow: SmithersWorkflow<Schema>,
   ctx: any,
   opts?: { baseRootDir?: string },
-): Promise<{
-  runId: string;
-  frameNo: number;
-  xml: any;
-  tasks: TaskDescriptor[];
-}> {
+): Promise<GraphSnapshot> {
   const renderer = new SmithersRenderer();
   const result = await renderer.render(workflow.build(ctx), {
     ralphIterations: ctx?.iterations,
@@ -2312,12 +2692,7 @@ export async function renderFrame<Schema>(
   workflow: SmithersWorkflow<Schema>,
   ctx: any,
   opts?: { baseRootDir?: string },
-): Promise<{
-  runId: string;
-  frameNo: number;
-  xml: any;
-  tasks: TaskDescriptor[];
-}> {
+): Promise<GraphSnapshot> {
   return runPromise(renderFrameEffect(workflow, ctx, opts));
 }
 
@@ -2365,6 +2740,10 @@ async function runWorkflowBody<Schema>(
   const allowNetwork = Boolean(opts.allowNetwork);
   const runtimeOwnerId = randomUUID();
   const runAbortController = new AbortController();
+  const hijackState: HijackState = {
+    request: null,
+    completion: null,
+  };
   const detachAbort = wireAbortSignal(runAbortController, opts.signal);
   let stopSupervisor = async () => {};
   const runMetadata = await getRunDurabilityMetadata(
@@ -2455,6 +2834,8 @@ async function runWorkflowBody<Schema>(
         heartbeatAtMs: nowMs(),
         runtimeOwnerId,
         cancelRequestedAtMs: null,
+        hijackRequestedAtMs: null,
+        hijackTarget: null,
         vcsType: runMetadata.vcsType,
         vcsRoot: runMetadata.vcsRoot,
         vcsRevision: runMetadata.vcsRevision,
@@ -2475,6 +2856,8 @@ async function runWorkflowBody<Schema>(
         heartbeatAtMs: nowMs(),
         runtimeOwnerId,
         cancelRequestedAtMs: null,
+        hijackRequestedAtMs: null,
+        hijackTarget: null,
         workflowPath:
           resolvedWorkflowPath ??
           opts.workflowPath ??
@@ -2499,6 +2882,7 @@ async function runWorkflowBody<Schema>(
       runId,
       runtimeOwnerId,
       runAbortController,
+      hijackState,
     );
 
     await eventBus.emitEventWithPersist({
@@ -2512,6 +2896,7 @@ async function runWorkflowBody<Schema>(
     await cancelStaleAttempts(adapter, runId);
 
     if (opts.resume) {
+      void runPromise(Metric.increment(runsResumedTotal));
       // On resume, cancel ALL in-progress attempts since the previous process is dead
       const staleInProgress = await adapter.listInProgressAttempts(runId);
       const now = nowMs();
@@ -2576,12 +2961,22 @@ async function runWorkflowBody<Schema>(
         logInfo("run abort observed in scheduler loop", {
           runId,
         }, "engine:run");
+        const hijackError =
+          hijackState.completion
+            ? {
+                code: "RUN_HIJACKED",
+                ...hijackState.completion,
+              }
+            : null;
         await adapter.updateRun(runId, {
           status: "cancelled",
           finishedAtMs: nowMs(),
           heartbeatAtMs: null,
           runtimeOwnerId: null,
           cancelRequestedAtMs: null,
+          hijackRequestedAtMs: null,
+          hijackTarget: null,
+          errorJson: hijackError ? JSON.stringify(hijackError) : null,
         });
         await eventBus.emitEventWithPersist({
           type: "RunCancelled",
@@ -2589,6 +2984,64 @@ async function runWorkflowBody<Schema>(
           timestampMs: nowMs(),
         });
         return { runId, status: "cancelled" };
+      }
+
+      if (hijackState.request && !hijackState.completion && inflight.size === 0) {
+        const hijackAttempts = await adapter.listAttemptsForRun(runId);
+        const target = hijackState.request.target ?? null;
+        const candidate = [...(hijackAttempts as any[])].sort((a, b) => {
+          const aMs = a.startedAtMs ?? 0;
+          const bMs = b.startedAtMs ?? 0;
+          if (aMs !== bMs) return bMs - aMs;
+          return (b.attempt ?? 0) - (a.attempt ?? 0);
+        }).find((attempt) => {
+          const meta = parseAttemptMetaJson(attempt.metaJson);
+          const engine = typeof meta.agentEngine === "string" ? meta.agentEngine : null;
+          const continuation =
+            engine ? extractHijackContinuation(meta, engine) : null;
+          if (!engine || !continuation) {
+            return false;
+          }
+          if (target && target !== engine) {
+            return false;
+          }
+          return true;
+        });
+
+        if (candidate) {
+          const meta = parseAttemptMetaJson(candidate.metaJson);
+          const continuation = extractHijackContinuation(meta, meta.agentEngine as string);
+          if (!continuation) {
+            continue;
+          }
+          hijackState.completion = {
+            requestedAtMs: hijackState.request.requestedAtMs,
+            nodeId: candidate.nodeId,
+            iteration: candidate.iteration,
+            attempt: candidate.attempt,
+            engine: meta.agentEngine as string,
+            mode: continuation.mode,
+            resume: continuation.mode === "native-cli" ? continuation.resume : undefined,
+            messages: continuation.mode === "conversation"
+              ? (cloneJsonValue(continuation.messages) ?? continuation.messages)
+              : undefined,
+            cwd: candidate.jjCwd ?? rootDir,
+          };
+          await eventBus.emitEventWithPersist({
+            type: "RunHijacked",
+            runId,
+            nodeId: hijackState.completion.nodeId,
+            iteration: hijackState.completion.iteration,
+            attempt: hijackState.completion.attempt,
+            engine: hijackState.completion.engine,
+            mode: hijackState.completion.mode,
+            resume: hijackState.completion.resume ?? null,
+            cwd: hijackState.completion.cwd,
+            timestampMs: nowMs(),
+          });
+          runAbortController.abort();
+          continue;
+        }
       }
 
       // Process pending hot reload
@@ -2731,6 +3184,47 @@ async function runWorkflowBody<Schema>(
         timestampMs: nowMs(),
       });
 
+      // --- Time Travel: capture snapshot after frame commit ---
+      try {
+        const snapNodes = await adapter.listNodes(runId);
+        const snapRalph = await adapter.listRalph(runId);
+        const snapInputRow = await loadInput(db, inputTable, runId);
+        const snapOutputs = await loadOutputs(db, schema, runId);
+        const snap = await captureSnapshot(adapter, runId, frameNo, {
+          nodes: (snapNodes as any[]).map((n: any) => ({
+            nodeId: n.nodeId,
+            iteration: n.iteration ?? 0,
+            state: n.state,
+            lastAttempt: n.lastAttempt ?? null,
+            outputTable: n.outputTable ?? "",
+            label: n.label ?? null,
+          })),
+          outputs: snapOutputs,
+          ralph: (snapRalph as any[]).map((r: any) => ({
+            ralphId: r.ralphId,
+            iteration: r.iteration ?? 0,
+            done: Boolean(r.done),
+          })),
+          input: snapInputRow ?? {},
+          vcsPointer: runMetadata?.vcsRevision ?? null,
+          workflowHash: workflowRef.opts.workflowHash ?? null,
+        });
+        await eventBus.emitEventWithPersist({
+          type: "SnapshotCaptured",
+          runId,
+          frameNo,
+          contentHash: snap.contentHash,
+          timestampMs: nowMs(),
+        });
+      } catch (snapErr) {
+        // Snapshot capture is best-effort — don't fail the run
+        logWarning("snapshot capture failed", {
+          runId,
+          frameNo,
+          error: snapErr instanceof Error ? snapErr.message : String(snapErr),
+        }, "engine:snapshot");
+      }
+
       const inProgress = await adapter.listInProgressAttempts(runId);
       const mountedSet = new Set(mountedTaskIds);
       if (
@@ -2789,6 +3283,7 @@ async function runWorkflowBody<Schema>(
         maxConcurrency,
         tasks,
       );
+      void runPromise(Metric.set(schedulerQueueDepth, schedule.runnable.length - runnable.length));
 
       if (runnable.length === 0) {
         // If tasks are still in-flight, wait for one to finish then
@@ -2857,6 +3352,8 @@ async function runWorkflowBody<Schema>(
             heartbeatAtMs: null,
             runtimeOwnerId: null,
             cancelRequestedAtMs: null,
+            hijackRequestedAtMs: null,
+            hijackTarget: null,
           });
           await eventBus.emitEventWithPersist({
             type: "RunStatusChanged",
@@ -2885,6 +3382,8 @@ async function runWorkflowBody<Schema>(
             heartbeatAtMs: null,
             runtimeOwnerId: null,
             cancelRequestedAtMs: null,
+            hijackRequestedAtMs: null,
+            hijackTarget: null,
           });
           await eventBus.emitEventWithPersist({
             type: "RunFailed",
@@ -2984,6 +3483,8 @@ async function runWorkflowBody<Schema>(
                 heartbeatAtMs: null,
                 runtimeOwnerId: null,
                 cancelRequestedAtMs: null,
+                hijackRequestedAtMs: null,
+                hijackTarget: null,
                 errorJson: JSON.stringify({
                   code: "RALPH_MAX_REACHED",
                   ralphId: ralph.id,
@@ -3038,6 +3539,8 @@ async function runWorkflowBody<Schema>(
           heartbeatAtMs: null,
           runtimeOwnerId: null,
           cancelRequestedAtMs: null,
+          hijackRequestedAtMs: null,
+          hijackTarget: null,
         });
         await eventBus.emitEventWithPersist({
           type: "RunFinished",
@@ -3092,6 +3595,8 @@ async function runWorkflowBody<Schema>(
           cacheEnabled,
           runAbortController.signal,
           disabledAgents,
+          runAbortController,
+          hijackState,
         ).finally(() => inflight.delete(p));
         inflight.add(p);
       }
@@ -3107,7 +3612,14 @@ async function runWorkflowBody<Schema>(
           );
         }
         if (waitables.length > 0) {
+          const waitStart = performance.now();
           await Promise.race(waitables);
+          void runPromise(
+            Metric.update(
+              schedulerWaitDuration,
+              performance.now() - waitStart,
+            ),
+          );
         }
       }
     }
@@ -3117,13 +3629,22 @@ async function runWorkflowBody<Schema>(
         runId,
         error: err instanceof Error ? err.message : String(err),
       }, "engine:run");
+      const hijackError =
+        hijackState.completion
+          ? {
+              code: "RUN_HIJACKED",
+              ...hijackState.completion,
+            }
+          : errorToJson(err);
       await adapter.updateRun(runId, {
         status: "cancelled",
         finishedAtMs: nowMs(),
         heartbeatAtMs: null,
         runtimeOwnerId: null,
         cancelRequestedAtMs: null,
-        errorJson: JSON.stringify(errorToJson(err)),
+        hijackRequestedAtMs: null,
+        hijackTarget: null,
+        errorJson: JSON.stringify(hijackError),
       });
       await eventBus.emitEventWithPersist({
         type: "RunCancelled",
@@ -3143,6 +3664,8 @@ async function runWorkflowBody<Schema>(
       heartbeatAtMs: null,
       runtimeOwnerId: null,
       cancelRequestedAtMs: null,
+      hijackRequestedAtMs: null,
+      hijackTarget: null,
       errorJson: JSON.stringify(errorInfo),
     });
     await eventBus.emitEventWithPersist({

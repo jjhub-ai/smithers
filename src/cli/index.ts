@@ -679,6 +679,214 @@ const cronPathArgs = z.object({
   workflowPath: z.string().describe("Path or ID of the workflow to schedule"),
 });
 
+// ---------------------------------------------------------------------------
+// smithers memory ...
+// ---------------------------------------------------------------------------
+
+const memoryListArgs = z.object({
+  namespace: z.string().describe("Namespace to list facts for (e.g. 'workflow:my-flow')"),
+});
+const memoryRecallArgs = z.object({
+  query: z.string().describe("Search query for semantic recall"),
+});
+const memoryRecallOptions = z.object({
+  namespace: z.string().default("global:default").describe("Namespace for recall"),
+  workflow: z.string().describe("Path to a .tsx workflow file"),
+  topK: z.number().int().min(1).default(5).describe("Number of results to return"),
+});
+const memoryListOptions = z.object({
+  workflow: z.string().describe("Path to a .tsx workflow file"),
+});
+
+const memoryCli = Cli.create({
+  name: "memory",
+  description: "View and query cross-run memory facts and semantic recall.",
+})
+  .command("list", {
+    description: "List all memory facts in a namespace.",
+    args: memoryListArgs,
+    options: memoryListOptions,
+    alias: { workflow: "w" },
+    async run(c) {
+      try {
+        const { createMemoryStore } = await import("../memory/store");
+        const { parseNamespace } = await import("../memory/types");
+        const workflow = await loadWorkflowAsync(c.options.workflow);
+        ensureSmithersTables(workflow.db as any);
+        setupSqliteCleanup(workflow);
+
+        const store = createMemoryStore(workflow.db as any);
+        const ns = parseNamespace(c.args.namespace);
+        const facts = await store.listFacts(ns);
+        if (facts.length === 0) {
+          console.log(`No facts found in namespace "${c.args.namespace}".`);
+          return c.ok({ facts: [], namespace: c.args.namespace });
+        }
+        for (const f of facts) {
+          const value = f.valueJson.length > 100 ? f.valueJson.slice(0, 100) + "..." : f.valueJson;
+          const age = formatAge(f.updatedAtMs);
+          console.log(`  ${pc.bold(f.key)} = ${value}  ${pc.dim(`(${age})`)}`);
+        }
+        return c.ok({ facts, namespace: c.args.namespace });
+      } catch (err: any) {
+        console.error(`Error: ${err?.message ?? String(err)}`);
+        return c.error({ code: "MEMORY_LIST_FAILED", message: err?.message ?? String(err) });
+      }
+    },
+  })
+  .command("recall", {
+    description: "Search semantic memory by similarity.",
+    args: memoryRecallArgs,
+    options: memoryRecallOptions,
+    alias: { workflow: "w", namespace: "n", topK: "k" },
+    async run(c) {
+      try {
+        const { createSemanticMemory } = await import("../memory/semantic");
+        const { parseNamespace } = await import("../memory/types");
+        const { createSqliteVectorStore } = await import("../rag/vector-store");
+        const { openai } = await import("@ai-sdk/openai");
+
+        const workflow = await loadWorkflowAsync(c.options.workflow);
+        ensureSmithersTables(workflow.db as any);
+        setupSqliteCleanup(workflow);
+
+        const vectorStore = createSqliteVectorStore(workflow.db);
+        const semantic = createSemanticMemory(
+          vectorStore,
+          openai.embedding("text-embedding-3-small"),
+        );
+
+        const ns = parseNamespace(c.options.namespace);
+        const results = await semantic.recall(ns, c.args.query, { topK: c.options.topK });
+        if (results.length === 0) {
+          console.log("No results found.");
+          return c.ok({ query: c.args.query, namespace: c.options.namespace, results: [] });
+        }
+        for (const r of results) {
+          const preview = r.chunk.content.replace(/\n/g, " ").slice(0, 120);
+          console.log(`[${r.score.toFixed(4)}] ${preview}${r.chunk.content.length > 120 ? "..." : ""}`);
+        }
+        return c.ok({
+          query: c.args.query,
+          namespace: c.options.namespace,
+          results: results.map((r) => ({
+            score: r.score,
+            content: r.chunk.content,
+            metadata: r.metadata,
+          })),
+        });
+      } catch (err: any) {
+        console.error(`Error: ${err?.message ?? String(err)}`);
+        return c.error({ code: "MEMORY_RECALL_FAILED", message: err?.message ?? String(err) });
+      }
+    },
+  });
+
+const ragIngestArgs = z.object({
+  file: z.string().describe("Path to the file to ingest"),
+});
+const ragIngestOptions = z.object({
+  workflow: z.string().describe("Path to a .tsx workflow file"),
+  namespace: z.string().default("default").describe("Vector namespace"),
+  strategy: z.string().default("recursive").describe("Chunking strategy: recursive, character, sentence, markdown, token"),
+  size: z.number().int().min(1).default(1000).describe("Chunk size"),
+  overlap: z.number().int().min(0).default(200).describe("Chunk overlap"),
+});
+const ragQueryArgs = z.object({
+  query: z.string().describe("Search query"),
+});
+const ragQueryOptions = z.object({
+  workflow: z.string().describe("Path to a .tsx workflow file"),
+  namespace: z.string().default("default").describe("Vector namespace"),
+  topK: z.number().int().min(1).default(5).describe("Number of results to return"),
+});
+
+const ragCli = Cli.create({
+  name: "rag",
+  description: "Ingest documents and query the RAG knowledge base.",
+})
+  .command("ingest", {
+    description: "Chunk and embed a file into the vector store.",
+    args: ragIngestArgs,
+    options: ragIngestOptions,
+    alias: { workflow: "w", namespace: "n" },
+    async run(c) {
+      try {
+        const { createSqliteVectorStore } = await import("../rag/vector-store");
+        const { createRagPipeline } = await import("../rag/pipeline");
+        const { loadDocument } = await import("../rag/document");
+        const { openai } = await import("@ai-sdk/openai");
+
+        const workflow = await loadWorkflowAsync(c.options.workflow);
+        ensureSmithersTables(workflow.db as any);
+        setupSqliteCleanup(workflow);
+
+        const store = createSqliteVectorStore(workflow.db);
+        const pipeline = createRagPipeline({
+          vectorStore: store,
+          embeddingModel: openai.embedding("text-embedding-3-small"),
+          chunkOptions: {
+            strategy: c.options.strategy as any,
+            size: c.options.size,
+            overlap: c.options.overlap,
+          },
+          namespace: c.options.namespace,
+        });
+
+        const doc = loadDocument(c.args.file);
+        await pipeline.ingest([doc]);
+        const count = await store.count(c.options.namespace);
+        console.log(`[+] Ingested ${c.args.file} into namespace "${c.options.namespace}" (${count} total chunks)`);
+        return c.ok({ file: c.args.file, namespace: c.options.namespace, totalChunks: count });
+      } catch (err: any) {
+        console.error(`Error: ${err?.message ?? String(err)}`);
+        return c.error({ code: "RAG_INGEST_FAILED", message: err?.message ?? String(err) });
+      }
+    },
+  })
+  .command("query", {
+    description: "Search the vector store for relevant chunks.",
+    args: ragQueryArgs,
+    options: ragQueryOptions,
+    alias: { workflow: "w", namespace: "n", topK: "k" },
+    async run(c) {
+      try {
+        const { createSqliteVectorStore } = await import("../rag/vector-store");
+        const { createRagPipeline } = await import("../rag/pipeline");
+        const { openai } = await import("@ai-sdk/openai");
+
+        const workflow = await loadWorkflowAsync(c.options.workflow);
+        ensureSmithersTables(workflow.db as any);
+        setupSqliteCleanup(workflow);
+
+        const store = createSqliteVectorStore(workflow.db);
+        const pipeline = createRagPipeline({
+          vectorStore: store,
+          embeddingModel: openai.embedding("text-embedding-3-small"),
+          namespace: c.options.namespace,
+        });
+
+        const results = await pipeline.retrieve(c.args.query, { topK: c.options.topK });
+        for (const r of results) {
+          const preview = r.chunk.content.replace(/\n/g, " ").slice(0, 120);
+          console.log(`[${r.score.toFixed(4)}] ${preview}${r.chunk.content.length > 120 ? "..." : ""}`);
+        }
+        return c.ok({
+          query: c.args.query,
+          namespace: c.options.namespace,
+          results: results.map((r) => ({
+            score: r.score,
+            content: r.chunk.content,
+            metadata: r.metadata,
+          })),
+        });
+      } catch (err: any) {
+        console.error(`Error: ${err?.message ?? String(err)}`);
+        return c.error({ code: "RAG_QUERY_FAILED", message: err?.message ?? String(err) });
+      }
+    },
+  });
+
 const cronCli = Cli.create({
   name: "cron",
   description: "Manage and run background schedule triggers.",
@@ -737,6 +945,159 @@ const cronCli = Cli.create({
         return c.ok({ deleted: c.args.cronId });
       } finally {
         cleanup();
+      }
+    },
+  });
+
+// ---------------------------------------------------------------------------
+// MCP subcommand
+// ---------------------------------------------------------------------------
+
+const mcpServeOptions = z.object({
+  transport: z.enum(["stdio", "http"]).default("stdio").describe("MCP transport (stdio or http)"),
+  port: z.number().int().min(1).default(3001).describe("HTTP port (with --transport http)"),
+});
+
+const mcpCli = Cli.create({
+  name: "mcp",
+  description: "Expose smithers tools, agents, and workflows via Model Context Protocol.",
+})
+  .command("serve", {
+    description: "Start the MCP server for external AI tool integration.",
+    options: mcpServeOptions,
+    alias: { transport: "t", port: "p" },
+    async run(c) {
+      try {
+        const { createSmithersMcpServer } = await import("../mcp/server");
+        const { tools } = await import("../tools/index");
+
+        // Discover workflows if available
+        let workflows: Record<string, any> = {};
+        try {
+          const discovered = discoverWorkflows(process.cwd());
+          for (const w of discovered) {
+            const abs = resolve(process.cwd(), w.entryFile);
+            mdxPlugin();
+            const mod = await import(pathToFileURL(abs).href);
+            if (mod.default) {
+              workflows[w.id] = mod.default;
+            }
+          }
+        } catch {
+          // No workflows discovered — that's fine
+        }
+
+        const server = createSmithersMcpServer({
+          name: "smithers",
+          version: readPackageVersion(),
+          tools,
+          workflows: Object.keys(workflows).length > 0 ? workflows : undefined,
+        });
+
+        await server.start({
+          transport: c.options.transport as "stdio" | "http",
+          port: c.options.port,
+        });
+
+        if (c.options.transport === "http") {
+          process.stderr.write(
+            `[smithers] MCP server running on http://127.0.0.1:${c.options.port}/mcp\n` +
+            `[smithers] Press Ctrl+C to stop.\n`,
+          );
+        }
+
+        // Keep alive until signal
+        await new Promise<void>((resolvePromise) => {
+          process.once("SIGINT", () => {
+            server.close().finally(() => resolvePromise());
+          });
+          process.once("SIGTERM", () => {
+            server.close().finally(() => resolvePromise());
+          });
+        });
+
+        return c.ok({ transport: c.options.transport, status: "stopped" });
+      } catch (err: any) {
+        console.error(`Error: ${err?.message ?? String(err)}`);
+        return c.error({ code: "MCP_SERVE_FAILED", message: err?.message ?? String(err) });
+      }
+    },
+  })
+  .command("list-tools", {
+    description: "List tools that would be exposed via MCP.",
+    async run(c) {
+      try {
+        const { buildMcpToolList } = await import("../mcp/tool-mapper");
+        const { tools } = await import("../tools/index");
+
+        // Discover workflows
+        let workflows: Record<string, any> = {};
+        try {
+          const discovered = discoverWorkflows(process.cwd());
+          for (const w of discovered) {
+            const abs = resolve(process.cwd(), w.entryFile);
+            mdxPlugin();
+            const mod = await import(pathToFileURL(abs).href);
+            if (mod.default) {
+              workflows[w.id] = mod.default;
+            }
+          }
+        } catch {
+          // No workflows
+        }
+
+        const mcpTools = buildMcpToolList({
+          tools,
+          workflows: Object.keys(workflows).length > 0 ? workflows : undefined,
+        });
+
+        for (const tool of mcpTools) {
+          console.log(`  ${pc.bold(tool.name)} — ${tool.description}`);
+        }
+        console.log(`\n  ${mcpTools.length} tool(s) total`);
+
+        return c.ok({ tools: mcpTools.map((t) => ({ name: t.name, description: t.description })) });
+      } catch (err: any) {
+        console.error(`Error: ${err?.message ?? String(err)}`);
+        return c.error({ code: "MCP_LIST_FAILED", message: err?.message ?? String(err) });
+      }
+    },
+  });
+
+// ---------------------------------------------------------------------------
+// OpenAPI subcommand
+// ---------------------------------------------------------------------------
+
+const openapiListArgs = z.object({
+  specPath: z.string().describe("Path or URL to an OpenAPI spec"),
+});
+
+const openapiCli = Cli.create({
+  name: "openapi",
+  description: "Generate AI SDK tools from OpenAPI specs.",
+})
+  .command("list", {
+    description: "Preview tools that would be generated from an OpenAPI spec.",
+    args: openapiListArgs,
+    async run(c) {
+      try {
+        const { listOperations } = await import("../openapi/tool-factory");
+        const ops = listOperations(c.args.specPath);
+
+        if (ops.length === 0) {
+          console.log("  No operations found in spec.");
+          return c.ok({ operations: [] });
+        }
+
+        for (const op of ops) {
+          console.log(`  ${pc.bold(op.operationId)} — ${op.summary || `${op.method} ${op.path}`}`);
+        }
+        console.log(`\n  ${ops.length} tool(s) from spec`);
+
+        return c.ok({ operations: ops });
+      } catch (err: any) {
+        console.error(`Error: ${err?.message ?? String(err)}`);
+        return c.error({ code: "OPENAPI_LIST_FAILED", message: err?.message ?? String(err) });
       }
     },
   });
@@ -1294,8 +1655,8 @@ const cli = Cli.create({
           const event = {
             type: "RunHijackRequested" as const,
             runId: c.args.runId,
-            target: c.options.target ?? undefined,
             timestampMs: requestedAtMs,
+            ...(c.options.target ? { target: c.options.target } : {}),
           };
           await adapter.requestRunHijack(c.args.runId, requestedAtMs, c.options.target ?? null);
           await adapter.insertEventWithNextSeq({
@@ -2187,7 +2548,11 @@ const cli = Cli.create({
   })
 
   .command(workflowCli)
-  .command(cronCli);
+  .command(cronCli)
+  .command(ragCli)
+  .command(mcpCli)
+  .command(memoryCli)
+  .command(openapiCli);
 
 // ---------------------------------------------------------------------------
 // Main
@@ -2196,7 +2561,7 @@ const cli = Cli.create({
 const KNOWN_COMMANDS = new Set([
   "init", "up", "down", "ps", "logs", "chat", "inspect", "approve", "deny",
   "cancel", "graph", "revert", "scores", "observability", "workflow", "ask", "cron",
-  "replay", "diff", "fork", "timeline",
+  "replay", "diff", "fork", "timeline", "rag", "mcp", "memory", "openapi",
 ]);
 
 const BUILTIN_FLAGS_WITH_VALUES = new Set([

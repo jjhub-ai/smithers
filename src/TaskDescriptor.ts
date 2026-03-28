@@ -1,6 +1,9 @@
 import type { AgentLike } from "./AgentLike";
 import type { CachePolicy } from "./CachePolicy";
 import type { RetryPolicy } from "./RetryPolicy";
+import type { ScorersMap } from "./scorers/types";
+import type { VoiceProvider } from "./voice/types";
+import type { TaskMemoryConfig } from "./memory/types";
 
 export type TaskDescriptor = {
   nodeId: string;
@@ -36,4 +39,12 @@ export type TaskDescriptor = {
   computeFn?: () => unknown | Promise<unknown>;
   label?: string;
   meta?: Record<string, unknown>;
+  /** Optional scorers map attached to this task. */
+  scorers?: ScorersMap;
+  /** Voice provider propagated from a <Voice> ancestor. */
+  voice?: VoiceProvider;
+  /** Default speaker/voice ID propagated from a <Voice> ancestor. */
+  voiceSpeaker?: string;
+  /** Optional cross-run memory configuration. */
+  memoryConfig?: TaskMemoryConfig;
 };

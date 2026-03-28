@@ -14,8 +14,17 @@ export type { SmithersCtx } from "./SmithersCtx";
 export type { OutputAccessor, InferRow, InferOutputEntry } from "./OutputAccessor";
 export type { SmithersEvent } from "./SmithersEvent";
 export type { SmithersError } from "./SmithersError";
-export { SmithersError as SmithersErrorInstance, isSmithersError, errorToJson } from "./utils/errors";
-export type { SmithersErrorCode } from "./utils/errors";
+export {
+  ERROR_REFERENCE_URL,
+  SmithersError as SmithersErrorInstance,
+  errorToJson,
+  getSmithersErrorDefinition,
+  getSmithersErrorDocsUrl,
+  isKnownSmithersErrorCode,
+  isSmithersError,
+  knownSmithersErrorCodes,
+} from "./utils/errors";
+export type { KnownSmithersErrorCode, SmithersErrorCode } from "./utils/errors";
 export type {
   ResolvedSmithersObservabilityOptions,
   SmithersLogFormat,
@@ -36,6 +45,7 @@ export {
   Loop,
   Ralph,
   Worktree,
+  Voice,
 } from "./components";
 export type {
   ApprovalDecision,
@@ -43,6 +53,8 @@ export type {
   ApprovalRequest,
   TaskProps,
   OutputTarget,
+  DepsSpec,
+  InferDeps,
 } from "./components";
 
 // Agents
@@ -96,6 +108,10 @@ export { tools, read, write, edit, grep, bash } from "./tools/index";
 export { startServer } from "./server/index";
 export type { ServerOptions } from "./server/index";
 
+// Serve (Hono-based single-workflow HTTP server)
+export { createServeApp } from "./server/serve";
+export type { ServeOptions } from "./server/serve";
+
 // Observability
 export {
   SmithersObservability,
@@ -133,7 +149,7 @@ export {
   vcsDuration,
 } from "./observability";
 
-// Effect builder (internal, includes experimental .toon support and SQLite helpers)
+// Effect builder (internal, includes SQLite helpers)
 export { Smithers } from "./effect/builder";
 export type { SmithersSqliteOptions } from "./effect/builder";
 
@@ -150,12 +166,166 @@ export { revertToAttempt } from "./revert";
 export type { RevertOptions, RevertResult } from "./revert";
 
 
+// Scorers
+export {
+  createScorer,
+  llmJudge,
+  relevancyScorer,
+  toxicityScorer,
+  faithfulnessScorer,
+  schemaAdherenceScorer,
+  latencyScorer,
+  runScorersAsync,
+  runScorersBatch,
+  aggregateScores,
+  smithersScorers,
+} from "./scorers";
+export type {
+  ScoreResult,
+  ScorerInput,
+  ScorerFn,
+  Scorer,
+  SamplingConfig,
+  ScorerBinding,
+  ScorersMap,
+  ScoreRow,
+  AggregateScore,
+  ScorerContext,
+  CreateScorerConfig,
+  LlmJudgeConfig,
+  AggregateOptions,
+} from "./scorers";
+
+// Voice
+export {
+  createAiSdkVoice,
+  createCompositeVoice,
+  createOpenAIRealtimeVoice,
+  VoiceService,
+  speak,
+  listen,
+} from "./voice";
+export type {
+  VoiceProvider,
+  SpeakOptions,
+  ListenOptions,
+  SendOptions,
+  AudioFormat,
+  TranscriptionResult,
+  TranscriptionSegment,
+  VoiceEventMap,
+  VoiceEventType,
+  VoiceEventCallback,
+  AiSdkVoiceConfig,
+  CompositeVoiceConfig,
+  OpenAIRealtimeVoiceConfig,
+} from "./voice";
+
+// RAG
+export {
+  createDocument,
+  loadDocument,
+  chunk,
+  embedChunks,
+  embedQuery,
+  createSqliteVectorStore,
+  createRagPipeline,
+  createRagTool,
+  RagService,
+  createRagServiceLayer,
+  ragIngestCount,
+  ragRetrieveCount,
+  ragRetrieveDuration,
+  ragEmbedDuration,
+} from "./rag";
+export type {
+  Document as RagDocument,
+  DocumentFormat,
+  Chunk as RagChunk,
+  ChunkStrategy,
+  ChunkOptions,
+  EmbeddedChunk,
+  RetrievalResult,
+  VectorStore,
+  VectorQueryOptions,
+  RagPipelineConfig,
+  RagPipeline,
+  CreateDocumentOptions,
+  RagToolOptions,
+} from "./rag";
+
+// MCP Server
+export { createSmithersMcpServer, SmithersMcpServer } from "./mcp";
+export type {
+  SmithersMcpServerConfig,
+  McpCapabilities,
+  McpToolDefinition,
+  McpResourceDefinition,
+  McpTransport,
+  McpServerStartOptions,
+} from "./mcp";
+export { McpService, createMcpLayer, startMcpServer, stopMcpServer } from "./mcp";
+export {
+  smithersToolToMcp,
+  smithersAgentToMcp,
+  smithersWorkflowToMcp,
+  buildMcpToolList,
+} from "./mcp";
+
+// Memory
+export {
+  createMemoryStore,
+  createSemanticMemory,
+  createMemoryLayer,
+  MemoryService,
+  TtlGarbageCollector,
+  TokenLimiter,
+  Summarizer,
+  namespaceToString,
+  parseNamespace,
+  memoryFactReads,
+  memoryFactWrites,
+  memoryRecallQueries,
+  memoryMessageSaves,
+  memoryRecallDuration,
+} from "./memory";
+export type {
+  MemoryNamespace,
+  MemoryNamespaceKind,
+  MemoryFact,
+  MemoryThread,
+  MemoryMessage,
+  MemoryStore,
+  SemanticMemory,
+  MemoryProcessor,
+  MemoryServiceApi,
+  MemoryLayerConfig,
+  TaskMemoryConfig,
+  WorkingMemoryConfig,
+  SemanticRecallConfig,
+  MessageHistoryConfig,
+  MemoryProcessorConfig,
+} from "./memory";
+
+// OpenAPI Tools
+export {
+  createOpenApiTools,
+  createOpenApiToolsSync,
+  createOpenApiTool,
+  createOpenApiToolSync,
+  listOperations,
+  openApiToolCallsTotal,
+  openApiToolCallErrorsTotal,
+  openApiToolDuration,
+} from "./openapi";
+export type {
+  OpenApiSpec,
+  OpenApiAuth,
+  OpenApiToolsOptions,
+} from "./openapi";
+
 // Utilities
 export { mdxPlugin } from "./mdx-plugin";
-export {
-  bamlPlugin,
-  createBamlPlugin,
-} from "./baml-plugin";
 export { markdownComponents } from "./markdownComponents";
 export { renderMdx } from "./renderMdx";
 export { zodToTable } from "./zodToTable";

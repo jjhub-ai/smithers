@@ -6,6 +6,10 @@ import type { AgentLike } from "../AgentLike";
 import { SmithersError } from "../utils/errors";
 import type { CachePolicy } from "../CachePolicy";
 import type { RetryPolicy } from "../RetryPolicy";
+import type { ScorersMap } from "../scorers/types";
+import type { TaskMemoryConfig } from "../memory/types";
+import { SmithersContext } from "../context";
+import type { InferOutputEntry } from "../OutputAccessor";
 
 /**
  * Valid output targets: a Zod schema (recommended with createSmithers),
@@ -13,7 +17,19 @@ import type { RetryPolicy } from "../RetryPolicy";
  */
 export type OutputTarget = import("zod").ZodObject<any> | { $inferSelect: any } | string;
 
-export type TaskProps<Row, Output extends OutputTarget = OutputTarget> = {
+export type DepsSpec = Record<string, OutputTarget>;
+
+type InferDepValue<T> = T extends string ? unknown : InferOutputEntry<T>;
+
+export type InferDeps<D extends DepsSpec> = {
+  [K in keyof D]: InferDepValue<D[K]>;
+};
+
+export type TaskProps<
+  Row,
+  Output extends OutputTarget = OutputTarget,
+  D extends DepsSpec = {},
+> = {
   key?: string;
   id: string;
   /** Where to store the task's result. Pass a Zod schema from `outputs` (recommended), a Drizzle table, or a string key. */
@@ -32,6 +48,8 @@ export type TaskProps<Row, Output extends OutputTarget = OutputTarget> = {
   dependsOn?: string[];
   /** Named dependencies on other tasks. Keys become context keys, values are task node IDs. */
   needs?: Record<string, string>;
+  /** Render-time typed dependencies. Keys resolve from task ids of the same name, or from matching `needs` entries. */
+  deps?: D;
   skipIf?: boolean;
   needsApproval?: boolean;
   timeoutMs?: number;
@@ -39,9 +57,20 @@ export type TaskProps<Row, Output extends OutputTarget = OutputTarget> = {
   retryPolicy?: RetryPolicy;
   continueOnFail?: boolean;
   cache?: CachePolicy;
+  /** Optional scorers to evaluate this task's output after completion. */
+  scorers?: ScorersMap;
+  /** Optional cross-run memory configuration. */
+  memory?: TaskMemoryConfig;
   label?: string;
   meta?: Record<string, unknown>;
-  children: string | Row | (() => Row | Promise<Row>) | React.ReactNode;
+  /** @internal Used by createSmithers() to bind tasks to the correct workflow context. */
+  smithersContext?: React.Context<any>;
+  children:
+    | string
+    | Row
+    | (() => Row | Promise<Row>)
+    | React.ReactNode
+    | ((deps: InferDeps<D>) => Row | React.ReactNode);
 };
 
 /**
@@ -92,8 +121,67 @@ function isZodObject(value: any): value is import("zod").ZodObject<any> {
   return Boolean(value && typeof value === "object" && "shape" in value);
 }
 
-export function Task<Row>(props: TaskProps<Row>) {
-  const { children, agent, fallbackAgent, ...rest } = props as any;
+function deriveDepNodeIds(
+  deps: DepsSpec | undefined,
+  needs: Record<string, string> | undefined,
+): string[] | undefined {
+  if (!deps) return undefined;
+  const ids = new Set<string>();
+  for (const key of Object.keys(deps)) {
+    const nodeId = needs?.[key] ?? key;
+    if (nodeId) ids.add(nodeId);
+  }
+  return ids.size > 0 ? [...ids] : undefined;
+}
+
+function mergeDependsOn(
+  dependsOn: string[] | undefined,
+  depNodeIds: string[] | undefined,
+): string[] | undefined {
+  const merged = new Set<string>();
+  for (const id of dependsOn ?? []) merged.add(id);
+  for (const id of depNodeIds ?? []) merged.add(id);
+  return merged.size > 0 ? [...merged] : undefined;
+}
+
+function resolveDeps(
+  ctx: any,
+  deps: DepsSpec | undefined,
+  needs: Record<string, string> | undefined,
+): Record<string, unknown> | null {
+  if (!deps) return Object.create(null);
+  const keys = Object.keys(deps);
+  if (keys.length === 0) return Object.create(null);
+
+  const resolved: Record<string, unknown> = Object.create(null);
+  for (const key of keys) {
+    const target = deps[key];
+    const nodeId = needs?.[key] ?? key;
+    const value = ctx.outputMaybe(target as any, { nodeId });
+    if (value === undefined) return null;
+    resolved[key] = value;
+  }
+  return resolved;
+}
+
+export function Task<Row, Output extends OutputTarget = OutputTarget, D extends DepsSpec = {}>(
+  props: TaskProps<Row, Output, D>,
+) {
+  const { children, agent, fallbackAgent, deps, ...rest } = props as any;
+  const taskContext = (props as any).smithersContext ?? SmithersContext;
+  const ctx = React.useContext(taskContext);
+  const depNodeIds = deriveDepNodeIds(deps, rest.needs);
+  if (deps && !ctx) {
+    throw new SmithersError(
+      "CONTEXT_OUTSIDE_WORKFLOW",
+      "Task deps require a workflow context. Build the workflow with createSmithers().",
+    );
+  }
+  const resolvedDeps = deps ? resolveDeps(ctx, deps, rest.needs) : undefined;
+  if (deps && resolvedDeps == null) {
+    return null;
+  }
+
   const agentChain = Array.isArray(agent)
     ? fallbackAgent
       ? [...agent, fallbackAgent]
@@ -101,27 +189,33 @@ export function Task<Row>(props: TaskProps<Row>) {
     : agent && fallbackAgent
       ? [agent, fallbackAgent]
       : agent;
+  const nextDependsOn = mergeDependsOn(rest.dependsOn, depNodeIds);
+  const childValue =
+    typeof children === "function" && (agent || deps)
+      ? (children as any)(resolvedDeps ?? Object.create(null))
+      : children;
   if (agent) {
     // Auto-inject `schema` prop into React element children when output is a ZodObject
-    let childElement = children;
+    let childElement = childValue;
     const schemaForInjection =
       (props as any).outputSchema ??
       (isZodObject(props.output) ? props.output : undefined);
-    if (React.isValidElement(children) && schemaForInjection) {
-      childElement = React.cloneElement(children as React.ReactElement<any>, {
+    if (React.isValidElement(childValue) && schemaForInjection) {
+      childElement = React.cloneElement(childValue as React.ReactElement<any>, {
         schema: zodSchemaToJsonExample(schemaForInjection as any),
       });
     }
     const prompt = renderChildrenToText(childElement);
     return React.createElement(
       "smithers:task",
-      { ...rest, agent: agentChain, __smithersKind: "agent" },
+      { ...rest, dependsOn: nextDependsOn, agent: agentChain, __smithersKind: "agent" },
       prompt,
     );
   }
-  if (typeof children === "function") {
+  if (typeof children === "function" && !deps) {
     const nextProps = {
       ...rest,
+      dependsOn: nextDependsOn,
       __smithersKind: "compute",
       __smithersComputeFn: children,
     } as any;
@@ -129,9 +223,10 @@ export function Task<Row>(props: TaskProps<Row>) {
   }
   const nextProps = {
     ...rest,
+    dependsOn: nextDependsOn,
     __smithersKind: "static",
-    __smithersPayload: children,
-    __payload: children,
+    __smithersPayload: childValue,
+    __payload: childValue,
   } as any;
   return React.createElement("smithers:task", nextProps, null);
 }
