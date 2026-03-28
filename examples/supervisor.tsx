@@ -1,0 +1,159 @@
+/**
+ * <Supervisor> — Boss agent plans and delegates to worker agents dynamically.
+ *
+ * Pattern: Supervisor plans → spawns workers → reviews results → re-delegates failures.
+ * Use cases: project manager agent, team lead, dynamic task allocation.
+ */
+import {
+  createSmithers,
+  Sequence,
+  Parallel,
+  Loop,
+  Worktree,
+} from "smithers-orchestrator";
+import { ToolLoopAgent as Agent } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
+import { read, write, edit, bash, grep } from "smithers-orchestrator/tools";
+import { z } from "zod";
+
+const delegationSchema = z.object({
+  tasks: z.array(z.object({
+    id: z.string(),
+    title: z.string(),
+    instructions: z.string(),
+    files: z.array(z.string()),
+    workerType: z.enum(["coder", "tester", "docs"]),
+  })),
+  strategy: z.string(),
+});
+
+const workerResultSchema = z.object({
+  taskId: z.string(),
+  status: z.enum(["success", "partial", "failed"]),
+  summary: z.string(),
+  filesChanged: z.array(z.string()),
+});
+
+const supervisionSchema = z.object({
+  allDone: z.boolean(),
+  retriable: z.array(z.string()),
+  summary: z.string(),
+  nextActions: z.array(z.string()),
+});
+
+const finalSchema = z.object({
+  totalTasks: z.number(),
+  succeeded: z.number(),
+  failed: z.number(),
+  iterations: z.number(),
+  summary: z.string(),
+});
+
+const { Workflow, Task, smithers, outputs } = createSmithers({
+  delegation: delegationSchema,
+  workerResult: workerResultSchema,
+  supervision: supervisionSchema,
+  final: finalSchema,
+});
+
+const boss = new Agent({
+  model: anthropic("claude-sonnet-4-20250514"),
+  tools: { read, grep, bash },
+  instructions: `You are a technical lead. Break the goal into tasks and assign them
+to workers. After seeing results, decide what needs re-doing. Be strategic about
+task decomposition — keep tasks small and independent.`,
+});
+
+const coder = new Agent({
+  model: anthropic("claude-sonnet-4-20250514"),
+  tools: { read, write, edit, bash, grep },
+  instructions: `You are a developer. Complete your assigned task with clean code.
+Commit your work when done.`,
+});
+
+const tester = new Agent({
+  model: anthropic("claude-sonnet-4-20250514"),
+  tools: { read, write, bash, grep },
+  instructions: `You are a test engineer. Write thorough tests for the assigned code.
+Cover edge cases. Commit your work.`,
+});
+
+const docsWriter = new Agent({
+  model: anthropic("claude-sonnet-4-20250514"),
+  tools: { read, write, edit, grep },
+  instructions: `You are a technical writer. Write clear documentation for the
+assigned code. Update READMEs, add JSDoc, create usage examples.`,
+});
+
+const workerAgents = { coder, tester, docs: docsWriter };
+
+export default smithers((ctx) => {
+  const delegation = ctx.outputMaybe("delegation", { nodeId: "delegate" });
+  const results = ctx.outputs.workerResult ?? [];
+  const supervision = ctx.outputMaybe("supervision", { nodeId: "supervise" });
+  const allDone = supervision?.allDone ?? false;
+
+  return (
+    <Workflow name="supervisor">
+      <Sequence>
+        {/* Boss plans and delegates */}
+        <Task id="delegate" output={outputs.delegation} agent={boss}>
+          {`Plan the implementation for:
+
+Goal: ${ctx.input.goal}
+Directory: ${ctx.input.directory}
+
+${results.length > 0 ? `Previous results:\n${results.map((r) => `- ${r.taskId}: ${r.status} — ${r.summary}`).join("\n")}\n\nRetriable tasks: ${supervision?.retriable?.join(", ") ?? "none"}` : "This is the initial planning phase."}
+
+Break into tasks. Assign each a workerType: "coder", "tester", or "docs".`}
+        </Task>
+
+        {/* Workers execute in parallel worktrees */}
+        {delegation && (
+          <Loop until={allDone} maxIterations={3} onMaxReached="return-last">
+            <Sequence>
+              <Parallel maxConcurrency={ctx.input.maxWorkers ?? 5}>
+                {delegation.tasks.map((task) => (
+                  <Worktree
+                    key={task.id}
+                    path={`.worktrees/${task.id}`}
+                    branch={`worker/${task.id}`}
+                  >
+                    <Task
+                      id={`worker-${task.id}`}
+                      output={outputs.workerResult}
+                      agent={workerAgents[task.workerType]}
+                      continueOnFail
+                      retries={1}
+                      timeoutMs={300_000}
+                    >
+                      {`Task: ${task.title}\n\n${task.instructions}\n\nFiles: ${task.files.join(", ")}`}
+                    </Task>
+                  </Worktree>
+                ))}
+              </Parallel>
+
+              {/* Boss reviews results */}
+              <Task id="supervise" output={outputs.supervision} agent={boss}>
+                {`Review worker results:
+${results.map((r) => `- ${r.taskId}: ${r.status} — ${r.summary}`).join("\n")}
+
+Are all tasks done satisfactorily? List any that need retry.`}
+              </Task>
+            </Sequence>
+          </Loop>
+        )}
+
+        <Task id="final" output={outputs.final}>
+          {{
+            totalTasks: delegation?.tasks.length ?? 0,
+            succeeded: results.filter((r) => r.status === "success").length,
+            failed: results.filter((r) => r.status === "failed").length,
+            iterations: ctx.outputs.supervision?.length ?? 1,
+            summary: `${results.filter((r) => r.status === "success").length}/${delegation?.tasks.length ?? 0} tasks completed successfully`,
+          }}
+        </Task>
+      </Sequence>
+    </Workflow>
+  );
+});
