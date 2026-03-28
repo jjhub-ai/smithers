@@ -9,6 +9,7 @@ import {
   pushList,
 } from "./BaseCliAgent";
 import type { BaseCliAgentOptions, CodexConfigOverrides } from "./BaseCliAgent";
+import { zodV3ToJsonSchema } from "../zodV3Compat";
 
 type CodexAgentOptions = BaseCliAgentOptions & {
   config?: CodexConfigOverrides;
@@ -79,8 +80,17 @@ export class CodexAgent extends BaseCliAgent {
     // Auto-wire output schema from task context if not explicitly set
     let schemaCleanupFile: string | null = null;
     if (!this.opts.outputSchema && params.options?.outputSchema) {
-      const { z } = await import("zod");
-      const jsonSchema = z.toJSONSchema(params.options.outputSchema);
+      // Handle both zod v3 and v4 schemas
+      const schema = params.options.outputSchema;
+      let jsonSchema: any;
+      if ((schema as any)._zod?.def) {
+        // Zod v4 schema — use native toJSONSchema
+        const { z } = await import("zod");
+        jsonSchema = z.toJSONSchema(schema);
+      } else {
+        // Zod v3 or unknown — build JSON schema manually
+        jsonSchema = zodV3ToJsonSchema(schema);
+      }
       const schemaFile = join(
         tmpdir(),
         `smithers-schema-${randomUUID()}.json`,
