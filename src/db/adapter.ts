@@ -271,6 +271,25 @@ export class SmithersDb {
     return runPromise(this.listAttemptsEffect(runId, nodeId, iteration));
   }
 
+  listAttemptsForRunEffect(runId: string) {
+    return this.readEffect(`list attempts for run ${runId}`, () =>
+      this.db
+        .select()
+        .from(smithersAttempts)
+        .where(eq(smithersAttempts.runId, runId))
+        .orderBy(
+          smithersAttempts.startedAtMs,
+          smithersAttempts.nodeId,
+          smithersAttempts.iteration,
+          smithersAttempts.attempt,
+        ),
+    );
+  }
+
+  listAttemptsForRun(runId: string) {
+    return runPromise(this.listAttemptsForRunEffect(runId));
+  }
+
   getAttemptEffect(
     runId: string,
     nodeId: string,
@@ -570,6 +589,24 @@ export class SmithersDb {
 
   listRalph(runId: string) {
     return runPromise(this.listRalphEffect(runId));
+  }
+
+  listPendingApprovalsEffect(runId: string) {
+    return this.readEffect(`list pending approvals ${runId}`, () =>
+      this.db
+        .select()
+        .from(smithersApprovals)
+        .where(
+          and(
+            eq(smithersApprovals.runId, runId),
+            eq(smithersApprovals.status, "requested"),
+          ),
+        ),
+    );
+  }
+
+  listPendingApprovals(runId: string) {
+    return runPromise(this.listPendingApprovalsEffect(runId));
   }
 
   getRalphEffect(runId: string, ralphId: string) {
