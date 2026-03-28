@@ -202,6 +202,33 @@ smithers list workflow.tsx --status failed --limit 10
 
 ---
 
+### chat
+
+Show persisted agent chat output for the latest run or a specific run. This reads the prompt from attempt metadata plus streamed `NodeOutput` chunks or the final `responseText`, so it works for both AI SDK agents and CLI-backed agents.
+
+```bash
+smithers chat [runId] [--all] [--tail N] [--follow]
+```
+
+| Option | Description |
+|---|---|
+| `runId` | Optional run ID. When omitted, Smithers uses the most recent run in the nearest `smithers.db`. |
+| `--all` | Show every agent attempt in the run instead of only the latest one. |
+| `--tail N` | Show only the last `N` chat blocks from the selected transcript. |
+| `--follow`, `-f` | Poll for new persisted chat output and keep streaming it until the run stops. |
+| `--no-stderr` | Hide persisted agent stderr blocks. |
+
+**Examples:**
+
+```bash
+smithers chat
+smithers chat run-123 --all
+smithers chat run-123 --tail 20
+smithers chat run-123 --follow
+```
+
+---
+
 ### graph
 
 Render the workflow tree without executing, and print the `GraphSnapshot` as JSON. Uses [renderFrame](/runtime/render-frame) internally.
