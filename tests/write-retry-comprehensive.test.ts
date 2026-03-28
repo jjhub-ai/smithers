@@ -3,6 +3,7 @@ import {
   isRetryableSqliteWriteError,
   withSqliteWriteRetry,
 } from "../src/db/write-retry";
+import { SmithersError } from "../src/utils/errors";
 
 describe("isRetryableSqliteWriteError", () => {
   test("SQLITE_BUSY code is retryable", () => {
@@ -67,6 +68,14 @@ describe("isRetryableSqliteWriteError", () => {
   test("string is not retryable", () => {
     expect(isRetryableSqliteWriteError("database is locked")).toBe(false);
   });
+
+  test("wrapped SmithersError with retryable cause is retryable", () => {
+    const cause = Object.assign(new Error("busy"), { code: "SQLITE_BUSY" });
+    const err = new SmithersError("DB_WRITE_FAILED", "sqlite write: busy", undefined, {
+      cause,
+    });
+    expect(isRetryableSqliteWriteError(err)).toBe(true);
+  });
 });
 
 describe("withSqliteWriteRetry", () => {
@@ -126,6 +135,31 @@ describe("withSqliteWriteRetry", () => {
         },
       ),
     ).rejects.toThrow("busy");
+    expect(calls).toBe(3);
+  });
+
+  test("retries when retryable sqlite error is wrapped in SmithersError", async () => {
+    let calls = 0;
+    const result = await withSqliteWriteRetry(
+      async () => {
+        calls++;
+        if (calls < 3) {
+          const cause = Object.assign(new Error("database is locked"), {
+            code: "SQLITE_BUSY",
+          });
+          throw new SmithersError("DB_WRITE_FAILED", "sqlite write failed", undefined, {
+            cause,
+          });
+        }
+        return "wrapped-ok";
+      },
+      {
+        maxAttempts: 4,
+        baseDelayMs: 1,
+        sleep: () => Promise.resolve(),
+      },
+    );
+    expect(result).toBe("wrapped-ok");
     expect(calls).toBe(3);
   });
 });
