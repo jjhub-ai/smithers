@@ -15,13 +15,54 @@ export type SqliteWriteRetryOptions = {
   sleep?: (ms: number) => Promise<void>;
 };
 
-export function isRetryableSqliteWriteError(error: unknown): boolean {
+type SqliteErrorMetadata = {
+  code: string;
+  message: string;
+};
+
+function readSqliteErrorMetadata(error: unknown): SqliteErrorMetadata | null {
+  if (!error || (typeof error !== "object" && !(error instanceof Error))) {
+    return null;
+  }
   const code = typeof (error as any)?.code === "string" ? (error as any).code : "";
+  const message = String((error as any)?.message ?? "");
+  return { code, message };
+}
+
+function findSqliteErrorMetadata(error: unknown): SqliteErrorMetadata | null {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    const metadata = readSqliteErrorMetadata(current);
+    if (metadata) {
+      const message = metadata.message.toLowerCase();
+      if (
+        metadata.code.startsWith("SQLITE_BUSY") ||
+        metadata.code.startsWith("SQLITE_IOERR") ||
+        message.includes("database is locked") ||
+        message.includes("database is busy") ||
+        message.includes("disk i/o error")
+      ) {
+        return metadata;
+      }
+    }
+    current = (current as any)?.cause;
+  }
+
+  return readSqliteErrorMetadata(error);
+}
+
+export function isRetryableSqliteWriteError(error: unknown): boolean {
+  const metadata = findSqliteErrorMetadata(error);
+  if (!metadata) return false;
+  const { code } = metadata;
   if (code.startsWith("SQLITE_BUSY") || code.startsWith("SQLITE_IOERR")) {
     return true;
   }
 
-  const message = String((error as any)?.message ?? "").toLowerCase();
+  const message = metadata.message.toLowerCase();
   return (
     message.includes("database is locked") ||
     message.includes("database is busy") ||
@@ -30,8 +71,9 @@ export function isRetryableSqliteWriteError(error: unknown): boolean {
 }
 
 function describeSqliteWriteError(error: unknown): string {
-  const code = typeof (error as any)?.code === "string" ? (error as any).code : "";
-  const message = String((error as any)?.message ?? error ?? "unknown error");
+  const metadata = findSqliteErrorMetadata(error);
+  const code = metadata?.code ?? "";
+  const message = metadata?.message || String((error as any)?.message ?? error ?? "unknown error");
   return code ? `${code}: ${message}` : message;
 }
 

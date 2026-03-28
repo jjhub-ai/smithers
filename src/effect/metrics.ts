@@ -1,5 +1,16 @@
 import { Effect, Metric, MetricBoundaries } from "effect";
 import type { SmithersEvent } from "../SmithersEvent";
+import { ragIngestCount, ragRetrieveCount } from "../rag/metrics";
+import {
+  memoryFactWrites,
+  memoryRecallQueries,
+  memoryMessageSaves,
+} from "../memory/metrics";
+import {
+  openApiToolCallsTotal,
+  openApiToolCallErrorsTotal,
+  openApiToolDuration,
+} from "../openapi/metrics";
 
 // ---------------------------------------------------------------------------
 // Counters — existing
@@ -19,6 +30,14 @@ export const httpRequests = Metric.counter("smithers.http.requests");
 export const approvalsRequested = Metric.counter("smithers.approvals.requested");
 export const approvalsGranted = Metric.counter("smithers.approvals.granted");
 export const approvalsDenied = Metric.counter("smithers.approvals.denied");
+
+// ---------------------------------------------------------------------------
+// Counters — scorers (event-driven tracking, distinct from src/scorers/metrics)
+// ---------------------------------------------------------------------------
+
+export const scorerEventsStarted = Metric.counter("smithers.scorer_events.started");
+export const scorerEventsFinished = Metric.counter("smithers.scorer_events.finished");
+export const scorerEventsFailed = Metric.counter("smithers.scorer_events.failed");
 
 // ---------------------------------------------------------------------------
 // Counters — token usage
@@ -49,6 +68,20 @@ export const toolCallErrorsTotal = Metric.counter("smithers.tool_calls.errors_to
 export const toolOutputTruncatedTotal = Metric.counter("smithers.tool.output_truncated_total");
 
 // ---------------------------------------------------------------------------
+// Counters — voice
+// ---------------------------------------------------------------------------
+
+export const voiceOperationsTotal = Metric.counter("smithers.voice.operations_total");
+export const voiceErrorsTotal = Metric.counter("smithers.voice.errors_total");
+
+// ---------------------------------------------------------------------------
+// Counters — MCP
+// ---------------------------------------------------------------------------
+
+export const mcpToolCallsTotal = Metric.counter("smithers.mcp.tool_calls");
+export const mcpToolCallErrorsTotal = Metric.counter("smithers.mcp.tool_call_errors");
+
+// ---------------------------------------------------------------------------
 // Counters — events
 // ---------------------------------------------------------------------------
 
@@ -61,6 +94,12 @@ export const eventsEmittedTotal = Metric.counter("smithers.events.emitted_total"
 export const activeRuns = Metric.gauge("smithers.runs.active");
 export const activeNodes = Metric.gauge("smithers.nodes.active");
 export const schedulerQueueDepth = Metric.gauge("smithers.scheduler.queue_depth");
+
+// ---------------------------------------------------------------------------
+// Gauges — MCP
+// ---------------------------------------------------------------------------
+
+export const mcpActiveConnections = Metric.gauge("smithers.mcp.active_connections");
 
 // ---------------------------------------------------------------------------
 // Gauges — new
@@ -179,6 +218,19 @@ export const approvalWaitDuration = Metric.histogram(
   durationBuckets,
 );
 
+export const voiceDuration = Metric.histogram(
+  "smithers.voice.duration_ms",
+  durationBuckets,
+);
+
+export const mcpToolDuration = Metric.histogram(
+  "smithers.mcp.tool_duration_ms",
+  toolBuckets,
+);
+
+// TODO: instrument once TaskDescriptor carries `pendingSinceMs` from the node
+// row's `updatedAtMs` — currently the timestamp is not available at dispatch
+// time without an extra DB read per task.
 export const schedulerWaitDuration = Metric.histogram(
   "smithers.scheduler.wait_duration_ms",
   durationBuckets,
@@ -345,6 +397,123 @@ export function trackEvent(event: SmithersEvent): Effect.Effect<void> {
       }
       return Effect.all(effects, { discard: true });
     }
+
+    case "ScorerStarted":
+      return Effect.all([
+        countEvent,
+        Metric.increment(scorerEventsStarted),
+      ], { discard: true });
+
+    case "ScorerFinished":
+      return Effect.all([
+        countEvent,
+        Metric.increment(scorerEventsFinished),
+      ], { discard: true });
+
+    case "ScorerFailed":
+      return Effect.all([
+        countEvent,
+        Metric.increment(scorerEventsFailed),
+        Metric.increment(errorsTotal),
+      ], { discard: true });
+
+    case "SnapshotCaptured":
+      return countEvent;
+
+    case "RunForked":
+      return countEvent;
+
+    case "ReplayStarted":
+      return countEvent;
+
+    case "VoiceStarted":
+      return Effect.all([
+        countEvent,
+        Metric.increment(voiceOperationsTotal),
+      ], { discard: true });
+
+    case "VoiceFinished":
+      return Effect.all([
+        countEvent,
+        Metric.update(voiceDuration, event.durationMs),
+      ], { discard: true });
+
+    case "VoiceError":
+      return Effect.all([
+        countEvent,
+        Metric.increment(voiceErrorsTotal),
+        Metric.increment(errorsTotal),
+      ], { discard: true });
+
+    case "RagIngested":
+      return Effect.all([
+        countEvent,
+        Metric.incrementBy(ragIngestCount, event.documentCount),
+      ], { discard: true });
+
+    case "RagRetrieved":
+      return Effect.all([
+        countEvent,
+        Metric.increment(ragRetrieveCount),
+      ], { discard: true });
+
+    case "McpServerStarted":
+      return Effect.all([
+        countEvent,
+        Metric.update(mcpActiveConnections, 1),
+      ], { discard: true });
+
+    case "McpToolCalled":
+      return event.status === "error"
+        ? Effect.all([
+            countEvent,
+            Metric.increment(mcpToolCallsTotal),
+            Metric.increment(mcpToolCallErrorsTotal),
+            Metric.update(mcpToolDuration, event.durationMs),
+          ], { discard: true })
+        : Effect.all([
+            countEvent,
+            Metric.increment(mcpToolCallsTotal),
+            Metric.update(mcpToolDuration, event.durationMs),
+          ], { discard: true });
+
+    case "McpServerStopped":
+      return Effect.all([
+        countEvent,
+        Metric.update(mcpActiveConnections, -1),
+      ], { discard: true });
+
+    case "MemoryFactSet":
+      return Effect.all([
+        countEvent,
+        Metric.increment(memoryFactWrites),
+      ], { discard: true });
+
+    case "MemoryRecalled":
+      return Effect.all([
+        countEvent,
+        Metric.increment(memoryRecallQueries),
+      ], { discard: true });
+
+    case "MemoryMessageSaved":
+      return Effect.all([
+        countEvent,
+        Metric.increment(memoryMessageSaves),
+      ], { discard: true });
+
+    case "OpenApiToolCalled":
+      return event.status === "error"
+        ? Effect.all([
+            countEvent,
+            Metric.increment(openApiToolCallsTotal),
+            Metric.increment(openApiToolCallErrorsTotal),
+            Metric.update(openApiToolDuration, event.durationMs),
+          ], { discard: true })
+        : Effect.all([
+            countEvent,
+            Metric.increment(openApiToolCallsTotal),
+            Metric.update(openApiToolDuration, event.durationMs),
+          ], { discard: true });
 
     default:
       return countEvent;

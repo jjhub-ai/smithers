@@ -1,4 +1,5 @@
 import {
+  blob,
   integer,
   sqliteTable,
   text,
@@ -17,6 +18,8 @@ export const smithersRuns = sqliteTable("_smithers_runs", {
   heartbeatAtMs: integer("heartbeat_at_ms"),
   runtimeOwnerId: text("runtime_owner_id"),
   cancelRequestedAtMs: integer("cancel_requested_at_ms"),
+  hijackRequestedAtMs: integer("hijack_requested_at_ms"),
+  hijackTarget: text("hijack_target"),
   vcsType: text("vcs_type"),
   vcsRoot: text("vcs_root"),
   vcsRevision: text("vcs_revision"),
@@ -160,3 +163,34 @@ export const smithersRalph = sqliteTable(
     pk: primaryKey({ columns: [t.runId, t.ralphId] }),
   }),
 );
+
+export { smithersScorers } from "../scorers/schema";
+
+export {
+  smithersMemoryFacts,
+  smithersMemoryThreads,
+  smithersMemoryMessages,
+} from "../memory/schema";
+
+export const smithersVectors = sqliteTable("_smithers_vectors", {
+  id: text("id").primaryKey(),
+  namespace: text("namespace").notNull(),
+  content: text("content").notNull(),
+  embedding: blob("embedding").notNull(),
+  dimensions: integer("dimensions").notNull(),
+  metadataJson: text("metadata_json"),
+  documentId: text("document_id"),
+  chunkIndex: integer("chunk_index"),
+  createdAtMs: integer("created_at_ms").notNull(),
+});
+
+export const smithersCron = sqliteTable("_smithers_cron", {
+  cronId: text("cron_id").primaryKey(),
+  pattern: text("pattern").notNull(),
+  workflowPath: text("workflow_path").notNull(),
+  enabled: integer("enabled", { mode: "boolean" }).default(true),
+  createdAtMs: integer("created_at_ms").notNull(),
+  lastRunAtMs: integer("last_run_at_ms"),
+  nextRunAtMs: integer("next_run_at_ms"),
+  errorJson: text("error_json"),
+});

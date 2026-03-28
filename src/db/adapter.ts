@@ -4,6 +4,7 @@ import { Effect, Metric } from "effect";
 import { fromPromise, fromSync } from "../effect/interop";
 import { runPromise } from "../effect/runtime";
 import { dbQueryDuration } from "../effect/metrics";
+import type { SmithersError } from "../utils/errors";
 import {
   smithersRuns,
   smithersNodes,
@@ -14,19 +15,37 @@ import {
   smithersToolCalls,
   smithersEvents,
   smithersRalph,
+  smithersCron,
+  smithersScorers,
+  smithersVectors,
 } from "./internal-schema";
 import { withSqliteWriteRetryEffect } from "./write-retry";
 
 export class SmithersDb {
   constructor(private db: BunSQLiteDatabase<any>) {}
 
+  rawQueryEffect(queryString: string) {
+    return this.readEffect(`raw query ${queryString.slice(0, 20)}`, () => {
+      const client = (this.db as any).session.client;
+      const stmt = client.query(queryString);
+      return Promise.resolve(stmt.all());
+    });
+  }
+
+  rawQuery(queryString: string) {
+    return runPromise(this.rawQueryEffect(queryString));
+  }
+
   private readEffect<A>(
     label: string,
     operation: () => PromiseLike<A>,
-  ): Effect.Effect<A, Error> {
+  ): Effect.Effect<A, SmithersError> {
     return Effect.gen(function* () {
       const start = performance.now();
-      const result = yield* fromPromise(label, operation);
+      const result = yield* fromPromise(label, operation, {
+        code: "DB_QUERY_FAILED",
+        details: { operation: label },
+      });
       yield* Metric.update(dbQueryDuration, performance.now() - start);
       return result;
     }).pipe(
@@ -38,11 +57,15 @@ export class SmithersDb {
   private writeEffect<A>(
     label: string,
     operation: () => PromiseLike<A>,
-  ): Effect.Effect<A, Error> {
+  ): Effect.Effect<A, SmithersError> {
     return Effect.gen(function* () {
       const start = performance.now();
       const result = yield* withSqliteWriteRetryEffect(
-        () => fromPromise(label, operation),
+        () =>
+          fromPromise(label, operation, {
+            code: "DB_WRITE_FAILED",
+            details: { operation: label },
+          }),
         { label },
       );
       yield* Metric.update(dbQueryDuration, performance.now() - start);
@@ -111,6 +134,48 @@ export class SmithersDb {
 
   requestRunCancel(runId: string, cancelRequestedAtMs: number) {
     return runPromise(this.requestRunCancelEffect(runId, cancelRequestedAtMs));
+  }
+
+  requestRunHijackEffect(
+    runId: string,
+    hijackRequestedAtMs: number,
+    hijackTarget?: string | null,
+  ) {
+    return this.writeEffect(`hijack run ${runId}`, () =>
+      this.db
+        .update(smithersRuns)
+        .set({
+          hijackRequestedAtMs,
+          hijackTarget: hijackTarget ?? null,
+        })
+        .where(eq(smithersRuns.runId, runId)),
+    );
+  }
+
+  requestRunHijack(
+    runId: string,
+    hijackRequestedAtMs: number,
+    hijackTarget?: string | null,
+  ) {
+    return runPromise(
+      this.requestRunHijackEffect(runId, hijackRequestedAtMs, hijackTarget),
+    );
+  }
+
+  clearRunHijackEffect(runId: string) {
+    return this.writeEffect(`clear hijack run ${runId}`, () =>
+      this.db
+        .update(smithersRuns)
+        .set({
+          hijackRequestedAtMs: null,
+          hijackTarget: null,
+        })
+        .where(eq(smithersRuns.runId, runId)),
+    );
+  }
+
+  clearRunHijack(runId: string) {
+    return runPromise(this.clearRunHijackEffect(runId));
   }
 
   getRunEffect(runId: string) {
@@ -199,6 +264,20 @@ export class SmithersDb {
     return runPromise(this.listNodesEffect(runId));
   }
 
+  getRawNodeOutputEffect(tableName: string, runId: string, nodeId: string) {
+    return this.readEffect(`get raw node output ${tableName}`, () => {
+      const query = sql.raw(`SELECT * FROM "${tableName}" WHERE run_id = '${runId}' AND node_id = '${nodeId}' ORDER BY iteration DESC LIMIT 1`);
+      const res = this.db.get(query);
+      return Promise.resolve(res ?? null);
+    }).pipe(
+      Effect.catchAll(() => Effect.succeed(null))
+    );
+  }
+
+  getRawNodeOutput(tableName: string, runId: string, nodeId: string) {
+    return runPromise(this.getRawNodeOutputEffect(tableName, runId, nodeId));
+  }
+
   insertAttemptEffect(row: any) {
     return this.writeEffect(`insert attempt ${row.nodeId}#${row.attempt}`, () =>
       this.db.insert(smithersAttempts).values(row).onConflictDoUpdate({
@@ -269,6 +348,25 @@ export class SmithersDb {
 
   listAttempts(runId: string, nodeId: string, iteration: number) {
     return runPromise(this.listAttemptsEffect(runId, nodeId, iteration));
+  }
+
+  listAttemptsForRunEffect(runId: string) {
+    return this.readEffect(`list attempts for run ${runId}`, () =>
+      this.db
+        .select()
+        .from(smithersAttempts)
+        .where(eq(smithersAttempts.runId, runId))
+        .orderBy(
+          smithersAttempts.startedAtMs,
+          smithersAttempts.nodeId,
+          smithersAttempts.iteration,
+          smithersAttempts.attempt,
+        ),
+    );
+  }
+
+  listAttemptsForRun(runId: string) {
+    return runPromise(this.listAttemptsForRunEffect(runId));
   }
 
   getAttemptEffect(
@@ -358,6 +456,7 @@ export class SmithersDb {
   getLastFrame(runId: string) {
     return runPromise(this.getLastFrameEffect(runId));
   }
+
 
   insertOrUpdateApprovalEffect(row: any) {
     return this.writeEffect(`upsert approval ${row.nodeId}`, () =>
@@ -572,6 +671,24 @@ export class SmithersDb {
     return runPromise(this.listRalphEffect(runId));
   }
 
+  listPendingApprovalsEffect(runId: string) {
+    return this.readEffect(`list pending approvals ${runId}`, () =>
+      this.db
+        .select()
+        .from(smithersApprovals)
+        .where(
+          and(
+            eq(smithersApprovals.runId, runId),
+            eq(smithersApprovals.status, "requested"),
+          ),
+        ),
+    );
+  }
+
+  listPendingApprovals(runId: string) {
+    return runPromise(this.listPendingApprovalsEffect(runId));
+  }
+
   getRalphEffect(runId: string, ralphId: string) {
     return this.readEffect(`get ralph ${ralphId}`, () =>
       this.db
@@ -663,5 +780,94 @@ export class SmithersDb {
 
   countNodesByState(runId: string) {
     return runPromise(this.countNodesByStateEffect(runId));
+  }
+
+  upsertCronEffect(row: any) {
+    return this.writeEffect("upsert cron", () =>
+      this.db
+        .insert(smithersCron)
+        .values(row)
+        .onConflictDoUpdate({
+          target: smithersCron.cronId,
+          set: {
+            pattern: row.pattern,
+            workflowPath: row.workflowPath,
+            enabled: row.enabled,
+            nextRunAtMs: row.nextRunAtMs,
+          },
+        }),
+    );
+  }
+
+  upsertCron(row: any) {
+    return runPromise(this.upsertCronEffect(row));
+  }
+
+  listCronsEffect(enabledOnly = true) {
+    return this.readEffect("list crons", () => {
+      let q = this.db.select().from(smithersCron);
+      if (enabledOnly) {
+        q = q.where(eq(smithersCron.enabled, true)) as any;
+      }
+      return Promise.resolve(q.all());
+    });
+  }
+
+  listCrons(enabledOnly = true) {
+    return runPromise(this.listCronsEffect(enabledOnly));
+  }
+
+  updateCronRunTimeEffect(cronId: string, lastRunAtMs: number, nextRunAtMs: number, errorJson?: string | null) {
+    return this.writeEffect(`update cron run time ${cronId}`, () =>
+      this.db
+        .update(smithersCron)
+        .set({ lastRunAtMs, nextRunAtMs, errorJson: errorJson ?? null })
+        .where(eq(smithersCron.cronId, cronId)),
+    );
+  }
+
+  updateCronRunTime(cronId: string, lastRunAtMs: number, nextRunAtMs: number, errorJson?: string | null) {
+    return runPromise(this.updateCronRunTimeEffect(cronId, lastRunAtMs, nextRunAtMs, errorJson));
+  }
+
+  deleteCronEffect(cronId: string) {
+    return this.writeEffect(`delete cron ${cronId}`, () =>
+      this.db.delete(smithersCron).where(eq(smithersCron.cronId, cronId)),
+    );
+  }
+
+  deleteCron(cronId: string) {
+    return runPromise(this.deleteCronEffect(cronId));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scorer results
+  // ---------------------------------------------------------------------------
+
+  insertScorerResultEffect(row: any) {
+    return this.writeEffect(`insert scorer result ${row.scorerId}`, () =>
+      this.db.insert(smithersScorers).values(row).onConflictDoNothing(),
+    );
+  }
+
+  insertScorerResult(row: any) {
+    return runPromise(this.insertScorerResultEffect(row));
+  }
+
+  listScorerResultsEffect(runId: string, nodeId?: string) {
+    const where = nodeId
+      ? and(eq(smithersScorers.runId, runId), eq(smithersScorers.nodeId, nodeId))
+      : eq(smithersScorers.runId, runId);
+    return this.readEffect(`list scorer results ${runId}`, () =>
+      this.db
+        .select()
+        .from(smithersScorers)
+        .where(where)
+        .orderBy(smithersScorers.scoredAtMs),
+    );
+  }
+
+  listScorerResults(runId: string, nodeId?: string) {
+    return runPromise(this.listScorerResultsEffect(runId, nodeId));
   }
 }

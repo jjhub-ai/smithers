@@ -5,6 +5,42 @@ import { getToolContext, nextToolSeq } from "./context";
 import { runPromise } from "../effect/runtime";
 import { toolDuration, toolOutputTruncatedTotal } from "../effect/metrics";
 
+type ToolCallRow = {
+  runId: string;
+  nodeId: string;
+  iteration: number;
+  attempt: number;
+  seq: number;
+  toolName: string;
+  inputJson: string;
+  outputJson: string;
+  startedAtMs: number;
+  finishedAtMs: number;
+  status: "success" | "error";
+  errorJson: string | null;
+};
+
+function insertToolCallEffect(
+  ctx: NonNullable<ReturnType<typeof getToolContext>>,
+  row: ToolCallRow,
+) {
+  const db = ctx.db as {
+    insertToolCallEffect?: (row: ToolCallRow) => Effect.Effect<unknown, unknown>;
+    insertToolCall?: (row: ToolCallRow) => unknown;
+  };
+
+  if (typeof db.insertToolCallEffect === "function") {
+    return db.insertToolCallEffect(row);
+  }
+  if (typeof db.insertToolCall === "function") {
+    return Effect.tryPromise({
+      try: () => Promise.resolve(db.insertToolCall?.(row)),
+      catch: () => undefined,
+    });
+  }
+  return Effect.void;
+}
+
 export function logToolCallEffect(
   toolName: string,
   input: unknown,
@@ -29,6 +65,20 @@ export function logToolCallEffect(
     (inputLog.truncated ? 1 : 0) +
     (outputLog.truncated ? 1 : 0) +
     (errorLog?.truncated ? 1 : 0);
+  const row = {
+    runId: ctx.runId,
+    nodeId: ctx.nodeId,
+    iteration: ctx.iteration,
+    attempt: ctx.attempt,
+    seq,
+    toolName,
+    inputJson: inputLog.json,
+    outputJson: outputLog.json,
+    startedAtMs: started,
+    finishedAtMs: finished,
+    status,
+    errorJson: errorLog?.json ?? null,
+  } as const;
   void ctx.emitEvent?.({
     type: "ToolCallFinished",
     runId: ctx.runId,
@@ -47,20 +97,7 @@ export function logToolCallEffect(
       : Effect.void,
   ], { discard: true }).pipe(
     Effect.andThen(
-      ctx.db.insertToolCallEffect({
-        runId: ctx.runId,
-        nodeId: ctx.nodeId,
-        iteration: ctx.iteration,
-        attempt: ctx.attempt,
-        seq,
-        toolName,
-        inputJson: inputLog.json,
-        outputJson: outputLog.json,
-        startedAtMs: started,
-        finishedAtMs: finished,
-        status,
-        errorJson: errorLog?.json ?? null,
-      }),
+      insertToolCallEffect(ctx, row).pipe(Effect.catchAllCause(() => Effect.void)),
     ),
     Effect.annotateLogs({
       runId: ctx.runId,
