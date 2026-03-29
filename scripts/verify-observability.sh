@@ -134,8 +134,8 @@ retry_until loki-tool-end 6 '.streams >= 1' \
 retry_until loki-sdk-final-only 6 '.streams >= 1' \
   "loki_query '{service_name=\"smithers-dev\"} | run_id=\"$RUN_ID\" | node_id=\"sdk-final-only\"' 20 | jq '{streams:(.data.result|length), lines:[.data.result[]?.values[]?[1]]}'"
 
-retry_until loki-claude-text-delta 6 '.streams >= 1' \
-  "loki_query '{service_name=\"smithers-dev\"} | run_id=\"$RUN_ID\" | node_id=\"claude-structured-trace\" | event_kind=\"assistant.text.delta\"' 20 | jq '{streams:(.data.result|length), lines:[.data.result[]?.values[]?[1]]}'"
+retry_until loki-claude-message-update 6 '.streams >= 1' \
+  "loki_query '{service_name=\"smithers-dev\"} | run_id=\"$RUN_ID\" | node_id=\"claude-structured-trace\" | event_kind=\"message.update\"' 20 | jq '{streams:(.data.result|length), lines:[.data.result[]?.values[]?[1]]}'"
 
 retry_until loki-gemini-text-delta 6 '.streams >= 1' \
   "loki_query '{service_name=\"smithers-dev\"} | run_id=\"$RUN_ID\" | node_id=\"gemini-structured-trace\" | event_kind=\"assistant.text.delta\"' 20 | jq '{streams:(.data.result|length), lines:[.data.result[]?.values[]?[1]]}'"
@@ -211,7 +211,7 @@ append_json loki-tool-start "$OUT_DIR/loki-tool-start.json"
 append_json loki-tool-update "$OUT_DIR/loki-tool-update.json"
 append_json loki-tool-end "$OUT_DIR/loki-tool-end.json"
 append_json loki-sdk-final-only "$OUT_DIR/loki-sdk-final-only.json"
-append_json loki-claude-text-delta "$OUT_DIR/loki-claude-text-delta.json"
+append_json loki-claude-message-update "$OUT_DIR/loki-claude-message-update.json"
 append_json loki-gemini-text-delta "$OUT_DIR/loki-gemini-text-delta.json"
 append_json loki-claude-usage "$OUT_DIR/loki-claude-usage.json"
 append_json loki-gemini-usage "$OUT_DIR/loki-gemini-usage.json"
