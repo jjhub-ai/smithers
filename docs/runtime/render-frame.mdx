@@ -207,6 +207,12 @@ const snap2 = await renderFrame(workflow, {
 });
 ```
 
+### Building a Workflow Visualizer
+
+The XML tree and task list can be used to build visual representations of the workflow DAG. The `xml` field mirrors the JSX structure, while `tasks` provides the flattened execution order.
+
+If you want the same XML-to-plan conversion Smithers uses internally, import `buildPlanTree` from `smithers-orchestrator/graph` and pass `snapshot.xml` to it.
+
 ### CLI
 
 ```bash
@@ -217,6 +223,7 @@ Prints the `GraphSnapshot` as JSON to stdout.
 
 ## Related
 
+- [graph](/runtime/graph) -- Convert rendered XML into the plan tree used for graph tooling.
 - [runWorkflow](/runtime/run-workflow) -- Execute the workflow.
 - [Events](/runtime/events) -- Monitor execution progress.
 - [Execution Model](/concepts/execution-model) -- The render-execute-persist loop.

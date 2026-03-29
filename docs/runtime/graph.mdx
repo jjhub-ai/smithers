@@ -1,0 +1,128 @@
+---
+title: graph
+description: Build workflow graph tooling on top of Smithers by converting rendered XML into the scheduler plan tree.
+---
+
+Smithers does not ship a visual workflow builder, but it does expose the same XML-to-plan conversion the runtime uses internally. That is enough to build external graph visualizers, inspectors, and node-based editors.
+
+## Import
+
+```ts
+import { buildPlanTree } from "smithers-orchestrator/graph";
+import { renderFrame } from "smithers-orchestrator";
+```
+
+## What `/graph` exports
+
+```ts
+export { buildPlanTree } from "smithers-orchestrator/graph";
+export type { PlanNode, RalphMeta } from "smithers-orchestrator/graph";
+```
+
+`buildPlanTree(xml)` converts the rendered `XmlNode` tree into the plan tree the engine schedules.
+
+## Basic usage
+
+```ts
+import { renderFrame } from "smithers-orchestrator";
+import { buildPlanTree } from "smithers-orchestrator/graph";
+import workflow from "./workflow";
+
+const snapshot = await renderFrame(workflow, {
+  runId: "preview",
+  iteration: 0,
+  input: {},
+  outputs: {},
+});
+
+const { plan, ralphs } = buildPlanTree(snapshot.xml);
+console.log(plan, ralphs);
+```
+
+## PlanNode shape
+
+```ts
+type PlanNode =
+  | { kind: "task"; nodeId: string }
+  | { kind: "sequence"; children: PlanNode[] }
+  | { kind: "parallel"; children: PlanNode[] }
+  | {
+      kind: "ralph";
+      id: string;
+      children: PlanNode[];
+      until: boolean;
+      maxIterations: number;
+      onMaxReached: "fail" | "return-last";
+    }
+  | { kind: "group"; children: PlanNode[] };
+```
+
+## Building a node graph UI
+
+A minimal graph builder can:
+
+1. call `renderFrame()` to get `snapshot.xml`
+2. call `buildPlanTree(snapshot.xml)`
+3. walk the returned `PlanNode` tree
+4. emit your own UI-friendly `nodes[]` and `edges[]`
+
+For example:
+
+```ts
+type UiNode = { id: string; label: string; kind: string };
+type UiEdge = { from: string; to: string; kind: string };
+
+function planToUiGraph(plan: PlanNode | null) {
+  const nodes: UiNode[] = [];
+  const edges: UiEdge[] = [];
+  let nextId = 0;
+
+  function visit(node: PlanNode, parentId?: string): string {
+    const id = node.kind === "task" ? node.nodeId : `${node.kind}:${nextId++}`;
+    nodes.push({ id, label: node.kind === "task" ? node.nodeId : node.kind, kind: node.kind });
+    if (parentId) edges.push({ from: parentId, to: id, kind: "contains" });
+
+    if ("children" in node) {
+      let previousChildId: string | undefined;
+      for (const child of node.children) {
+        const childId = visit(child, id);
+        if (node.kind === "sequence" && previousChildId) {
+          edges.push({ from: previousChildId, to: childId, kind: "next" });
+        }
+        previousChildId = childId;
+      }
+      if (node.kind === "ralph" && previousChildId) {
+        edges.push({ from: previousChildId, to: id, kind: "loop" });
+      }
+    }
+
+    return id;
+  }
+
+  if (plan) visit(plan);
+  return { nodes, edges };
+}
+```
+
+This is enough to power React Flow, Dagre, Mermaid, n8n-style inspectors, or a custom workflow editor.
+
+## Why use `/graph` instead of re-parsing XML yourself?
+
+`buildPlanTree()` already captures Smithers scheduling semantics, including:
+
+- `smithers:sequence` → ordered children
+- `smithers:parallel` / `smithers:merge-queue` → concurrent children
+- `smithers:ralph` → loop node with iteration metadata
+- `smithers:worktree` → grouping boundary
+
+Using `/graph` keeps third-party tooling aligned with the runtime instead of duplicating that mapping.
+
+## Scope
+
+The `/graph` subpath is intentionally minimal. It exposes the existing XML-to-plan conversion so external tools can build their own graph model and UI on top.
+
+## Related
+
+- [renderFrame](/runtime/render-frame)
+- [Events](/runtime/events)
+- [CLI overview](/cli/overview)

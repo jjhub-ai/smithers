@@ -227,6 +227,17 @@ smithers list workflow.tsx
 smithers approve workflow.tsx --run-id abc123 --node-id review
 ```
 
+## Graph Tooling
+
+Smithers does not ship a visual workflow editor, but it exposes the XML-to-plan conversion the runtime uses internally:
+
+```ts
+import { renderFrame } from "smithers-orchestrator";
+import { buildPlanTree } from "smithers-orchestrator/graph";
+```
+
+That is enough to build external graph inspectors, React Flow canvases, and n8n-style workflow builders on top of Smithers without re-implementing its execution semantics.
+
 ## Hot Module Replacement
 
 Edit your workflow files while a run is executing. Smithers watches your source tree and hot-reloads changes on save — prompts, config, agent settings, and component structure — without restarting the process or losing run state.
