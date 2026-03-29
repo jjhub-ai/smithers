@@ -190,10 +190,10 @@ Switch at launch time:
 
 ```bash
 # Use CLI agents (subscription)
-USE_CLI_AGENTS=1 SMITHERS_UNSAFE=1 bunx smithers run workflow.tsx
+USE_CLI_AGENTS=1 SMITHERS_UNSAFE=1 bunx smithers up workflow.tsx
 
 # Use API agents
-USE_CLI_AGENTS=0 bunx smithers run workflow.tsx
+USE_CLI_AGENTS=0 bunx smithers up workflow.tsx
 ```
 
 Your workflow code never changes. Only the agent wiring does.

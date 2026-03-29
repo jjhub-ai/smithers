@@ -93,18 +93,20 @@ Each branch accepts any workflow element. Wrap multiple elements in `<Sequence>`
 The `if` prop is evaluated at render time. Smithers re-renders the tree each frame, so conditions can depend on outputs of completed tasks:
 
 ```tsx
-export default smithers(db, (ctx) => (
+const check = ctx.outputMaybe(outputs.check, { nodeId: "check" });
+
+return (
   <Workflow name="adaptive">
     <Task id="check" output={outputs.check} agent={checkAgent}>
       Check whether the system is healthy.
     </Task>
     <Branch
-      if={ctx.outputMaybe(outputs.check, { nodeId: "check" })?.healthy === true}
+      if={check?.healthy === true}
       then={<Task id="proceed" output={outputs.proceed}>{{ ok: true }}</Task>}
       else={<Task id="remediate" output={outputs.remediate} agent={fixAgent}>Fix it.</Task>}
     />
   </Workflow>
-));
+);
 ```
 
 Use `ctx.outputMaybe()` when the upstream task may not have completed yet.

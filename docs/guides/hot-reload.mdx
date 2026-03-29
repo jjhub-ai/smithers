@@ -11,11 +11,11 @@ With hot reload, you save the file. The engine picks up the change. The in-fligh
 
 ## Quick Start
 
-Add `--hot` to any `run` or `resume` command:
+Add `--hot true` to any `up` command:
 
 ```bash
-smithers run workflow.tsx --hot
-smithers resume workflow.tsx --run-id abc123 --hot
+smithers up workflow.tsx --hot true
+smithers up workflow.tsx --run-id abc123 --resume true --hot true
 ```
 
 That is it. Edit any file in your workflow's directory tree, save, and the engine picks up the changes on the next render cycle.
@@ -159,7 +159,7 @@ Hot reload and [resumability](/guides/resumability) work together naturally. You
 1. Start a run with `--hot`
 2. Edit files while it runs
 3. Kill the process (Ctrl+C)
-4. Resume with `smithers resume workflow.tsx --run-id <id> --hot`
+4. Resume with `smithers up workflow.tsx --run-id <id> --resume true --hot true`
 
 The resumed run picks up your latest code and continues watching for changes.
 

@@ -139,8 +139,8 @@ const reviewSchema = z.object({
 });
 
 // assuming outputs from createSmithers
-<Task id="review" output={outputs.review} outputSchema={reviewSchema} agent={reviewer}>
-  <ReviewPrompt code={ctx.output(outputs.implement, { nodeId: "implement" }).code} />
+<Task id="review" output={outputs.review} outputSchema={reviewSchema} agent={reviewer} deps={{ implement: outputs.implement }}>
+  {(deps) => <ReviewPrompt code={deps.implement.code} />}
 </Task>
 ```
 
@@ -154,35 +154,26 @@ Three rules:
 
 - **Use deterministic task IDs.** No timestamps, no random strings, no array indices. If the ID changes between renders, Smithers treats it as a different task.
 - **Make tasks idempotent where possible.** If a task writes files, design it so re-running produces the same result.
-- **Use `ctx.outputMaybe()` for conditional rendering.** This ensures tasks only mount when their dependencies are satisfied.
+- **Use `deps` for direct task handoff and `ctx.outputMaybe()` for orchestration decisions.** This keeps prompt wiring terse while preserving explicit control-flow logic.
 
 ```tsx
 // Good: deterministic, conditional, resumable
 // assuming outputs from createSmithers
-export default smithers((ctx) => {
-  const analysis = ctx.outputMaybe(outputs.analysis, { nodeId: "analyze" });
-  const fix = ctx.outputMaybe(outputs.fix, { nodeId: "fix" });
-
-  return (
-    <Workflow name="robust">
-      <Sequence>
-        <Task id="analyze" output={outputs.analysis} agent={analyst}>
-          Analyze the codebase.
-        </Task>
-        {analysis ? (
-          <Task id="fix" output={outputs.fix} agent={fixer}>
-            {`Fix: ${analysis.summary}`}
-          </Task>
-        ) : null}
-        {fix ? (
-          <Task id="report" output={outputs.report}>
-            {{ summary: fix.explanation, filesChanged: fix.files }}
-          </Task>
-        ) : null}
-      </Sequence>
-    </Workflow>
-  );
-});
+export default smithers((ctx) => (
+  <Workflow name="robust">
+    <Sequence>
+      <Task id="analyze" output={outputs.analysis} agent={analyst}>
+        Analyze the codebase.
+      </Task>
+      <Task id="fix" output={outputs.fix} agent={fixer} deps={{ analyze: outputs.analysis }}>
+        {(deps) => `Fix: ${deps.analyze.summary}`}
+      </Task>
+      <Task id="report" output={outputs.report} deps={{ fix: outputs.fix }}>
+        {(deps) => ({ summary: deps.fix.explanation, filesChanged: deps.fix.files })}
+      </Task>
+    </Sequence>
+  </Workflow>
+));
 ```
 
 ## Keep Prompts and Schemas Separate from Logic
@@ -192,7 +183,7 @@ As your workflow grows, you will want to iterate on prompts without touching orc
 - **`schemas.ts`** -- All Zod schemas in one file.
 - **`agents.ts`** -- Agent configuration (model, system prompt, tools).
 - **`prompts/`** -- MDX prompt templates.
-- **`workflow.tsx`** -- Composition only (how tasks connect).
+- **`workflow.tsx`** -- Composition only (how tasks connect, branch, and hand typed deps into steps).
 
 When a prompt change requires editing `workflow.tsx`, something is wrong with your factoring.
 
@@ -277,7 +268,6 @@ const reviewer = new Agent({
 
 export default smithers((ctx) => {
   const review = ctx.outputMaybe(outputs.review, { nodeId: "review" });
-  const implement = ctx.outputMaybe(outputs.implement, { nodeId: "implement" });
 
   return (
     <Workflow name="review-loop">
@@ -312,11 +302,12 @@ Return JSON with summary, filesChanged, testsRun, testsPassed.`}
               agent={reviewer}
               timeoutMs={120_000}
               retries={1}
+              deps={{ implement: outputs.implement }}
             >
-              {`Review the implementation.
-Summary: ${implement?.summary ?? "pending"}
-Files changed: ${implement?.filesChanged?.join(", ") ?? "none"}
-Tests: ${implement?.testsPassed ?? 0}/${implement?.testsRun ?? 0} passed
+              {(deps) => `Review the implementation.
+Summary: ${deps.implement.summary}
+Files changed: ${deps.implement.filesChanged.join(", ")}
+Tests: ${deps.implement.testsPassed}/${deps.implement.testsRun} passed
 
 Approve only if tests pass and the code is clean.
 Return JSON with approved (boolean), feedback (string), score (1-10).`}
