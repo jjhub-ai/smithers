@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { SmithersError } from "../utils/errors";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,7 +59,17 @@ async function runCheck(
     return await Promise.race([
       check.run(ctx),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("diagnostic check timed out")), PER_CHECK_TIMEOUT_MS),
+        setTimeout(
+          () =>
+            reject(
+              new SmithersError(
+                "AGENT_DIAGNOSTIC_TIMEOUT",
+                "diagnostic check timed out",
+                { timeoutMs: PER_CHECK_TIMEOUT_MS },
+              ),
+            ),
+          PER_CHECK_TIMEOUT_MS,
+        ),
       ),
     ]);
   } catch (err) {
@@ -558,6 +569,44 @@ const piStrategy: AgentDiagnosticStrategy = {
 };
 
 // ---------------------------------------------------------------------------
+// Amp strategy
+// ---------------------------------------------------------------------------
+
+const ampApiKeySkip: DiagnosticCheckDef = {
+  id: "api_key_valid",
+  run: async () => {
+    return {
+      id: "api_key_valid",
+      status: "skip",
+      message: "Amp uses its own auth — skipping API key check",
+      durationMs: 0,
+    };
+  },
+};
+
+const ampRateLimitSkip: DiagnosticCheckDef = {
+  id: "rate_limit_status",
+  run: async () => {
+    return {
+      id: "rate_limit_status",
+      status: "skip",
+      message: "Amp uses its own auth — skipping rate limit check",
+      durationMs: 0,
+    };
+  },
+};
+
+const ampStrategy: AgentDiagnosticStrategy = {
+  agentId: "amp",
+  command: "amp",
+  checks: [
+    checkCliInstalled("amp", "Amp"),
+    ampApiKeySkip,
+    ampRateLimitSkip,
+  ],
+};
+
+// ---------------------------------------------------------------------------
 // Strategy registry
 // ---------------------------------------------------------------------------
 
@@ -566,6 +615,7 @@ const strategies: Record<string, AgentDiagnosticStrategy> = {
   codex: codexStrategy,
   gemini: geminiStrategy,
   pi: piStrategy,
+  amp: ampStrategy,
 };
 
 export function getDiagnosticStrategy(

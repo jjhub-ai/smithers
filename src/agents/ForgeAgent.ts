@@ -1,8 +1,10 @@
 import {
   BaseCliAgent,
+  type CliOutputInterpreter,
   pushFlag,
 } from "./BaseCliAgent";
 import type { BaseCliAgentOptions } from "./BaseCliAgent";
+import { randomUUID } from "node:crypto";
 
 type ForgeAgentOptions = BaseCliAgentOptions & {
   directory?: string;
@@ -19,10 +21,53 @@ type ForgeAgentOptions = BaseCliAgentOptions & {
 
 export class ForgeAgent extends BaseCliAgent {
   private readonly opts: ForgeAgentOptions;
+  readonly cliEngine = "forge";
+  private issuedConversationId?: string;
 
   constructor(opts: ForgeAgentOptions = {}) {
     super(opts);
     this.opts = opts;
+  }
+
+  protected createOutputInterpreter(): CliOutputInterpreter {
+    let emittedStarted = false;
+
+    return {
+      onStdoutLine: () => {
+        if (emittedStarted) return [];
+        emittedStarted = true;
+        return [{
+          type: "started",
+          engine: this.cliEngine,
+          title: "Forge",
+          resume: this.issuedConversationId,
+        }];
+      },
+      onExit: (result) => {
+        const started = !emittedStarted && this.issuedConversationId
+          ? [{
+              type: "started" as const,
+              engine: this.cliEngine,
+              title: "Forge",
+              resume: this.issuedConversationId,
+            }]
+          : [];
+        return [
+          ...started,
+          {
+            type: "completed" as const,
+            engine: this.cliEngine,
+            ok: !result.exitCode || result.exitCode === 0,
+            answer: result.stdout.trim() || undefined,
+            error:
+              result.exitCode && result.exitCode !== 0
+                ? result.stderr.trim() || `Forge exited with code ${result.exitCode}`
+                : undefined,
+            resume: this.issuedConversationId,
+          },
+        ];
+      },
+    };
   }
 
   protected async buildCommand(params: {
@@ -43,7 +88,11 @@ export class ForgeAgent extends BaseCliAgent {
     pushFlag(args, "--agent", this.opts.agent);
 
     // Conversation ID
-    pushFlag(args, "--conversation-id", this.opts.conversationId);
+    const resumeSession = typeof params.options?.resumeSession === "string"
+      ? params.options.resumeSession
+      : undefined;
+    this.issuedConversationId = resumeSession ?? this.opts.conversationId ?? randomUUID();
+    pushFlag(args, "--conversation-id", this.issuedConversationId);
 
     // Sandbox
     pushFlag(args, "--sandbox", this.opts.sandbox);
