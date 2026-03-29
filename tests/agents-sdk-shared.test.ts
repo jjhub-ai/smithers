@@ -40,6 +40,24 @@ describe("resolveSdkModel", () => {
 // ---------------------------------------------------------------------------
 
 describe("streamResultToGenerateResult", () => {
+  const usage = {
+    inputTokens: 10,
+    inputTokenDetails: {
+      noCacheTokens: 10,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    },
+    outputTokens: 5,
+    outputTokenDetails: {
+      textTokens: 5,
+      reasoningTokens: 0,
+    },
+    totalTokens: 15,
+    reasoningTokens: 0,
+    cachedInputTokens: 0,
+    raw: undefined,
+  };
+
   function createMockStream(textParts: string[]) {
     let consumed = false;
     return {
@@ -65,8 +83,8 @@ describe("streamResultToGenerateResult", () => {
       dynamicToolResults: Promise.resolve([]),
       finishReason: Promise.resolve("stop"),
       rawFinishReason: Promise.resolve("stop"),
-      usage: Promise.resolve({ promptTokens: 10, completionTokens: 5 }),
-      totalUsage: Promise.resolve({ promptTokens: 10, completionTokens: 5 }),
+      usage: Promise.resolve(usage),
+      totalUsage: Promise.resolve(usage),
       warnings: Promise.resolve([]),
       steps: Promise.resolve([]),
       request: Promise.resolve({}),
@@ -90,7 +108,7 @@ describe("streamResultToGenerateResult", () => {
     expect(chunks).toEqual(["Hello", " ", "World"]);
     expect(result.text).toBe("Hello World");
     expect(result.finishReason).toBe("stop");
-    expect(result.usage).toEqual({ promptTokens: 10, completionTokens: 5 });
+    expect(result.usage).toEqual(usage);
   });
 
   test("consumes stream without callback", async () => {

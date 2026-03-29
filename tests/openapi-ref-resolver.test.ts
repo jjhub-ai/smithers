@@ -60,7 +60,10 @@ describe("resolveRef", () => {
   });
 
   test("resolves parameter reference", () => {
-    const result = resolveRef(spec, "#/components/parameters/PageSize");
+    const result = resolveRef<{ name: string }>(
+      spec,
+      "#/components/parameters/PageSize",
+    );
     expect(result.name).toBe("pageSize");
   });
 
@@ -86,7 +89,10 @@ describe("resolveRef", () => {
 
   test("resolves to root-level properties", () => {
     const specWithInfo = { info: { title: "My API", version: "1.0" } } as any;
-    const result = resolveRef(specWithInfo, "#/info");
+    const result = resolveRef<{ title: string; version: string }>(
+      specWithInfo,
+      "#/info",
+    );
     expect(result.title).toBe("My API");
   });
 });
@@ -105,7 +111,10 @@ describe("deref", () => {
   } as any;
 
   test("resolves $ref to referenced schema", () => {
-    const result = deref(spec, { $ref: "#/components/schemas/Pet" });
+    const result = deref<{
+      type: string;
+      properties: { breed: { type: string } };
+    }>(spec, { $ref: "#/components/schemas/Pet" });
     expect(result).toEqual({
       type: "object",
       properties: { breed: { type: "string" } },

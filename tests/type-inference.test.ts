@@ -8,7 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import { createSmithers } from "../src/index.ts";
 import { z } from "zod";
-import type { SmithersCtx, InferOutputEntry } from "../src/index.ts";
+import type { SmithersCtx, InferDeps, InferOutputEntry } from "../src/index.ts";
 
 // ─── Schema fixtures ───────────────────────────────────────────────
 
@@ -59,6 +59,23 @@ type _AssertFix = Expect<
   Equal<
     FixInferred,
     { patch: string; explanation: string; filesChanged: string[] }
+  >
+>;
+
+type DepsInferred = InferDeps<{
+  analysis: typeof analysisSchema;
+  fix: typeof fixSchema;
+}>;
+type _AssertDeps = Expect<
+  Equal<
+    DepsInferred,
+    {
+      analysis: {
+        summary: string;
+        issues: { file: string; line: number; severity: "low" | "medium" | "high" }[];
+      };
+      fix: { patch: string; explanation: string; filesChanged: string[] };
+    }
   >
 >;
 

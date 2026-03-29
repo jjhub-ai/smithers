@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { findSmithersDb } from "../src/cli/find-db";
+import { findSmithersDb, waitForSmithersDb } from "../src/cli/find-db";
 
 const TMP = join(tmpdir(), `smithers-find-db-test-${Date.now()}`);
 
@@ -70,6 +70,19 @@ describe("findSmithersDb", () => {
       const deep = join(TMP, "a", "b", "c", "d");
       mkdirSync(deep, { recursive: true });
       expect(findSmithersDb(deep)).toBe(dbPath);
+    } finally {
+      teardown();
+    }
+  });
+
+  test("waits briefly for smithers.db to appear", async () => {
+    setup();
+    try {
+      const dbPath = join(TMP, "smithers.db");
+      setTimeout(() => writeFileSync(dbPath, ""), 25);
+      await expect(
+        waitForSmithersDb(TMP, { timeoutMs: 250, intervalMs: 10 }),
+      ).resolves.toBe(dbPath);
     } finally {
       teardown();
     }

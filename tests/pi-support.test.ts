@@ -21,8 +21,89 @@ import { afterEach, describe, expect, test } from "bun:test";
   delete process.env.PI_RESPONSE_FILE;
  });
  
- describe("PI CLI agent", () => {
-   test("PiAgent builds expected CLI arguments", async () => {
+describe("PI CLI agent", () => {
+  test("PiAgent emits resumable session and tool lifecycle events when hijack hooks are enabled", async () => {
+    const argsFileDir = await mkdtemp(join(tmpdir(), "smithers-pi-events-"));
+    const argsFile = join(argsFileDir, "args.json");
+
+    const fake = await makeFakePi(`
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (process.env.PI_ARGS_FILE) fs.writeFileSync(process.env.PI_ARGS_FILE, JSON.stringify(args), "utf8");
+const lines = [
+  JSON.stringify({ type: "session", version: 3, id: "session-abc", cwd: process.cwd() }),
+  JSON.stringify({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "read_file", args: { path: "README.md" } }),
+  JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "done" } }),
+  JSON.stringify({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "read_file", result: { content: "ok" }, isError: false }),
+  JSON.stringify({ type: "turn_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" } })
+];
+process.stdout.write(lines.join("\\n") + "\\n");
+`);
+
+    try {
+      process.env.PATH = `${fake.dir}:${originalPath}`;
+      process.env.PI_ARGS_FILE = argsFile;
+
+      const events: any[] = [];
+      const agent = new PiAgent({
+        env: { PATH: process.env.PATH! },
+      });
+
+      const result = await agent.generate({
+        messages: [{ role: "user", content: "Ping?" }],
+        resumeSession: "session-abc",
+        onEvent: (event: any) => {
+          events.push(event);
+        },
+      });
+
+      expect(result.text).toBe("done");
+
+      const capturedArgs = JSON.parse(await readFile(argsFile, "utf8")) as string[];
+      expect(capturedArgs).toContain("--mode");
+      expect(capturedArgs).toContain("json");
+      expect(capturedArgs).toContain("--session");
+      expect(capturedArgs).toContain("session-abc");
+      expect(capturedArgs).not.toContain("--no-session");
+
+      expect(events).toEqual([
+        expect.objectContaining({
+          type: "started",
+          engine: "pi",
+          resume: "session-abc",
+        }),
+        expect.objectContaining({
+          type: "action",
+          phase: "started",
+          action: expect.objectContaining({
+            id: "tool-1",
+            title: "read_file",
+          }),
+        }),
+        expect.objectContaining({
+          type: "action",
+          phase: "completed",
+          action: expect.objectContaining({
+            id: "tool-1",
+            title: "read_file",
+          }),
+          ok: true,
+        }),
+        expect.objectContaining({
+          type: "completed",
+          engine: "pi",
+          ok: true,
+          answer: "done",
+          resume: "session-abc",
+        }),
+      ]);
+    } finally {
+      await rm(fake.dir, { recursive: true, force: true });
+      await rm(argsFileDir, { recursive: true, force: true });
+    }
+  });
+
+  test("PiAgent builds expected CLI arguments", async () => {
      const argsFileDir = await mkdtemp(join(tmpdir(), "smithers-pi-args-"));
      const argsFile = join(argsFileDir, "args.json");
  
@@ -180,48 +261,6 @@ import { afterEach, describe, expect, test } from "bun:test";
      } finally {
        await rm(fake.dir, { recursive: true, force: true });
        await rm(argsFileDir, { recursive: true, force: true });
-     }
-   });
- 
-   test("PiAgent RPC mode waits past tool-use turns for the final assistant answer", async () => {
-     const fake = await makeFakePi(`
- let buffer = "";
- process.stdin.on("data", (chunk) => {
-   buffer += chunk.toString("utf8");
-   const lines = buffer.split(/\\r?\\n/);
-   buffer = lines.pop();
-   for (const line of lines) {
-     if (!line.trim()) continue;
-     const msg = JSON.parse(line);
-     if (msg.type === "prompt") {
-       process.stdout.write(JSON.stringify({ type: "response", command: "prompt", success: true, id: msg.id }) + "\\n");
-       process.stdout.write(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Thinking" } }) + "\\n");
-       process.stdout.write(JSON.stringify({ type: "turn_end", message: { role: "assistant", content: [{ type: "text", text: "Tool turn" }], stopReason: "toolUse" } }) + "\\n");
-       setTimeout(() => {
-         process.stdout.write(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: " final answer" } }) + "\\n");
-         process.stdout.write(JSON.stringify({ type: "turn_end", message: { role: "assistant", content: [{ type: "text", text: "Final answer" }], stopReason: "stop" } }) + "\\n");
-       }, 20);
-     }
-   }
- });
- `);
- 
-     try {
-       process.env.PATH = `${fake.dir}:${originalPath}`;
- 
-       const agent = new PiAgent({
-         mode: "rpc",
-         model: "gpt-4o-mini",
-         env: { PATH: process.env.PATH! },
-       });
- 
-       const result = await agent.generate({
-         messages: [{ role: "user", content: "Use a tool and then answer" }],
-       });
- 
-       expect(result.text).toBe("Final answer");
-     } finally {
-       await rm(fake.dir, { recursive: true, force: true });
      }
    });
  

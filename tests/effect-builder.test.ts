@@ -140,10 +140,10 @@ describe("BuilderStepHandle shape", () => {
       needs: {},
       retries: 0,
       timeoutMs: null,
-      cache: { ttlMs: 60_000 },
+      cache: { version: "v1" },
     };
 
-    expect(handle.cache).toEqual({ ttlMs: 60_000 });
+    expect(handle.cache).toEqual({ version: "v1" });
   });
 
   test("step handle with needs dependencies", () => {

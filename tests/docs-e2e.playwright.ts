@@ -45,14 +45,30 @@ function buildRedirectCases() {
   return Array.from(cases, ([from, to]) => ({ from, to }));
 }
 
-test("home redirects to introduction and exposes the JSX docs tab", async ({
+function resolveDestinationPage(pathname: string) {
+  const slug = pathname.replace(/^\/+/, "");
+  if (!slug) {
+    return {
+      pathname: "/introduction",
+      page: docsPageBySlug.get("introduction"),
+    };
+  }
+
+  return {
+    pathname,
+    page: docsPageBySlug.get(slug),
+  };
+}
+
+test("home redirects to introduction and exposes the CLI and API docs tabs", async ({
   page,
 }) => {
   const introduction = docsPageBySlug.get("introduction");
-  const jsxTab = tabLinks.find((tab) => tab.label === "JSX");
+  const cliTab = tabLinks.find((tab) => tab.label === "CLI");
+  const apiTab = tabLinks.find((tab) => tab.label === "API");
 
-  if (!introduction || !jsxTab) {
-    throw new Error("Expected introduction and JSX tab");
+  if (!introduction || !cliTab || !apiTab) {
+    throw new Error("Expected introduction, CLI tab, and API tab");
   }
 
   await page.goto("/");
@@ -63,11 +79,20 @@ test("home redirects to introduction and exposes the JSX docs tab", async ({
 
   await page
     .getByRole("navigation", { name: "API tabs" })
-    .getByRole("link", { name: jsxTab.label })
+    .getByRole("link", { name: cliTab.label })
     .click();
-  await expect(page).toHaveURL(new RegExp(`/${escapeRegExp(jsxTab.slug)}$`));
+  await expect(page).toHaveURL(new RegExp(`/${escapeRegExp(cliTab.slug)}$`));
   await expect(
-    page.getByRole("heading", { name: docsPageBySlug.get(jsxTab.slug)!.title }),
+    page.getByRole("heading", { name: docsPageBySlug.get(cliTab.slug)!.title }),
+  ).toBeVisible();
+
+  await page
+    .getByRole("navigation", { name: "API tabs" })
+    .getByRole("link", { name: apiTab.label })
+    .click();
+  await expect(page).toHaveURL(new RegExp(`/${escapeRegExp(apiTab.slug)}$`));
+  await expect(
+    page.getByRole("heading", { name: docsPageBySlug.get(apiTab.slug)!.title }),
   ).toBeVisible();
 });
 
@@ -90,8 +115,8 @@ test("legacy docs routes redirect to the current destinations", async ({
   const redirectCases = buildRedirectCases();
 
   for (const redirectCase of redirectCases) {
-    const destinationSlug = redirectCase.to.replace(/^\/+/, "");
-    const destinationPage = docsPageBySlug.get(destinationSlug);
+    const destination = resolveDestinationPage(redirectCase.to);
+    const destinationPage = destination.page;
 
     if (!destinationPage) {
       throw new Error(
@@ -100,7 +125,9 @@ test("legacy docs routes redirect to the current destinations", async ({
     }
 
     await page.goto(redirectCase.from);
-    await expect(page).toHaveURL(new RegExp(`${escapeRegExp(redirectCase.to)}$`));
+    await expect(
+      page,
+    ).toHaveURL(new RegExp(`${escapeRegExp(destination.pathname)}$`));
     await expect(
       page.getByRole("heading", { name: destinationPage.title }),
       `redirect ${redirectCase.from} did not land on ${redirectCase.to}`,
