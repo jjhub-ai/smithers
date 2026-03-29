@@ -1,6 +1,6 @@
 ---
 title: Agent Trace OTEL Log Verification
-description: Reproducible local verification for canonical agent trace OTEL log export with Loki.
+description: Reproducible local verification for Smithers canonical trace and provider session transcript OTEL log export with Loki.
 ---
 
 ## Local stack
@@ -42,7 +42,10 @@ export SMITHERS_LOG_FORMAT=json
 Use the built-in reproducible workflow at `workflows/agent-trace-otel-demo.tsx`.
 It emits:
 
-- one Pi-like high-fidelity attempt with text deltas, thinking deltas, tool lifecycle, usage, and a redaction fixture
+- one Pi-like high-fidelity attempt with canonical trace events plus persisted session transcript rows
+- one Claude-like structured attempt with canonical trace events plus provider session transcript rows
+- one Codex-like structured attempt with canonical trace events plus provider session transcript rows
+- one Gemini-like structured attempt
 - one SDK-style final-only attempt
 - stable run annotations for Loki queries
 
@@ -76,6 +79,7 @@ find .smithers/executions/agent-trace-otel-demo/logs/agent-trace -type f -maxdep
 
 Smithers OTEL attributes are exposed to Loki as sanitized structured metadata fields such as:
 
+- `smithers_event_category`
 - `run_id`
 - `workflow_path`
 - `node_id`
@@ -84,6 +88,15 @@ Smithers OTEL attributes are exposed to Loki as sanitized structured metadata fi
 - `agent_capture_mode`
 - `trace_completeness`
 - `event_kind`
+- `session_row_type`
+
+Smithers exports two related Loki log families:
+
+- `agent-trace`: normalized canonical execution events such as deltas, tool lifecycle, usage, and capture warnings/errors
+- `agent-session`: provider transcript/session rows observed live or backfilled from persisted session logs
+
+Both families share the same run/workflow/node/attempt/agent correlation fields and the same redaction rules.
+`artifact.created` remains local-only and is not exported to Loki.
 
 Use `{service_name="smithers-dev"}` as the stream selector, then filter on structured metadata in the LogQL pipeline. Use `| json` to inspect the structured log body.
 
@@ -123,6 +136,36 @@ Inspect the structured JSON body for one run:
 {service_name="smithers-dev"} | run_id="agent-trace-otel-demo" | json
 ```
 
+Canonical trace rows only:
+
+```logql
+{service_name="smithers-dev"} | smithers_event_category="agent-trace" | run_id="agent-trace-otel-demo"
+```
+
+Provider session rows only:
+
+```logql
+{service_name="smithers-dev"} | smithers_event_category="agent-session" | run_id="agent-trace-otel-demo"
+```
+
+Pi persisted session metadata:
+
+```logql
+{service_name="smithers-dev"} | run_id="agent-trace-otel-demo" | node_id="pi-rich-trace" | session_row_type="model_change"
+```
+
+Claude persisted session queue events:
+
+```logql
+{service_name="smithers-dev"} | run_id="agent-trace-otel-demo" | node_id="claude-structured-trace" | session_row_type="queue-operation"
+```
+
+Codex persisted session reasoning rows:
+
+```logql
+{service_name="smithers-dev"} | run_id="agent-trace-otel-demo" | node_id="codex-structured-trace" | session_row_type="event_msg"
+```
+
 Redaction proof query:
 
 ```logql
@@ -140,6 +183,10 @@ curl -sG 'http://localhost:3100/loki/api/v1/query_range' \
 
 curl -sG 'http://localhost:3100/loki/api/v1/query_range' \
   --data-urlencode 'query={service_name="smithers-dev"} | run_id="agent-trace-otel-demo" | event_kind="assistant.thinking.delta"' \
+  --data-urlencode 'limit=20' | jq '.data.result[]?.values[]?[1]'
+
+curl -sG 'http://localhost:3100/loki/api/v1/query_range' \
+  --data-urlencode 'query={service_name="smithers-dev"} | run_id="agent-trace-otel-demo" | node_id="codex-structured-trace" | session_row_type="event_msg"' \
   --data-urlencode 'limit=20' | jq '.data.result[]?.values[]?[1]'
 ```
 
@@ -176,6 +223,9 @@ Expected trace attributes include at least:
 - Loki is present and queryable
 - collector logs pipeline is active
 - Pi traces show text deltas, thinking deltas, tool execution lifecycle, final message, usage, and run/node/attempt correlation
+- Pi session transcript rows are queryable in Loki
+- Claude session transcript rows are queryable in Loki
+- Codex session transcript rows are queryable in Loki
 - second agent family is exported with truthful `final-only` completeness classification
 - Gemini `stream-json` attempts preserve structured deltas truthfully
 - Kimi `stream-json` attempts preserve structured tool lifecycle truthfully
@@ -192,9 +242,12 @@ The fixture-style and workflow-backed tests in `tests/agent-trace.test.tsx` now 
 - Pi rich success and malformed JSON failure
 - SDK truthful `final-only`
 - Claude Code structured stream preservation
+- Claude session transcript backfill/export
 - Codex structured delta + usage preservation
+- Codex session transcript backfill/export
 - Gemini structured `stream-json` and coarse `cli-json` classification
 - Kimi structured `stream-json` tool lifecycle preservation
+- Pi session transcript backfill/export
 - truncated structured stream failure classification
 - artifact write failure classification
 - OTEL body/attribute shaping for Loki query fields

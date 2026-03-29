@@ -152,6 +152,15 @@ retry_until loki-codex-text-delta 6 '.streams >= 1' \
 retry_until loki-codex-usage 6 '.streams >= 1' \
   "loki_query '{service_name=\"smithers-dev\"} | run_id=\"$RUN_ID\" | node_id=\"codex-structured-trace\" | event_kind=\"usage\"' 20 | jq '{streams:(.data.result|length), lines:[.data.result[]?.values[]?[1]]}'"
 
+retry_until loki-pi-session-transcript 6 '.streams >= 1' \
+  "loki_query '{service_name=\"smithers-dev\"} | run_id=\"$RUN_ID\" | node_id=\"pi-rich-trace\" | session_row_type=\"model_change\"' 20 | jq '{streams:(.data.result|length), lines:[.data.result[]?.values[]?[1]]}'"
+
+retry_until loki-claude-session-transcript 6 '.streams >= 1' \
+  "loki_query '{service_name=\"smithers-dev\"} | run_id=\"$RUN_ID\" | node_id=\"claude-structured-trace\" | session_row_type=\"queue-operation\"' 20 | jq '{streams:(.data.result|length), lines:[.data.result[]?.values[]?[1]]}'"
+
+retry_until loki-codex-session-transcript 6 '.streams >= 1' \
+  "loki_query '{service_name=\"smithers-dev\"} | run_id=\"$RUN_ID\" | node_id=\"codex-structured-trace\" | session_row_type=\"event_msg\"' 20 | jq '{streams:(.data.result|length), lines:[.data.result[]?.values[]?[1]]}'"
+
 retry_until trace-summary-claude 6 '.captureMode == "cli-json-stream" and .traceCompleteness == "full-observed" and (.missingExpectedEventKinds | length) == 0' \
   "trace_summary_json '$ROOT_DIR/workflows/.smithers/executions/$RUN_ID/logs/agent-trace/claude-structured-trace-0-1.ndjson'"
 
@@ -217,6 +226,9 @@ append_json loki-claude-usage "$OUT_DIR/loki-claude-usage.json"
 append_json loki-gemini-usage "$OUT_DIR/loki-gemini-usage.json"
 append_json loki-codex-text-delta "$OUT_DIR/loki-codex-text-delta.json"
 append_json loki-codex-usage "$OUT_DIR/loki-codex-usage.json"
+append_json loki-pi-session-transcript "$OUT_DIR/loki-pi-session-transcript.json"
+append_json loki-claude-session-transcript "$OUT_DIR/loki-claude-session-transcript.json"
+append_json loki-codex-session-transcript "$OUT_DIR/loki-codex-session-transcript.json"
 append_json trace-summary-claude "$OUT_DIR/trace-summary-claude.json"
 append_json trace-summary-codex "$OUT_DIR/trace-summary-codex.json"
 append_json loki-capture-errors "$OUT_DIR/loki-capture-errors.json"

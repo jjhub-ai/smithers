@@ -15,6 +15,7 @@ export type { OutputAccessor, InferRow, InferOutputEntry } from "./OutputAccesso
 export type { SmithersEvent } from "./SmithersEvent";
 export type { SmithersError } from "./SmithersError";
 export type {
+  AgentSessionTranscriptEvent,
   AgentCaptureMode,
   AgentFamily,
   AgentTraceCapabilityProfile,
@@ -97,7 +98,11 @@ export type {
 export { createSmithers } from "./create";
 export type { CreateSmithersApi } from "./create";
 export { runWorkflow, renderFrame } from "./engine";
-export { agentTraceCapabilities, detectAgentFamily, detectCaptureMode } from "./agent-trace";
+export {
+  agentTraceCapabilities,
+  detectAgentFamily,
+  detectCaptureMode,
+} from "./agent-trace";
 
 // Tools
 export { tools, read, write, edit, grep, bash } from "./tools/index";

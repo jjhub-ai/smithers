@@ -1,5 +1,6 @@
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import type { SmithersEvent } from "./SmithersEvent";
 import type { EventBus } from "./events";
 import { logErrorAwait, logInfoAwait, logWarningAwait } from "./effect/logging";
@@ -117,6 +118,35 @@ export type AgentTraceSummary = {
   rawArtifactRefs: string[];
 };
 
+export type AgentSessionTranscriptEvent = {
+  transcriptVersion: "1";
+  runId: string;
+  workflowPath?: string;
+  workflowHash?: string;
+  nodeId: string;
+  iteration: number;
+  attempt: number;
+  timestampMs: number;
+  event: {
+    sequence: number;
+    rowType: string;
+  };
+  source: {
+    agentFamily: AgentFamily;
+    captureMode: AgentCaptureMode;
+    ingestSource: "live" | "artifact";
+    observedLive: boolean;
+    providerSessionId?: string;
+    providerThreadId?: string;
+  };
+  raw: unknown;
+  redaction: {
+    applied: boolean;
+    ruleIds: string[];
+  };
+  annotations: Record<string, string | number | boolean>;
+};
+
 export type AgentTraceSmithersEvent = {
   type: "AgentTraceEvent";
   runId: string;
@@ -134,6 +164,16 @@ export type AgentTraceSummarySmithersEvent = {
   iteration: number;
   attempt: number;
   summary: AgentTraceSummary;
+  timestampMs: number;
+};
+
+export type AgentSessionTranscriptSmithersEvent = {
+  type: "AgentSessionEvent";
+  runId: string;
+  nodeId: string;
+  iteration: number;
+  attempt: number;
+  transcript: AgentSessionTranscriptEvent;
   timestampMs: number;
 };
 
@@ -377,7 +417,6 @@ export function detectAgentFamily(agent: any): AgentFamily {
     constructorName && constructorName !== "object"
       ? `${constructorName} ${idName}`
       : idName;
-  if (name.includes("pi")) return "pi";
   if (name.includes("codex")) return "codex";
   if (name.includes("claude")) return "claude-code";
   if (name.includes("gemini")) return "gemini";
@@ -386,6 +425,12 @@ export function detectAgentFamily(agent: any): AgentFamily {
   if (name.includes("anthropic")) return "anthropic";
   if (name.includes("amp")) return "amp";
   if (name.includes("forge")) return "forge";
+  if (
+    constructorName.includes("piagent") ||
+    /(?:^|[-_\s])pi(?:$|[-_\s])/.test(idName)
+  ) {
+    return "pi";
+  }
   return "unknown";
 }
 
@@ -397,6 +442,7 @@ export function detectCaptureMode(agent: any): AgentCaptureMode {
     if (mode === "json") return "cli-json-stream";
     return "cli-text";
   }
+  if (family === "codex") return "cli-json-stream";
   const outputFormat = agent?.opts?.outputFormat ?? agent?.outputFormat;
   if (family === "openai" || family === "anthropic") return "sdk-events";
   if (outputFormat === "stream-json") return "cli-json-stream";
@@ -498,6 +544,7 @@ type NormalizedTraceEvent = {
   payload: Record<string, unknown> | null;
   raw: unknown;
   rawType?: string;
+  observed?: boolean;
 };
 
 type NormalizedTraceBatch = {
@@ -652,8 +699,9 @@ function buildNormalizedEvent(
   payload: Record<string, unknown> | null,
   raw: unknown,
   rawType?: string,
+  observed = false,
 ): NormalizedTraceEvent {
-  return { kind, payload, raw, rawType };
+  return { kind, payload, raw, rawType, observed };
 }
 
 function normalizeMappedEvent(
@@ -690,7 +738,13 @@ function normalizeClaudeStructuredEvent(
           ),
         ]
       : [
-          buildNormalizedEvent("stdout", { eventType: rawType }, parsed, rawType),
+          buildNormalizedEvent(
+            "stdout",
+            { eventType: rawType },
+            parsed,
+            rawType,
+            true,
+          ),
         ];
     const usage = normalizeTokenUsage(parsed?.message?.usage);
     if (usage) events.push(buildNormalizedEvent("usage", usage, parsed, rawType));
@@ -749,7 +803,9 @@ function normalizeCodexStructuredEvent(
 ): NormalizedTraceBatch | null {
   if (rawType === "thread.started") {
     return {
-      events: [buildNormalizedEvent("stdout", { eventType: rawType }, parsed, rawType)],
+      events: [
+        buildNormalizedEvent("stdout", { eventType: rawType }, parsed, rawType, true),
+      ],
     };
   }
 
@@ -875,7 +931,9 @@ function normalizePiStructuredEvent(
   }
 
   return {
-    events: [buildNormalizedEvent("stdout", { eventType: rawType }, parsed, rawType)],
+    events: [
+      buildNormalizedEvent("stdout", { eventType: rawType }, parsed, rawType, true),
+    ],
   };
 }
 
@@ -964,7 +1022,9 @@ function normalizeStructuredEvent(
 ): NormalizedTraceBatch {
   if (agentFamily === "pi") {
     return normalizePiStructuredEvent(parsed, rawType) ?? {
-      events: [buildNormalizedEvent("stdout", { eventType: rawType }, parsed, rawType)],
+      events: [
+        buildNormalizedEvent("stdout", { eventType: rawType }, parsed, rawType, true),
+      ],
     };
   }
 
@@ -987,8 +1047,160 @@ function normalizeStructuredEvent(
   if (shared) return shared;
 
   return {
-    events: [buildNormalizedEvent("stdout", { eventType: rawType }, parsed, rawType)],
+    events: [
+      buildNormalizedEvent("stdout", { eventType: rawType }, parsed, rawType, true),
+    ],
   };
+}
+
+function extractProviderSessionCorrelation(
+  agentFamily: AgentFamily,
+  parsed: any,
+): { sessionId?: string; threadId?: string } {
+  if (agentFamily === "codex") {
+    const threadId =
+      typeof parsed?.thread_id === "string" ? parsed.thread_id : undefined;
+    return { threadId };
+  }
+
+  const sessionId =
+    typeof parsed?.session_id === "string"
+      ? parsed.session_id
+      : typeof parsed?.sessionId === "string"
+        ? parsed.sessionId
+        : agentFamily === "pi" && typeof parsed?.id === "string"
+          ? parsed.id
+          : undefined;
+  return { sessionId };
+}
+
+async function listJsonlFiles(dir: string): Promise<string[]> {
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    const nested = await Promise.all(
+      entries.map(async (entry) => {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) return listJsonlFiles(path);
+        return entry.isFile() && path.endsWith(".jsonl") ? [path] : [];
+      }),
+    );
+    return nested.flat();
+  } catch {
+    return [];
+  }
+}
+
+function buildCodexSessionRoots(agent: any): string[] {
+  const custom = agent?.opts?.sessionDir ?? agent?.opts?.codexSessionDir;
+  if (typeof custom === "string" && custom) return [custom];
+  if (String(agent?.constructor?.name ?? "") !== "CodexAgent") return [];
+  return [join(homedir(), ".codex", "sessions")];
+}
+
+function buildClaudeSessionRoots(agent: any): string[] {
+  const custom =
+    agent?.opts?.sessionDir ??
+    agent?.opts?.claudeProjectsDir ??
+    agent?.opts?.projectsDir;
+  if (typeof custom === "string" && custom) return [custom];
+  if (String(agent?.constructor?.name ?? "") !== "ClaudeCodeAgent") {
+    return [];
+  }
+  return [join(homedir(), ".claude", "projects")];
+}
+
+function buildPiSessionRoots(agent: any): string[] {
+  if (typeof agent?.opts?.session === "string" && agent.opts.session) {
+    return [agent.opts.session];
+  }
+  const custom = agent?.opts?.sessionDir;
+  if (typeof custom === "string" && custom) return [custom];
+  if (String(agent?.constructor?.name ?? "") !== "PiAgent") return [];
+  return [join(homedir(), ".pi", "agent", "sessions")];
+}
+
+function sanitizeClaudeProjectPath(cwd: string): string {
+  return cwd.replace(/[\\/]/g, "-");
+}
+
+function isCorrelatedSessionCwd(sessionCwd: unknown, cwd: string): boolean {
+  if (typeof sessionCwd !== "string" || !sessionCwd) return false;
+  return (
+    sessionCwd === cwd ||
+    sessionCwd.startsWith(`${cwd}/`) ||
+    cwd.startsWith(`${sessionCwd}/`)
+  );
+}
+
+async function resolvePiSessionFile(
+  agent: any,
+  sessionId?: string,
+): Promise<string | null> {
+  if (typeof agent?.opts?.session === "string" && agent.opts.session) {
+    return agent.opts.session;
+  }
+  if (!sessionId) return null;
+  for (const root of buildPiSessionRoots(agent)) {
+    const files = await listJsonlFiles(root);
+    const match = files.find((file) => file.includes(sessionId));
+    if (match) return match;
+  }
+  return null;
+}
+
+async function resolveClaudeSessionFile(
+  agent: any,
+  cwd: string,
+  sessionId?: string,
+): Promise<string | null> {
+  if (!sessionId) return null;
+  for (const root of buildClaudeSessionRoots(agent)) {
+    const direct = join(root, sanitizeClaudeProjectPath(cwd), `${sessionId}.jsonl`);
+    try {
+      const info = await stat(direct);
+      if (info.isFile()) return direct;
+    } catch {}
+    const files = await listJsonlFiles(root);
+    const match = files.find((file) => file.endsWith(`/${sessionId}.jsonl`));
+    if (match) return match;
+  }
+  return null;
+}
+
+async function resolveCodexSessionFile(
+  agent: any,
+  cwd: string,
+  startedAtMs: number,
+): Promise<string | null> {
+  const day = new Date(startedAtMs);
+  const dayRoots = buildCodexSessionRoots(agent).map((root) =>
+    join(
+      root,
+      String(day.getUTCFullYear()),
+      String(day.getUTCMonth() + 1).padStart(2, "0"),
+      String(day.getUTCDate()).padStart(2, "0"),
+    ),
+  );
+  const candidates = (await Promise.all(dayRoots.map((root) => listJsonlFiles(root)))).flat();
+  let best: { file: string; delta: number } | null = null;
+  for (const file of candidates) {
+    try {
+      const firstLine = (await readFile(file, "utf8")).split(/\r?\n/, 1)[0];
+      if (!firstLine) continue;
+      const parsed = JSON.parse(firstLine);
+      if (parsed?.type !== "session_meta") continue;
+      const sessionCwd = parsed?.payload?.cwd;
+      const sessionTs = Date.parse(
+        String(parsed?.payload?.timestamp ?? parsed?.timestamp ?? ""),
+      );
+      if (!isCorrelatedSessionCwd(sessionCwd, cwd) || !Number.isFinite(sessionTs)) {
+        continue;
+      }
+      const delta = Math.abs(sessionTs - startedAtMs);
+      if (!best || delta < best.delta) best = { file, delta };
+    } catch {}
+  }
+  return best?.file ?? null;
 }
 
 export function canonicalTraceEventToOtelLogRecord(
@@ -999,47 +1211,191 @@ export function canonicalTraceEventToOtelLogRecord(
   attributes: Record<string, unknown>;
   severity: "INFO" | "WARN" | "ERROR";
 } {
-  const attributes: Record<string, unknown> = {
-    "smithers.trace.version": event.traceVersion,
-    "run.id": event.runId,
-    "workflow.path": event.workflowPath,
-    "workflow.hash": event.workflowHash,
-    "node.id": event.nodeId,
-    "node.iteration": event.iteration,
-    "node.attempt": event.attempt,
-    "agent.family": event.source.agentFamily,
-    "agent.id": context?.agentId,
-    "agent.model": context?.model,
-    "agent.capture_mode": event.source.captureMode,
-    "trace.completeness": event.traceCompleteness,
-    "event.kind": event.event.kind,
-    "event.phase": event.event.phase,
-    "event.sequence": event.event.sequence,
-    "source.raw_type": event.source.rawType,
-    "source.raw_event_id": event.source.rawEventId,
-    "source.observed": event.source.observed,
-  };
-  for (const [key, value] of Object.entries(event.annotations)) {
-    attributes[key.startsWith("custom.") ? key : `custom.${key}`] = value;
-  }
-
-  const severity =
-    event.event.kind === "capture.error"
-      ? "ERROR"
-      : event.event.kind === "capture.warning" || event.event.kind === "stderr"
-        ? "WARN"
-        : "INFO";
-
-  return {
-    body: JSON.stringify({
+  const attributes = buildOtelAttributes(
+    {
+      "smithers.event.category": "agent-trace",
+      "smithers.trace.version": event.traceVersion,
+      "smithers.transcript.version": undefined,
+      "run.id": event.runId,
+      "workflow.path": event.workflowPath,
+      "workflow.hash": event.workflowHash,
+      "node.id": event.nodeId,
+      "node.iteration": event.iteration,
+      "node.attempt": event.attempt,
+      "agent.family": event.source.agentFamily,
+      "agent.id": context?.agentId,
+      "agent.model": context?.model,
+      "agent.capture_mode": event.source.captureMode,
+      "trace.completeness": event.traceCompleteness,
+      "event.kind": event.event.kind,
+      "event.phase": event.event.phase,
+      "event.sequence": event.event.sequence,
+      "source.raw_type": event.source.rawType,
+      "source.raw_event_id": event.source.rawEventId,
+      "source.observed": event.source.observed,
+      "session.row_type": undefined,
+      "session.row_sequence": undefined,
+      "session.ingest_source": undefined,
+      "session.observed_live": undefined,
+      "provider.session_id": undefined,
+      "provider.thread_id": undefined,
+    },
+    event.annotations,
+  );
+  return buildOtelLogRecord(
+    {
+      category: "agent-trace",
       payload: event.payload,
       raw: event.raw,
       redaction: event.redaction,
       annotations: event.annotations,
+    },
+    attributes,
+    inferCanonicalSeverity(event),
+  );
+}
+
+export function agentSessionEventToOtelLogRecord(
+  event: AgentSessionTranscriptEvent,
+  context?: { agentId?: string; model?: string },
+): {
+  body: string;
+  attributes: Record<string, unknown>;
+  severity: "INFO" | "WARN" | "ERROR";
+} {
+  const attributes = buildOtelAttributes(
+    {
+      "smithers.event.category": "agent-session",
+      "smithers.trace.version": undefined,
+      "smithers.transcript.version": event.transcriptVersion,
+      "run.id": event.runId,
+      "workflow.path": event.workflowPath,
+      "workflow.hash": event.workflowHash,
+      "node.id": event.nodeId,
+      "node.iteration": event.iteration,
+      "node.attempt": event.attempt,
+      "agent.family": event.source.agentFamily,
+      "agent.id": context?.agentId,
+      "agent.model": context?.model,
+      "agent.capture_mode": event.source.captureMode,
+      "trace.completeness": undefined,
+      "event.kind": undefined,
+      "event.phase": undefined,
+      "event.sequence": undefined,
+      "source.raw_type": undefined,
+      "source.raw_event_id": undefined,
+      "source.observed": undefined,
+      "provider.session_id": event.source.providerSessionId,
+      "provider.thread_id": event.source.providerThreadId,
+      "session.ingest_source": event.source.ingestSource,
+      "session.observed_live": event.source.observedLive,
+      "session.row_type": event.event.rowType,
+      "session.row_sequence": event.event.sequence,
+    },
+    event.annotations,
+  );
+  return buildOtelLogRecord(
+    {
+      category: "agent-session",
+      payload: undefined,
+      raw: event.raw,
+      redaction: event.redaction,
+      annotations: event.annotations,
+    },
+    attributes,
+    inferSessionSeverity(event.raw),
+  );
+}
+
+function buildOtelAttributes(
+  base: Record<string, unknown>,
+  annotations: Record<string, string | number | boolean>,
+): Record<string, unknown> {
+  const attributes: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value !== undefined) attributes[key] = value;
+  }
+  for (const [key, value] of Object.entries(annotations)) {
+    attributes[key.startsWith("custom.") ? key : `custom.${key}`] = value;
+  }
+  return attributes;
+}
+
+function buildOtelLogRecord(
+  body: {
+    category: "agent-trace" | "agent-session";
+    payload: unknown;
+    raw: unknown;
+    redaction: { applied: boolean; ruleIds: string[] };
+    annotations: Record<string, string | number | boolean>;
+  },
+  attributes: Record<string, unknown>,
+  severity: "INFO" | "WARN" | "ERROR",
+): {
+  body: string;
+  attributes: Record<string, unknown>;
+  severity: "INFO" | "WARN" | "ERROR";
+} {
+  return {
+    body: JSON.stringify({
+      category: body.category,
+      payload: body.payload,
+      raw: body.raw,
+      redaction: body.redaction,
+      annotations: body.annotations,
     }),
     attributes,
     severity,
   };
+}
+
+function inferCanonicalSeverity(
+  event: CanonicalAgentTraceEvent,
+): "INFO" | "WARN" | "ERROR" {
+  return event.event.kind === "capture.error"
+    ? "ERROR"
+    : event.event.kind === "capture.warning" || event.event.kind === "stderr"
+      ? "WARN"
+      : "INFO";
+}
+
+async function emitOtelLogRecord(
+  category: "agent-trace" | "agent-session",
+  record: {
+    body: string;
+    attributes: Record<string, unknown>;
+    severity: "INFO" | "WARN" | "ERROR";
+  },
+) {
+  if (record.severity === "ERROR") {
+    await logErrorAwait(record.body, record.attributes, category);
+  } else if (record.severity === "WARN") {
+    await logWarningAwait(record.body, record.attributes, category);
+  } else {
+    await logInfoAwait(record.body, record.attributes, category);
+  }
+}
+
+function shouldExportTraceEventToOtel(event: CanonicalAgentTraceEvent): boolean {
+  return event.event.kind !== "artifact.created";
+}
+
+function inferSessionSeverity(raw: unknown): "INFO" | "WARN" | "ERROR" {
+  const row = raw as any;
+  const rowType = String(row?.type ?? "").toLowerCase();
+  if (
+    row?.is_error === true ||
+    row?.isError === true ||
+    row?.error ||
+    row?.errorMessage ||
+    row?.message?.stopReason === "error" ||
+    row?.message?.errorMessage ||
+    rowType.includes("error")
+  ) {
+    return "ERROR";
+  }
+  if (rowType.includes("warning")) return "WARN";
+  return "INFO";
 }
 
 type TraceCollectorOptions = {
@@ -1047,6 +1403,7 @@ type TraceCollectorOptions = {
   runId: string;
   workflowPath?: string | null;
   workflowHash?: string | null;
+  cwd: string;
   nodeId: string;
   iteration: number;
   attempt: number;
@@ -1062,9 +1419,11 @@ export class AgentTraceCollector {
   private readonly runId: string;
   private readonly workflowPath?: string;
   private readonly workflowHash?: string;
+  private readonly cwd: string;
   private readonly nodeId: string;
   private readonly iteration: number;
   private readonly attempt: number;
+  private readonly agent: any;
   private readonly agentFamily: AgentFamily;
   private readonly captureMode: AgentCaptureMode;
   private readonly agentId?: string;
@@ -1074,18 +1433,23 @@ export class AgentTraceCollector {
   private readonly capabilities: AgentTraceCapabilityProfile;
   private readonly startedAtMs = nowMs();
   private readonly events: CanonicalAgentTraceEvent[] = [];
+  private readonly sessionEvents: AgentSessionTranscriptEvent[] = [];
   private readonly rawArtifactRefs: string[] = [];
   private readonly seenKinds = new Set<CanonicalAgentTraceEventKind>();
+  private readonly seenSessionRows = new Set<string>();
   private readonly directKinds = new Set<CanonicalAgentTraceEventKind>();
   private readonly expectedKinds = new Set<CanonicalAgentTraceEventKind>();
   private readonly failures: string[] = [];
   private readonly warnings: string[] = [];
   private sequence = 0;
+  private sessionSequence = 0;
   private rawEventSequence = 0;
   private stdoutBuffer = "";
   private stderrBuffer = "";
   private assistantTextBuffer = "";
   private finalText: string | null = null;
+  private providerSessionId?: string;
+  private providerThreadId?: string;
   private currentRawEventId?: string;
   private listener?: (event: SmithersEvent) => void;
 
@@ -1094,9 +1458,11 @@ export class AgentTraceCollector {
     this.runId = opts.runId;
     this.workflowPath = opts.workflowPath ?? undefined;
     this.workflowHash = opts.workflowHash ?? undefined;
+    this.cwd = opts.cwd;
     this.nodeId = opts.nodeId;
     this.iteration = opts.iteration;
     this.attempt = opts.attempt;
+    this.agent = opts.agent;
     this.agentFamily = detectAgentFamily(opts.agent);
     this.captureMode = detectCaptureMode(opts.agent);
     this.capabilities = resolveAgentTraceCapabilities(
@@ -1188,6 +1554,7 @@ export class AgentTraceCollector {
     this.endListener();
     const finishedAtMs = nowMs();
     this.flushStructuredBuffers();
+    await this.importProviderSessionTranscript();
     if (
       this.captureMode !== "sdk-events" &&
       !this.seenKinds.has("assistant.message.final") &&
@@ -1326,17 +1693,33 @@ export class AgentTraceCollector {
       await this.eventBus.emitEventQueued(
         smithersEvent as unknown as SmithersEvent,
       );
+      if (!shouldExportTraceEventToOtel(event)) {
+        continue;
+      }
       const record = canonicalTraceEventToOtelLogRecord(event, {
         agentId: this.agentId,
         model: this.model,
       });
-      if (record.severity === "ERROR") {
-        await logErrorAwait(record.body, record.attributes, "agent-trace");
-      } else if (record.severity === "WARN") {
-        await logWarningAwait(record.body, record.attributes, "agent-trace");
-      } else {
-        await logInfoAwait(record.body, record.attributes, "agent-trace");
-      }
+      await emitOtelLogRecord("agent-trace", record);
+    }
+    for (const event of this.sessionEvents) {
+      const smithersEvent: AgentSessionTranscriptSmithersEvent = {
+        type: "AgentSessionEvent",
+        runId: this.runId,
+        nodeId: this.nodeId,
+        iteration: this.iteration,
+        attempt: this.attempt,
+        transcript: event,
+        timestampMs: event.timestampMs,
+      };
+      await this.eventBus.emitEventQueued(
+        smithersEvent as unknown as SmithersEvent,
+      );
+      const record = agentSessionEventToOtelLogRecord(event, {
+        agentId: this.agentId,
+        model: this.model,
+      });
+      await emitOtelLogRecord("agent-session", record);
     }
 
     await this.eventBus.emitEventQueued({
@@ -1409,6 +1792,7 @@ export class AgentTraceCollector {
     const previousRawEventId = this.currentRawEventId;
     this.currentRawEventId = this.nextRawEventId(rawType);
     try {
+      this.observeProviderSessionRow(parsed, "live");
       this.emitObservedBatch(
         normalizeStructuredEvent(this.agentFamily, parsed, rawType),
       );
@@ -1624,11 +2008,22 @@ export class AgentTraceCollector {
     }
     for (const event of batch.events) {
       this.observeNormalizedEvent(event);
-      this.pushObserved(
+      if (event.observed) {
+        this.pushObserved(
+          event.kind,
+          event.payload,
+          event.raw,
+          event.rawType,
+          rawEventId,
+        );
+        continue;
+      }
+      this.pushDerived(
         event.kind,
         event.payload,
         event.raw,
         event.rawType,
+        true,
         rawEventId,
       );
     }
@@ -1652,6 +2047,102 @@ export class AgentTraceCollector {
 
   private nextRawEventId(rawType: string) {
     return `${rawType}:${this.rawEventSequence++}`;
+  }
+
+  private observeProviderSessionRow(
+    row: unknown,
+    ingestSource: "live" | "artifact",
+  ) {
+    if (
+      this.captureMode !== "cli-json-stream" &&
+      this.captureMode !== "rpc-events"
+    ) {
+      return;
+    }
+
+    const fingerprint = JSON.stringify(row);
+    if (this.seenSessionRows.has(fingerprint)) return;
+    this.seenSessionRows.add(fingerprint);
+
+    const correlation = extractProviderSessionCorrelation(
+      this.agentFamily,
+      row,
+    );
+    if (correlation.sessionId) this.providerSessionId = correlation.sessionId;
+    if (correlation.threadId) this.providerThreadId = correlation.threadId;
+
+    const redacted = redactValue(row);
+    const parsed = row as any;
+    this.sessionEvents.push({
+      transcriptVersion: "1",
+      runId: this.runId,
+      workflowPath: this.workflowPath,
+      workflowHash: this.workflowHash,
+      nodeId: this.nodeId,
+      iteration: this.iteration,
+      attempt: this.attempt,
+      timestampMs: nowMs(),
+      event: {
+        sequence: this.sessionSequence++,
+        rowType:
+          typeof parsed?.type === "string" && parsed.type
+            ? parsed.type
+            : "structured",
+      },
+      source: {
+        agentFamily: this.agentFamily,
+        captureMode: this.captureMode,
+        ingestSource,
+        observedLive: ingestSource === "live",
+        providerSessionId: this.providerSessionId,
+        providerThreadId: this.providerThreadId,
+      },
+      raw: redacted.value,
+      redaction: {
+        applied: redacted.applied,
+        ruleIds: redacted.ruleIds,
+      },
+      annotations: this.annotations,
+    });
+  }
+
+  private async importProviderSessionTranscript() {
+    const file = await this.resolveProviderSessionFile();
+    if (!file) return;
+    let text: string;
+    try {
+      text = await readFile(file, "utf8");
+    } catch (error) {
+      this.warnings.push(
+        error instanceof Error ? error.message : String(error),
+      );
+      return;
+    }
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        this.observeProviderSessionRow(JSON.parse(line), "artifact");
+      } catch {
+        // Keep canonical capture strict; transcript backfill is best effort only.
+      }
+    }
+  }
+
+  private async resolveProviderSessionFile(): Promise<string | null> {
+    if (this.agentFamily === "pi") {
+      return resolvePiSessionFile(this.agent, this.providerSessionId);
+    }
+    if (this.agentFamily === "claude-code") {
+      return resolveClaudeSessionFile(
+        this.agent,
+        this.cwd,
+        this.providerSessionId,
+      );
+    }
+    if (this.agentFamily === "codex") {
+      return resolveCodexSessionFile(this.agent, this.cwd, this.startedAtMs);
+    }
+    return null;
   }
 
   private async persistNdjson(

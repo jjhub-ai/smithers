@@ -1507,6 +1507,7 @@ async function executeTask(
           runId,
           workflowPath: traceContext?.workflowPath ?? null,
           workflowHash: traceContext?.workflowHash ?? null,
+          cwd: taskRoot,
           nodeId: desc.nodeId,
           iteration: desc.iteration,
           attempt: attemptNo,

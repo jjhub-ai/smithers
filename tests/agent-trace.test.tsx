@@ -1,12 +1,15 @@
 /** @jsxImportSource smithers */
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Workflow, Task, runWorkflow } from "../src";
 import {
   AgentTraceCollector,
+  agentSessionEventToOtelLogRecord,
   canonicalTraceEventToOtelLogRecord,
+  detectAgentFamily,
+  detectCaptureMode,
 } from "../src/agent-trace";
 import { SmithersDb } from "../src/db/adapter";
 import { runPromise } from "../src/effect/runtime";
@@ -561,7 +564,7 @@ describe("agent trace capture", () => {
       traceEvents.some(
         (event: any) =>
           event.event.kind === "assistant.message.final" &&
-          event.source.observed === true &&
+          event.source.observed === false &&
           event.source.rawType === "result",
       ),
     ).toBe(true);
@@ -987,7 +990,7 @@ describe("agent trace capture", () => {
       traceEvents.some(
         (event: any) =>
           event.event.kind === "assistant.message.final" &&
-          event.source.observed === true &&
+          event.source.observed === false &&
           event.payload.text === "Codex dotted final",
       ),
     ).toBe(true);
@@ -1747,6 +1750,352 @@ describe("agent trace capture", () => {
     cleanup();
   });
 
+  test("detects Anthropic agents without colliding with Pi matching", () => {
+    class AnthropicAgent {}
+    const anthropicAgent = new AnthropicAgent() as any;
+    anthropicAgent.id = "anthropic-sdk";
+
+    expect(detectAgentFamily(anthropicAgent)).toBe("anthropic");
+    expect(detectCaptureMode(anthropicAgent)).toBe("sdk-events");
+  });
+
+  test("marks normalized structured events as derived instead of directly observed", async () => {
+    const { smithers, outputs, db, cleanup } = createTestSmithers({
+      result: z.object({ answer: z.string() }),
+    });
+    const runId = "agent-trace-derived-normalization";
+
+    const codexLikeAgent: any = {
+      id: "codex-derived-fake",
+      opts: { outputFormat: "stream-json", json: true },
+      generate: async (args: { onStdout?: (text: string) => void }) => {
+        args.onStdout?.(
+          JSON.stringify({
+            type: "assistant_message.delta",
+            delta: { text: "codex delta" },
+          }) + "\n",
+        );
+        args.onStdout?.(
+          JSON.stringify({
+            type: "turn.completed",
+            usage: { input_tokens: 3, output_tokens: 1 },
+            message: { role: "assistant", content: "codex final" },
+          }) + "\n",
+        );
+        return {
+          text: '{"answer":"codex final"}',
+          output: { answer: "codex final" },
+        };
+      },
+    };
+
+    const workflow = smithers(() => (
+      <Workflow name="derived-normalization">
+        <Task id="task" output={outputs.result} agent={codexLikeAgent}>
+          normalize this
+        </Task>
+      </Workflow>
+    ));
+
+    const result = await runWorkflow(workflow, { input: {}, runId });
+    expect(result.status).toBe("finished");
+
+    const events = await listRunEvents(db, runId);
+    const traceEvents = events
+      .filter((event: any) => event.type === "AgentTraceEvent")
+      .map((event: any) => JSON.parse(event.payloadJson).trace);
+
+    expect(
+      traceEvents.find(
+        (event: any) => event.event.kind === "assistant.text.delta",
+      )?.source.observed,
+    ).toBe(false);
+    expect(
+      traceEvents.find(
+        (event: any) => event.event.kind === "assistant.message.final",
+      )?.source.observed,
+    ).toBe(false);
+    expect(
+      traceEvents.find((event: any) => event.event.kind === "usage")?.source
+        .observed,
+    ).toBe(false);
+
+    cleanup();
+  });
+
+  test("captures live Claude session rows and backfills missing project transcript rows", async () => {
+    const { smithers, outputs, db, cleanup } = createTestSmithers({
+      result: z.object({ answer: z.string() }),
+    });
+    const runId = "agent-session-claude-backfill";
+    const sessionRoot = mkdtempSync(join(tmpdir(), "smithers-claude-session-"));
+    const sessionId = "claude-session-test";
+    const projectDir = join(
+      sessionRoot,
+      process.cwd().replace(/[\\/]/g, "-"),
+    );
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      join(projectDir, `${sessionId}.jsonl`),
+      [
+        JSON.stringify({
+          type: "queue-operation",
+          operation: "enqueue",
+          sessionId,
+          content: "prompt",
+        }),
+        JSON.stringify({
+          type: "progress",
+          sessionId,
+          data: { type: "hook_progress", hookEvent: "SessionStart" },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    const claudeLikeAgent: any = {
+      id: "claude-session-fake",
+      opts: {
+        outputFormat: "stream-json",
+        claudeProjectsDir: sessionRoot,
+      },
+      cd: "/tmp/smithers/test/workflow",
+      generate: async (args: { onStdout?: (text: string) => void }) => {
+        args.onStdout?.(
+          JSON.stringify({
+            type: "system",
+            subtype: "init",
+            session_id: sessionId,
+          }) + "\n",
+        );
+        args.onStdout?.(
+          JSON.stringify({
+            type: "assistant",
+            session_id: sessionId,
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Claude session answer" }],
+            },
+          }) + "\n",
+        );
+        args.onStdout?.(
+          JSON.stringify({
+            type: "result",
+            session_id: sessionId,
+            subtype: "success",
+            result: "Claude session answer",
+          }) + "\n",
+        );
+        return {
+          text: '{"answer":"Claude session answer"}',
+          output: { answer: "Claude session answer" },
+        };
+      },
+    };
+
+    const workflow = smithers(() => (
+      <Workflow name="claude-session-transcript">
+        <Task id="task" output={outputs.result} agent={claudeLikeAgent}>
+          transcript please
+        </Task>
+      </Workflow>
+    ));
+
+    const result = await runWorkflow(workflow, {
+      input: {},
+      runId,
+    } as any);
+    expect(result.status).toBe("finished");
+
+    const events = await listRunEvents(db, runId);
+    const sessionEvents = events
+      .filter((event: any) => event.type === "AgentSessionEvent")
+      .map((event: any) => JSON.parse(event.payloadJson).transcript);
+
+    expect(
+      sessionEvents.some(
+        (event: any) =>
+          event.event.rowType === "system" &&
+          event.source.ingestSource === "live",
+      ),
+    ).toBe(true);
+    expect(
+      sessionEvents.some(
+        (event: any) =>
+          event.event.rowType === "queue-operation" &&
+          event.source.ingestSource === "artifact",
+      ),
+    ).toBe(true);
+    expect(
+      sessionEvents.every(
+        (event: any) => event.source.providerSessionId === sessionId,
+      ),
+    ).toBe(true);
+
+    cleanup();
+  });
+
+  test("backfills Pi session transcript rows from the session directory", async () => {
+    const { smithers, outputs, db, cleanup } = createTestSmithers({
+      result: z.object({ answer: z.string() }),
+    });
+    const runId = "agent-session-pi-backfill";
+    const sessionRoot = mkdtempSync(join(tmpdir(), "smithers-pi-session-"));
+    const sessionId = "pi-session-test";
+    writeFileSync(
+      join(sessionRoot, `2026-03-29T00-00-00-000Z_${sessionId}.jsonl`),
+      [
+        JSON.stringify({
+          type: "session",
+          id: sessionId,
+          cwd: "/tmp/pi-session-test",
+        }),
+        JSON.stringify({
+          type: "model_change",
+          modelId: "kimi-k2.5",
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    const piLikeAgent: any = {
+      id: "pi-session-fake",
+      opts: { mode: "json", sessionDir: sessionRoot },
+      generate: async (args: { onStdout?: (text: string) => void }) => {
+        args.onStdout?.(
+          JSON.stringify({ type: "session", id: sessionId }) + "\n",
+        );
+        args.onStdout?.(
+          JSON.stringify({
+            type: "turn_end",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "PI session answer" }],
+            },
+          }) + "\n",
+        );
+        return {
+          text: '{"answer":"PI session answer"}',
+          output: { answer: "PI session answer" },
+        };
+      },
+    };
+
+    const workflow = smithers(() => (
+      <Workflow name="pi-session-transcript">
+        <Task id="task" output={outputs.result} agent={piLikeAgent}>
+          transcript please
+        </Task>
+      </Workflow>
+    ));
+
+    const result = await runWorkflow(workflow, { input: {}, runId });
+    expect(result.status).toBe("finished");
+
+    const events = await listRunEvents(db, runId);
+    const sessionEvents = events
+      .filter((event: any) => event.type === "AgentSessionEvent")
+      .map((event: any) => JSON.parse(event.payloadJson).transcript);
+
+    expect(
+      sessionEvents.some((event: any) => event.event.rowType === "model_change"),
+    ).toBe(true);
+
+    cleanup();
+  });
+
+  test("backfills Codex session transcript rows from the persisted session store", async () => {
+    const { smithers, outputs, db, cleanup } = createTestSmithers({
+      result: z.object({ answer: z.string() }),
+    });
+    const runId = "agent-session-codex-backfill";
+    const sessionRoot = mkdtempSync(join(tmpdir(), "smithers-codex-session-"));
+    const now = new Date();
+    const datedDir = join(
+      sessionRoot,
+      String(now.getUTCFullYear()),
+      String(now.getUTCMonth() + 1).padStart(2, "0"),
+      String(now.getUTCDate()).padStart(2, "0"),
+    );
+    mkdirSync(datedDir, { recursive: true });
+    const sessionFile = join(datedDir, "rollout-test.jsonl");
+    writeFileSync(
+      sessionFile,
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: {
+            id: "codex-session-test",
+            timestamp: new Date().toISOString(),
+            cwd: process.cwd(),
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "agent_reasoning",
+            text: "Checking the codebase",
+          },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    const codexLikeAgent: any = {
+      id: "codex-session-fake",
+      opts: { outputFormat: "stream-json", json: true, sessionDir: sessionRoot },
+      generate: async (args: { onStdout?: (text: string) => void }) => {
+        args.onStdout?.(
+          JSON.stringify({
+            type: "thread.started",
+            thread_id: "thread-live-1",
+          }) + "\n",
+        );
+        args.onStdout?.(
+          JSON.stringify({
+            type: "turn.completed",
+            message: { role: "assistant", content: "Codex session answer" },
+          }) + "\n",
+        );
+        return {
+          text: '{"answer":"Codex session answer"}',
+          output: { answer: "Codex session answer" },
+        };
+      },
+    };
+
+    const workflow = smithers(() => (
+      <Workflow name="codex-session-transcript">
+        <Task id="task" output={outputs.result} agent={codexLikeAgent}>
+          transcript please
+        </Task>
+      </Workflow>
+    ));
+
+    const result = await runWorkflow(workflow, { input: {}, runId });
+    expect(result.status).toBe("finished");
+
+    const events = await listRunEvents(db, runId);
+    const sessionEvents = events
+      .filter((event: any) => event.type === "AgentSessionEvent")
+      .map((event: any) => JSON.parse(event.payloadJson).transcript);
+
+    expect(
+      sessionEvents.some(
+        (event: any) =>
+          event.event.rowType === "event_msg" &&
+          event.source.ingestSource === "artifact",
+      ),
+    ).toBe(true);
+    expect(
+      sessionEvents.some(
+        (event: any) => event.source.providerThreadId === "thread-live-1",
+      ),
+    ).toBe(true);
+
+    cleanup();
+  });
+
   test("shapes OTEL log records with canonical query attributes and redacted body", () => {
     const record = canonicalTraceEventToOtelLogRecord(
       {
@@ -1786,10 +2135,53 @@ describe("agent trace capture", () => {
     expect(record.attributes["run.id"]).toBe("run-123");
     expect(record.attributes["node.id"]).toBe("pi-rich-trace");
     expect(record.attributes["node.attempt"]).toBe(1);
+    expect(record.attributes["smithers.event.category"]).toBe("agent-trace");
     expect(record.attributes["event.kind"]).toBe("assistant.thinking.delta");
     expect(record.attributes["source.raw_event_id"]).toBe("thinking_delta:0");
     expect(record.attributes["custom.ticket"]).toBe("OBS-1");
+    expect(record.body).toContain("\"category\":\"agent-trace\"");
     expect(record.body).toContain("REDACTED_SECRET");
     expect(record.body).not.toContain("sk_live_");
+  });
+
+  test("shapes OTEL log records for provider session transcript rows", () => {
+    const record = agentSessionEventToOtelLogRecord(
+      {
+        transcriptVersion: "1",
+        runId: "run-123",
+        workflowPath: "workflows/demo.tsx",
+        workflowHash: "abc123",
+        nodeId: "codex-session",
+        iteration: 0,
+        attempt: 1,
+        timestampMs: Date.now(),
+        event: {
+          sequence: 4,
+          rowType: "event_msg",
+        },
+        source: {
+          agentFamily: "codex",
+          captureMode: "cli-json-stream",
+          ingestSource: "artifact",
+          observedLive: false,
+          providerSessionId: "sess-1",
+          providerThreadId: "thread-1",
+        },
+        raw: {
+          type: "event_msg",
+          payload: { type: "agent_reasoning", text: "token=[REDACTED_SECRET]" },
+        },
+        redaction: { applied: true, ruleIds: ["secret-ish"] },
+        annotations: { "custom.demo": true },
+      },
+      { agentId: "codex-agent", model: "gpt-5.4" },
+    );
+
+    expect(record.attributes["provider.session_id"]).toBe("sess-1");
+    expect(record.attributes["provider.thread_id"]).toBe("thread-1");
+    expect(record.attributes["smithers.event.category"]).toBe("agent-session");
+    expect(record.attributes["session.ingest_source"]).toBe("artifact");
+    expect(record.body).toContain("\"category\":\"agent-session\"");
+    expect(record.body).toContain("REDACTED_SECRET");
   });
 });

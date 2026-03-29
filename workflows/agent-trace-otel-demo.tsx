@@ -1,4 +1,7 @@
 /** @jsxImportSource smithers */
+import { mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { runPromise } from "../src/effect/runtime";
 import { logToolCallEffect, logToolCallStartEffect } from "../src/tools/logToolCall";
 import { createSmithers, Task, Workflow } from "../src";
@@ -38,11 +41,30 @@ const { smithers, outputs } = createSmithers(
   },
 );
 
+function writeDemoSessionFile(path: string, rows: unknown[]) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(
+    path,
+    rows.map((row) => JSON.stringify(row)).join("\n") + "\n",
+    "utf8",
+  );
+}
+
 function createPiDemoAgent(failureMode?: string) {
+  const sessionDir = join(tmpdir(), "smithers-agent-session-demo", "pi");
+  const sessionId = "demo-session";
+  writeDemoSessionFile(
+    join(sessionDir, `2026-03-29T00-00-00-000Z_${sessionId}.jsonl`),
+    [
+      { type: "session", id: sessionId, cwd: process.cwd() },
+      { type: "model_change", modelId: "demo-pi" },
+      { type: "thinking_level_change", thinkingLevel: "medium" },
+    ],
+  );
   return {
     id: failureMode ? `pi-observability-demo-${failureMode}` : "pi-observability-demo",
     model: "demo-pi",
-    opts: { mode: "json" },
+    opts: { mode: "json", sessionDir },
     generate: async (args: { onStdout?: (text: string) => void }) => {
       if (failureMode === "malformed-json") {
         args.onStdout?.("{not valid json}\n");
@@ -137,10 +159,40 @@ function createPiDemoAgent(failureMode?: string) {
 }
 
 function createClaudeDemoAgent() {
+  const sessionRoot = join(tmpdir(), "smithers-agent-session-demo", "claude");
+  const sessionId = "claude-demo-session";
+  writeDemoSessionFile(
+    join(
+      sessionRoot,
+      process.cwd().replace(/[\\/]/g, "-"),
+      `${sessionId}.jsonl`,
+    ),
+    [
+      {
+        type: "queue-operation",
+        operation: "enqueue",
+        sessionId,
+        content: "Emit a Claude-like structured trace",
+      },
+      {
+        type: "progress",
+        sessionId,
+        data: { type: "hook_progress", hookEvent: "SessionStart" },
+      },
+      {
+        type: "assistant",
+        sessionId,
+        message: {
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "Claude planning demo work" }],
+        },
+      },
+    ],
+  );
   return {
     id: "claude-observability-demo",
     model: "demo-claude",
-    opts: { outputFormat: "stream-json" },
+    opts: { outputFormat: "stream-json", claudeProjectsDir: sessionRoot },
     generate: async (args: { onStdout?: (text: string) => void }) => {
       args.onStdout?.(
         JSON.stringify({
@@ -233,11 +285,53 @@ function createGeminiDemoAgent() {
 }
 
 function createCodexDemoAgent() {
+  const sessionRoot = join(tmpdir(), "smithers-agent-session-demo", "codex");
+  const now = new Date();
+  writeDemoSessionFile(
+    join(
+      sessionRoot,
+      String(now.getUTCFullYear()),
+      String(now.getUTCMonth() + 1).padStart(2, "0"),
+      String(now.getUTCDate()).padStart(2, "0"),
+      "rollout-demo.jsonl",
+    ),
+    [
+      {
+        type: "session_meta",
+        payload: {
+          id: "codex-demo-session",
+          timestamp: new Date().toISOString(),
+          cwd: process.cwd(),
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "agent_reasoning",
+          text: "Codex demo reasoning about the repository",
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "exec_command",
+          arguments: "{\"cmd\":\"pwd\"}",
+        },
+      },
+    ],
+  );
   return {
     id: "codex-observability-demo",
     model: "demo-codex",
-    opts: { outputFormat: "stream-json", json: true },
+    opts: { outputFormat: "stream-json", json: true, sessionDir: sessionRoot },
     generate: async (args: { onStdout?: (text: string) => void }) => {
+      args.onStdout?.(
+        JSON.stringify({
+          type: "thread.started",
+          thread_id: "codex-demo-thread",
+        }) + "\n",
+      );
       args.onStdout?.(
         JSON.stringify({
           type: "assistant_message.delta",
