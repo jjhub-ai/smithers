@@ -26,7 +26,7 @@ Both surfaces consume the same data from the same backend (HTTP API, SSE streams
 
 ## Package Architecture
 
-Smithers DevTools ships as a separate internal package (`@smithers/devtools`) that is a dependency of the main `smithers` package. From the user's perspective, devtools is included out of the box — no additional install step.
+Smithers DevTools ships as a separate internal package (`@smithers/devtools`) that is a dependency of the main `smithers-orchestrator` package. From the user's perspective, devtools is included out of the box — no additional install step.
 
 ## Core Experience
 

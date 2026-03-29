@@ -266,7 +266,7 @@ Bun supports this same `import.meta.hot` API in `Bun.serve()` with `development:
    - Edge case: changing a task's `id` — the scheduler uses node IDs to track state; changing an ID effectively creates a "new" task and orphans the old one
 
 6. **CLI interface**: How does the user opt in?
-   - `smithers run workflow.tsx --hot` flag?
+   - `smithers up workflow.tsx --hot true` flag?
    - `smithers dev workflow.tsx` command (like Vite's `vite dev`)?
    - Always-on in development?
 
