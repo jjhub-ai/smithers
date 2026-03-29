@@ -373,11 +373,19 @@ function makeService(
   return {
     options,
     annotate: (attributes) => Effect.void.pipe(Effect.annotateLogs(attributes)),
-    withSpan: (name, effect, attributes) =>
-      (attributes && Object.keys(attributes).length > 0
-        ? effect.pipe(Effect.annotateLogs(attributes))
-        : effect
-      ).pipe(Effect.withLogSpan(name)),
+    withSpan: (name, effect, attributes) => {
+      let program = effect;
+      if (attributes && Object.keys(attributes).length > 0) {
+        program = program.pipe(
+          Effect.annotateLogs(attributes),
+          Effect.annotateSpans(attributes),
+        );
+      }
+      return program.pipe(
+        Effect.withLogSpan(name),
+        Effect.withSpan(name, attributes ? { attributes } : undefined),
+      );
+    },
   };
 }
 

@@ -14,11 +14,13 @@ export function logToolCallEffect(
   error?: unknown,
   startedAtMs?: number,
   seqOverride?: number,
+  toolCallIdOverride?: string,
 ) {
   const ctx = getToolContext();
   if (!ctx) return Effect.void;
   const seq =
     typeof seqOverride === "number" ? seqOverride : nextToolSeq(ctx);
+  const toolCallId = toolCallIdOverride ?? `${toolName}:${seq}`;
   const started = startedAtMs ?? nowMs();
   const finished = nowMs();
   const durationMs = finished - started;
@@ -32,11 +34,20 @@ export function logToolCallEffect(
     nodeId: ctx.nodeId,
     iteration: ctx.iteration,
     attempt: ctx.attempt,
+    toolCallId,
     toolName,
     seq,
     status,
     timestampMs: finished,
   });
+  const spanAttributes = {
+    runId: ctx.runId,
+    nodeId: ctx.nodeId,
+    iteration: ctx.iteration,
+    attempt: ctx.attempt,
+    toolName,
+    toolStatus: status,
+  };
   return Metric.update(toolDuration, durationMs).pipe(
     Effect.andThen(
       ctx.db.insertToolCallEffect({
@@ -54,15 +65,10 @@ export function logToolCallEffect(
         errorJson,
       }),
     ),
-    Effect.annotateLogs({
-      runId: ctx.runId,
-      nodeId: ctx.nodeId,
-      iteration: ctx.iteration,
-      attempt: ctx.attempt,
-      toolName,
-      toolStatus: status,
-    }),
+    Effect.annotateLogs(spanAttributes),
+    Effect.annotateSpans(spanAttributes),
     Effect.withLogSpan(`tool:${toolName}:log`),
+    Effect.withSpan(`tool:${toolName}:log`, { attributes: spanAttributes }),
   );
 }
 
@@ -86,6 +92,7 @@ export function logToolCallStartEffect(
   const ctx = getToolContext();
   if (!ctx) return Effect.succeed(undefined);
   const seq = nextToolSeq(ctx);
+  const toolCallId = `${toolName}:${seq}`;
   const started = startedAtMs ?? nowMs();
   void ctx.emitEvent?.({
     type: "ToolCallStarted",
@@ -93,11 +100,12 @@ export function logToolCallStartEffect(
     nodeId: ctx.nodeId,
     iteration: ctx.iteration,
     attempt: ctx.attempt,
+    toolCallId,
     toolName,
     seq,
     timestampMs: started,
   });
-  return Effect.succeed(seq);
+  return Effect.succeed({ seq, toolCallId });
 }
 
 export function truncateToBytes(text: string, maxBytes: number): string {

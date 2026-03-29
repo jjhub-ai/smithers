@@ -50,4 +50,8 @@ export function runSync<A, E, R>(effect: Effect.Effect<A, E, R>) {
   return runtime.runSync(decorate(effect) as Effect.Effect<A, E, never>);
 }
 
+export async function shutdownRuntime() {
+  await runtime.dispose();
+}
+
 export { SmithersRuntimeLayer };

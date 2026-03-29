@@ -16,6 +16,7 @@ type CodexAgentOptions = BaseCliAgentOptions & {
   disable?: string[];
   image?: string[];
   model?: string;
+  outputFormat?: "text" | "json" | "stream-json";
   oss?: boolean;
   localProvider?: string;
   sandbox?: "read-only" | "workspace-write" | "danger-full-access";
@@ -35,6 +36,11 @@ export class CodexAgent extends BaseCliAgent {
   private readonly opts: CodexAgentOptions;
 
   constructor(opts: CodexAgentOptions = {}) {
+    opts = {
+      ...opts,
+      json: opts.json ?? true,
+      outputFormat: opts.outputFormat ?? "stream-json",
+    };
     super(opts);
     this.opts = opts;
   }

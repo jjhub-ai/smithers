@@ -220,6 +220,27 @@ export class PiAgent extends BaseCliAgent {
       }
       throw err;
     }
+
+    // RPC mode
+    const rpcResult = await runRpcCommand("pi", args, {
+      cwd,
+      env,
+      prompt,
+      timeoutMs: callTimeouts.totalMs,
+      idleTimeoutMs: callTimeouts.idleMs,
+      signal: options?.abortSignal,
+      maxOutputBytes: this.maxOutputBytes ?? getToolContext()?.maxOutputBytes,
+      onStdout: options?.onStdout,
+      onStderr: options?.onStderr,
+      onExtensionUiRequest: this.opts.onExtensionUiRequest,
+    });
+
+    return buildGenerateResult(
+      rpcResult.text,
+      rpcResult.output,
+      this.opts.model ?? "pi",
+      rpcResult.usage,
+    );
   }
 
   protected async buildCommand(_params: {

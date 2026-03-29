@@ -11,7 +11,7 @@ import { ensureSmithersTables } from "../db/ensure";
 import { SmithersDb } from "../db/adapter";
 import { buildContext } from "../context";
 import { fromPromise } from "../effect/interop";
-import { runPromise } from "../effect/runtime";
+import { runPromise, shutdownRuntime } from "../effect/runtime";
 import type { SmithersWorkflow } from "../SmithersWorkflow";
 import { Smithers } from "../effect/builder";
 import { revertToAttempt } from "../revert";
@@ -88,6 +88,30 @@ function parseJsonInput(raw: string | undefined, label: string, fail: FailFn) {
       exitCode: 4,
     });
   }
+}
+
+function parseAnnotations(raw: string | undefined, fail: FailFn) {
+  const parsed = parseJsonInput(raw, "annotations", fail);
+  if (parsed === undefined) return undefined;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return fail({
+      code: "INVALID_ANNOTATIONS",
+      message: "Run annotations must be a flat JSON object of string/number/boolean values",
+      exitCode: 4,
+    });
+  }
+  const annotations: Record<string, string | number | boolean> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (!["string", "number", "boolean"].includes(typeof value)) {
+      return fail({
+        code: "INVALID_ANNOTATIONS",
+        message: `Run annotation ${key} must be a string, number, or boolean`,
+        exitCode: 4,
+      });
+    }
+    annotations[key] = value as string | number | boolean;
+  }
+  return annotations;
 }
 
 function formatStatusExitCode(status: string | undefined) {
@@ -219,6 +243,7 @@ const commonRunOptions = z.object({
   maxOutputBytes: z.number().int().min(1).optional().describe("Max bytes a single tool call can return (default: 200000)"),
   toolTimeoutMs: z.number().int().min(1).optional().describe("Max wall-clock time per tool call in ms (default: 60000)"),
   hot: z.boolean().default(false).describe("Enable hot module replacement for .tsx workflows"),
+  annotations: z.string().optional().describe("Run annotations as a flat JSON object of string/number/boolean values"),
 });
 
 const runOptions = commonRunOptions.extend({
@@ -296,6 +321,7 @@ const cli = Cli.create({
         const resolvedWorkflowPath = resolve(process.cwd(), workflowPath);
         const isToon = extname(resolvedWorkflowPath) === ".toon";
         const input = parseJsonInput(options.input, "input", fail) ?? {};
+        const annotations = parseAnnotations(options.annotations, fail);
         const runId = options.runId;
         const resume = Boolean(options.resume);
 
@@ -388,6 +414,7 @@ const cli = Cli.create({
                 maxOutputBytes: options.maxOutputBytes,
                 toolTimeoutMs: options.toolTimeoutMs,
                 hot: options.hot,
+                annotations,
                 onProgress,
                 signal: abort.signal,
               })
@@ -397,6 +424,7 @@ const cli = Cli.create({
           process.exitCode = formatStatusExitCode(
             typeof status === "string" ? status : undefined,
           );
+          await shutdownRuntime();
           return ok(result);
         }
 
@@ -412,11 +440,13 @@ const cli = Cli.create({
           maxOutputBytes: options.maxOutputBytes,
           toolTimeoutMs: options.toolTimeoutMs,
           hot: options.hot,
+          annotations,
           onProgress,
           signal: abort.signal,
         });
 
         process.exitCode = formatStatusExitCode(result.status);
+        await shutdownRuntime();
         return ok(result);
       } catch (err: any) {
         return fail({
@@ -443,6 +473,7 @@ const cli = Cli.create({
         const resolvedWorkflowPath = resolve(process.cwd(), workflowPath);
         const isToon = extname(resolvedWorkflowPath) === ".toon";
         const input = parseJsonInput(options.input, "input", fail) ?? {};
+        const annotations = parseAnnotations(options.annotations, fail);
         const runId = options.runId;
 
         if (options.hot) {
@@ -501,6 +532,7 @@ const cli = Cli.create({
                 maxOutputBytes: options.maxOutputBytes,
                 toolTimeoutMs: options.toolTimeoutMs,
                 hot: options.hot,
+                annotations,
                 onProgress,
                 signal: abort.signal,
               })
@@ -510,6 +542,7 @@ const cli = Cli.create({
           process.exitCode = formatStatusExitCode(
             typeof status === "string" ? status : undefined,
           );
+          await shutdownRuntime();
           return ok(result);
         }
 
@@ -525,11 +558,13 @@ const cli = Cli.create({
           maxOutputBytes: options.maxOutputBytes,
           toolTimeoutMs: options.toolTimeoutMs,
           hot: options.hot,
+          annotations,
           onProgress,
           signal: abort.signal,
         });
 
         process.exitCode = formatStatusExitCode(result.status);
+        await shutdownRuntime();
         return ok(result);
       } catch (err: any) {
         return fail({
@@ -873,7 +908,7 @@ const cli = Cli.create({
     },
   })
   .command("observability", {
-    description: "Start the local observability stack (Grafana, Prometheus, Tempo, OTLP Collector) via Docker Compose.",
+    description: "Start the local observability stack (Grafana, Prometheus, Tempo, Loki, OTLP Collector) via Docker Compose.",
     options: z.object({
       detach: z.boolean().default(false).describe("Run containers in the background"),
       down: z.boolean().default(false).describe("Stop and remove the observability stack"),
@@ -909,7 +944,9 @@ const cli = Cli.create({
           : `[smithers] Starting observability stack...\n` +
             `  Grafana:    http://localhost:3001\n` +
             `  Prometheus: http://localhost:9090\n` +
-            `  Tempo:      http://localhost:3200\n`,
+            `  Tempo:      http://localhost:3200\n` +
+            `  Loki:       http://localhost:3100\n` +
+            `  OTEL HTTP:  http://localhost:4318\n`,
       );
 
       const child = spawn("docker", composeArgs, {
