@@ -61,15 +61,3 @@ Everything runs in the browser:
 - graph editing, code generation, plan preview — all client-side JS
 - no fetch calls, no API, no server, no dependencies
 
-## Server mode (optional)
-
-The `server.ts` file is still available for local development with richer features:
-- Smithers-rendered TSX import via `renderFrame()`
-- local filesystem load/save with validation
-- nearby workflow discovery
-
-Run it with:
-```bash
-cd examples/graph-builder
-bun run server.ts
-```
