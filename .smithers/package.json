@@ -1,0 +1,22 @@
+{
+  "name": "smithers-workflows",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "workflow:list": "smithers workflow list",
+    "workflow:run": "smithers workflow run",
+    "workflow:implement": "smithers workflow implement"
+  },
+  "dependencies": {
+    "skills": "github:mattpocock/skills",
+    "smithers-orchestrator": "0.12.8",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "@types/react": "19.2.10",
+    "@types/react-dom": "19.2.3",
+    "@types/mdx": "2.0.13"
+  }
+}

@@ -1,0 +1,10 @@
+node_modules/
+executions/
+runs/
+sandboxes/
+state/
+tmp/
+*.db
+*.sqlite
+dist/
+.DS_Store
